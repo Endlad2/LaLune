@@ -2,6 +2,7 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -178,19 +179,54 @@ func downloadFile(url, dest string) error {
 }
 
 func extractArchive(archivePath, destDir string) error {
-	switch {
-	case strings.HasSuffix(archivePath, ".zip"):
+	if strings.HasSuffix(archivePath, ".zip") {
 		return extractZip(archivePath, destDir)
-	default:
-		return fmt.Errorf("unsupported archive format")
 	}
+	return fmt.Errorf("unsupported archive format")
 }
 
 func extractZip(zipPath, destDir string) error {
-	cmd := exec.Command("unzip", "-o", zipPath, "-d", destDir)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("unzip failed: %w", err)
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("failed to open zip: %w", err)
 	}
+	defer reader.Close()
+
+	for _, file := range reader.File {
+		path := filepath.Join(destDir, file.Name)
+
+		if !strings.HasPrefix(path, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal file path: %s", path)
+		}
+
+		if file.FileInfo().IsDir() {
+			os.MkdirAll(path, 0755)
+			continue
+		}
+
+		os.MkdirAll(filepath.Dir(path), 0755)
+
+		dstFile, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.Mode())
+		if err != nil {
+			return fmt.Errorf("failed to create file: %w", err)
+		}
+
+		srcFile, err := file.Open()
+		if err != nil {
+			dstFile.Close()
+			return fmt.Errorf("failed to open zip entry: %w", err)
+		}
+
+		_, err = io.Copy(dstFile, srcFile)
+		dstFile.Close()
+		srcFile.Close()
+
+		if err != nil {
+			return fmt.Errorf("failed to extract file: %w", err)
+		}
+	}
+
+	logrus.Infof("Extracted %d files from %s", len(reader.File), zipPath)
 	return nil
 }
 
