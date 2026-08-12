@@ -109,7 +109,7 @@ func setupBinary() error {
 		return fmt.Errorf("failed to extract archive: %w", err)
 	}
 
-	wdttBinaryPath = filepath.Join(tempDir, "wdtt-client")
+	wdttBinaryPath = filepath.Join(tempDir, "wdtt-rslib")
 	if runtime.GOOS == "windows" {
 		wdttBinaryPath += ".exe"
 	}
