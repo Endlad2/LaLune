@@ -416,7 +416,8 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wgDev := device.NewDevice(tunDev, device.NewLogger(device.LogLevelError, "[wg] "), nil)
+	logger := device.NewLogger(device.LogLevelError, "[wg] ")
+	wgDev := device.NewDevice(tunDev, logger)
 
 	if err := wgDev.IpcSet(configStr); err != nil {
 		wgDev.Close()
@@ -470,7 +471,8 @@ func handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wgDev := device.NewDevice(tunDev, device.NewLogger(device.LogLevelError, "[wg] "), nil)
+	logger := device.NewLogger(device.LogLevelError, "[wg] ")
+	wgDev := device.NewDevice(tunDev, logger)
 
 	configData, err := os.ReadFile(configFile)
 	if err != nil {
