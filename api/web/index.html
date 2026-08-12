@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Lune - WDTT Client</title>
+    <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <header class="top-bar">
+            <div class="config-menu">
+                <button class="config-toggle" onclick="toggleConfigMenu()">Конфигурации</button>
+                <div class="config-dropdown" id="configDropdown">
+                    <ul id="configList"></ul>
+                </div>
+                <button class="add-btn" onclick="showAddDialog()">
+                    <img src="/static/images/add.svg" alt="Add">
+                </button>
+            </div>
+            <div class="top-actions">
+                <button class="theme-toggle" onclick="toggleTheme()">Тема</button>
+                <button class="report-btn" onclick="getReport()">Отчет</button>
+            </div>
+        </header>
+
+        <main class="main-content" id="mainContent">
+            <div class="connect-section">
+                <div class="connect-btn" id="connectBtn" onclick="handleConnect()">
+                    <img src="/static/images/connect.svg" alt="Connect">
+                    <span>Подключить</span>
+                </div>
+            </div>
+        </main>
+
+        <footer class="bottom-nav">
+            <button class="nav-btn active" data-tab="connect" onclick="switchTab('connect')">Подключение</button>
+            <button class="nav-btn" data-tab="support" onclick="switchTab('support')">Поддержать</button>
+            <button class="nav-btn" data-tab="logs" onclick="switchTab('logs')">Логи</button>
+            <button class="nav-btn" data-tab="authors" onclick="switchTab('authors')">Авторы</button>
+        </footer>
+    </div>
+
+    <div class="dialog-overlay" id="addDialog" style="display:none">
+        <div class="dialog-box">
+            <h3>Добавить конфигурацию</h3>
+            <div class="dialog-options">
+                <button onclick="showManualInput()">Ручной ввод</button>
+                <button onclick="importFromBuffer()">Импорт из буфера</button>
+            </div>
+            <div id="manualInput" style="display:none">
+                <input type="text" id="configLink" placeholder="Ссылка на конфиг (wdtt://...)" />
+                <input type="text" id="serverIP" placeholder="IP адрес сервера" />
+                <input type="text" id="localPort" placeholder="Локальный порт" />
+                <input type="text" id="dtlsPort" placeholder="DTLS порт" />
+                <input type="text" id="wgPort" placeholder="WireGuard порт" />
+                <input type="text" id="configName" placeholder="Название" />
+                <input type="text" id="configHash" placeholder="Хеш" />
+                <input type="text" id="configPassword" placeholder="Пароль" />
+                <button onclick="addConfig()">Добавить</button>
+                <button onclick="closeAddDialog()">Отмена</button>
+            </div>
+            <div id="bufferInput" style="display:none">
+                <textarea id="bufferText" placeholder="Вставьте содержимое буфера"></textarea>
+                <button onclick="parseBuffer()">Импортировать</button>
+                <button onclick="closeAddDialog()">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="dialog-overlay" id="reportDialog" style="display:none">
+        <div class="dialog-box">
+            <h3>Сохранить отчет</h3>
+            <p>Выберите файл для сохранения</p>
+            <input type="file" id="saveFile" style="display:none" />
+            <button onclick="saveReport()">Сохранить</button>
+            <button onclick="closeReportDialog()">Отмена</button>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

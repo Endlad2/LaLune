@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Lune</title>
+    <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <h1 class="header-title">La Lune</h1>
+            <div class="header-controls">
+                <button class="btn theme-toggle" id="themeToggle">
+                    <img src="/assets/theme.svg" alt="theme" class="icon-md">
+                </button>
+                <button class="btn report-btn" id="reportBtn">
+                    <img src="/assets/report.svg" alt="report" class="icon-md">
+                </button>
+            </div>
+        </header>
+        
+        <main class="main-content" id="mainContent">
+            <div class="configs-list">
+                <button class="btn add-btn" id="addConfigBtn">
+                    <img src="/assets/add.svg" alt="add" class="icon-sm">
+                </button>
+                <div class="configs-container" id="configsContainer"></div>
+            </div>
+            
+            <div class="connection-area" id="connectionArea">
+                <div class="connect-card" id="connectCard">
+                    <div class="connect-icon">
+                        <img src="/assets/connect.svg" alt="connect" class="icon-xl">
+                    </div>
+                    <button class="btn connect-btn" id="connectBtn">Подключить</button>
+                </div>
+                <div class="disconnect-area" id="disconnectArea" style="display:none;">
+                    <button class="btn disconnect-btn" id="disconnectBtn">
+                        <img src="/assets/disconnect.svg" alt="disconnect" class="icon-lg">
+                        Отключить
+                    </button>
+                </div>
+            </div>
+        </main>
+        
+        <nav class="bottom-nav">
+            <button class="nav-btn active" data-tab="connection">
+                <img src="/assets/nav-connect.svg" alt="connect" class="icon-nav">
+                <span>Подключение</span>
+            </button>
+            <button class="nav-btn" data-tab="support">
+                <img src="/assets/nav-support.svg" alt="support" class="icon-nav">
+                <span>Поддержать</span>
+            </button>
+            <button class="nav-btn" data-tab="logs">
+                <img src="/assets/nav-logs.svg" alt="logs" class="icon-nav">
+                <span>Логи</span>
+            </button>
+            <button class="nav-btn" data-tab="authors">
+                <img src="/assets/nav-authors.svg" alt="authors" class="icon-nav">
+                <span>Авторы</span>
+            </button>
+        </nav>
+    </div>
+    
+    <div class="modal-overlay" id="addConfigModal">
+        <div class="modal-content">
+            <h2>Добавить конфиг</h2>
+            <div class="modal-options">
+                <button class="btn modal-option" data-type="manual">Ручной ввод</button>
+                <button class="btn modal-option" data-type="import">Импорт из буфера</button>
+            </div>
+            <div class="modal-form" id="configForm" style="display:none;">
+                <input type="text" id="configLink" placeholder="Ссылка на конфиг" class="form-input">
+                <input type="text" id="configIP" placeholder="IP адрес сервера" class="form-input">
+                <input type="number" id="configLocalPort" placeholder="Локальный порт" class="form-input">
+                <input type="number" id="configDTLSPort" placeholder="DTLS порт" class="form-input">
+                <input type="number" id="configWGPort" placeholder="WireGuard порт" class="form-input">
+                <input type="text" id="configName" placeholder="Название" class="form-input">
+                <input type="text" id="configHashes" placeholder="Хеши через запятую" class="form-input">
+                <input type="text" id="configPassword" placeholder="Пароль" class="form-input">
+                <button class="btn add-confirm-btn" id="addConfirmBtn">Добавить</button>
+            </div>
+            <button class="btn modal-close" id="modalCloseBtn">Закрыть</button>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="256mm"
+   height="256mm"
+   version="1.1"
+   id="svg9"
+   sodipodi:docname="add.svg"
+   viewBox="0 0 256 256"
+   inkscape:version="1.4.2 (ebf0e940d0, 2025-05-08)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview9"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.29617358"
+     inkscape:cx="190.76651"
+     inkscape:cy="633.07471"
+     inkscape:current-layer="g9"
+     inkscape:document-units="mm" />
+  <defs
+     id="defs6">
+    <linearGradient
+       id="linearGradient12"
+       inkscape:collect="always">
+      <stop
+         style="stop-color:#000000;stop-opacity:0.62066501;"
+         offset="0"
+         id="stop12" />
+      <stop
+         style="stop-color:#000000;stop-opacity:0;"
+         offset="1"
+         id="stop13" />
+    </linearGradient>
+    <linearGradient
+       id="b">
+      <stop
+         offset="0"
+         stop-color="#fff"
+         id="stop3" />
+      <stop
+         offset="1"
+         stop-color="#fff"
+         stop-opacity=".34020618"
+         id="stop4" />
+    </linearGradient>
+    <linearGradient
+       id="a">
+      <stop
+         offset="0"
+         stop-color="#729fcf"
+         id="stop5" />
+      <stop
+         offset="1"
+         stop-color="#5187d6"
+         id="stop6" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#a"
+       id="e"
+       x1="34.892849"
+       x2="45.918697"
+       y1="36.422989"
+       y2="48.547989"
+       gradientTransform="translate(-19.258415,-13.57119)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       xlink:href="#b"
+       id="f"
+       x1="16.874998"
+       x2="27.900846"
+       y1="22.851799"
+       y2="34.976799"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="translate(-1.2405655)" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient12"
+       id="radialGradient13"
+       cx="127.72987"
+       cy="215.0219"
+       fx="127.72987"
+       fy="215.0219"
+       r="127.43144"
+       gradientTransform="matrix(1,0,0,0.31498829,0,147.29252)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <g
+     id="g9"
+     transform="matrix(7.9385826,0,0,7.9385826,-55.492287,-72.578349)">
+    <ellipse
+       style="fill:url(#radialGradient13);fill-opacity:1;stroke:none;stroke-width:27.9836;stroke-linecap:square"
+       id="path12"
+       cx="127.72987"
+       cy="215.0219"
+       rx="127.43144"
+       ry="40.139412"
+       transform="matrix(0.12596707,0,0,0.12596707,6.9902009,9.1424821)" />
+    <path
+       fill="#75a1d0"
+       stroke="#3465a4"
+       stroke-width="1"
+       d="m 26.273791,37.542682 v -9.02696 l 9.978464,-0.04018 V 21.480218 H 26.28272 l -0.0089,-9.96017 -7.016274,0.01116 0.0045,9.931152 -9.9896265,0.07366 -0.03571,6.968539 10.0342695,-0.02902 0.0067,9.040353 z"
+       font-family="'Bitstream Vera Sans'"
+       font-size="59.9011px"
+       font-weight="700"
+       style="line-height:125%;text-align:start"
+       id="path7" />
+    <path
+       fill="url(#e)"
+       stroke="url(#f)"
+       stroke-width="1"
+       d="m 25.258137,36.53392 v -9.034182 h 10.002602 l -0.0067,-5.024429 h -9.986974 v -9.994974 l -4.994834,0.01786 0.0089,9.977116 -10.026189,0.01786 -0.02679,4.97309 10.064393,0.0089 -0.01339,9.027485 z"
+       font-family="'Bitstream Vera Sans'"
+       font-size="59.9011px"
+       font-weight="700"
+       opacity="0.408602"
+       style="line-height:125%;text-align:start;fill:url(#e);stroke:url(#f)"
+       id="path8" />
+    <path
+       fill="#ffffff"
+       fill-rule="evenodd"
+       d="m 9.7594345,25 c 0,1.9375 25.9843755,-0.96875 25.9843755,-0.03125 v -3 L 25.759435,22 v -9.965228 h -6 V 22 H 9.7594345 Z"
+       opacity="0.311828"
+       id="path9" />
+  </g>
+  <metadata
+     id="metadata9">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:source>https://commons.wikimedia.org/wiki/File:List-add.svg</dc:source>
+        <cc:license
+           rdf:resource="http://creativecommons.org/publicdomain/zero/1.0/" />
+      </cc:Work>
+      <cc:License
+         rdf:about="http://creativecommons.org/publicdomain/zero/1.0/">
+        <cc:permits
+           rdf:resource="http://creativecommons.org/ns#Reproduction" />
+        <cc:permits
+           rdf:resource="http://creativecommons.org/ns#Distribution" />
+        <cc:permits
+           rdf:resource="http://creativecommons.org/ns#DerivativeWorks" />
+      </cc:License>
+    </rdf:RDF>
+  </metadata>
+</svg>
