@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -417,7 +418,7 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger := device.NewLogger(device.LogLevelError, "[wg] ")
-	wgDev := device.NewDevice(tunDev, logger)
+	wgDev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 
 	if err := wgDev.IpcSet(configStr); err != nil {
 		wgDev.Close()
@@ -472,7 +473,7 @@ func handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger := device.NewLogger(device.LogLevelError, "[wg] ")
-	wgDev := device.NewDevice(tunDev, logger)
+	wgDev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 
 	configData, err := os.ReadFile(configFile)
 	if err != nil {
