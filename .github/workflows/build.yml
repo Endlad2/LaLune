@@ -8,6 +8,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -73,7 +76,12 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -96,6 +104,7 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
       - name: Create Release
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
@@ -105,3 +114,19 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get download URL
+        id: get_url
+        run: |
+          OWNER=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+          REPO=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          echo "url=https://github.com/${OWNER}/${REPO}/releases/download/${{ steps.tag.outputs.tag }}/api-bin.zip" >> $GITHUB_OUTPUT
+
+      - name: Update LATEST-API.md
+        run: |
+          echo "${{ steps.get_url.outputs.url }}" > LATEST-API.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add LATEST-API.md
+          git commit -m "Update LATEST-API.md to ${{ steps.tag.outputs.tag }}" || exit 0
+          git push
