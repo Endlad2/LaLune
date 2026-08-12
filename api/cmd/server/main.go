@@ -394,6 +394,9 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Конвертируем INI в UAPI-формат для IpcSet
+	uapiConfig := convertIniToUAPI(configStr)
+
 	configPath := filepath.Join(tempDir, fmt.Sprintf("wg_config_%d.conf", time.Now().Unix()))
 	if err := os.WriteFile(configPath, configData, 0600); err != nil {
 		http.Error(w, "Failed to write config file: "+err.Error(), http.StatusInternalServerError)
@@ -420,7 +423,7 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 	logger := device.NewLogger(device.LogLevelError, "[wg] ")
 	wgDev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 
-	if err := wgDev.IpcSet(configStr); err != nil {
+	if err := wgDev.IpcSet(uapiConfig); err != nil {
 		wgDev.Close()
 		http.Error(w, fmt.Sprintf("Failed to apply config: %v", err), http.StatusInternalServerError)
 		return
@@ -443,6 +446,83 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		"status":      "connected",
 		"config_path": configPath,
 	})
+}
+
+// convertIniToUAPI преобразует INI-конфиг WireGuard в UAPI-формат
+func convertIniToUAPI(ini string) string {
+	var uapi strings.Builder
+	inInterface := false
+	inPeer := false
+
+	lines := strings.Split(ini, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if line == "[Interface]" {
+			inInterface = true
+			inPeer = false
+			continue
+		}
+		if line == "[Peer]" {
+			inInterface = false
+			inPeer = true
+			uapi.WriteString("public_key=0000000000000000000000000000000000000000000000000000000000000000\n")
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "PrivateKey":
+			if inInterface {
+				uapi.WriteString(fmt.Sprintf("private_key=%s\n", value))
+			}
+		case "Address":
+			if inInterface {
+				// IpcSet не принимает Address — пропускаем
+			}
+		case "DNS":
+			if inInterface {
+				// IpcSet не принимает DNS — пропускаем
+			}
+		case "MTU":
+			if inInterface {
+				// IpcSet не принимает MTU — пропускаем
+			}
+		case "PublicKey":
+			if inPeer {
+				uapi.WriteString(fmt.Sprintf("public_key=%s\n", value))
+			}
+		case "AllowedIPs":
+			if inPeer {
+				ips := strings.Split(value, ",")
+				for _, ip := range ips {
+					ip = strings.TrimSpace(ip)
+					if ip != "" {
+						uapi.WriteString(fmt.Sprintf("allowed_ip=%s\n", ip))
+					}
+				}
+			}
+		case "Endpoint":
+			if inPeer {
+				uapi.WriteString(fmt.Sprintf("endpoint=%s\n", value))
+			}
+		case "PersistentKeepalive":
+			if inPeer {
+				uapi.WriteString(fmt.Sprintf("persistent_keepalive_interval=%s\n", value))
+			}
+		}
+	}
+
+	return uapi.String()
 }
 
 func handleStartTunnel(w http.ResponseWriter, r *http.Request) {
