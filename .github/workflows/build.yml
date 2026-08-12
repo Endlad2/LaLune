@@ -84,11 +84,11 @@ jobs:
           zip -r ../${PLATFORM_DIR}.zip ${PLATFORM_DIR}/
           cd ..
 
-      - name: Upload artifact
+      - name: Upload platform zip as artifact
         uses: actions/upload-artifact@v4
         with:
           name: la-lune-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
-          path: dist/
+          path: ${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}.zip
 
   release:
     name: Create Release
@@ -108,7 +108,9 @@ jobs:
       - name: Create api-bin.zip
         run: |
           mkdir -p api-bin
-          find artifacts -name "*.zip" -exec cp {} api-bin/ \;
+          find artifacts -type f -name "*.zip" -exec cp {} api-bin/ \;
+          echo "Files in api-bin:"
+          ls -la api-bin/
           cd api-bin
           zip -r ../api-bin.zip .
           cd ..
