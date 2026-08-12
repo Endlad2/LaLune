@@ -469,7 +469,6 @@ func convertIniToUAPI(ini string) string {
 		if line == "[Peer]" {
 			inInterface = false
 			inPeer = true
-			uapi.WriteString("public_key=0000000000000000000000000000000000000000000000000000000000000000\n")
 			continue
 		}
 
@@ -483,23 +482,17 @@ func convertIniToUAPI(ini string) string {
 		switch key {
 		case "PrivateKey":
 			if inInterface {
-				uapi.WriteString(fmt.Sprintf("private_key=%s\n", value))
-			}
-		case "Address":
-			if inInterface {
-				// IpcSet не принимает Address — пропускаем
-			}
-		case "DNS":
-			if inInterface {
-				// IpcSet не принимает DNS — пропускаем
-			}
-		case "MTU":
-			if inInterface {
-				// IpcSet не принимает MTU — пропускаем
+				hexKey := base64ToHex(value)
+				if hexKey != "" {
+					uapi.WriteString(fmt.Sprintf("private_key=%s\n", hexKey))
+				}
 			}
 		case "PublicKey":
 			if inPeer {
-				uapi.WriteString(fmt.Sprintf("public_key=%s\n", value))
+				hexKey := base64ToHex(value)
+				if hexKey != "" {
+					uapi.WriteString(fmt.Sprintf("public_key=%s\n", hexKey))
+				}
 			}
 		case "AllowedIPs":
 			if inPeer {
@@ -523,6 +516,15 @@ func convertIniToUAPI(ini string) string {
 	}
 
 	return uapi.String()
+}
+
+// base64ToHex конвертирует base64 ключ WireGuard в hex
+func base64ToHex(b64 string) string {
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%x", data)
 }
 
 func handleStartTunnel(w http.ResponseWriter, r *http.Request) {
