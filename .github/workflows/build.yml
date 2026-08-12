@@ -1,0 +1,107 @@
+# .github/workflows/build.yml
+name: Build La Lune Server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Download wintun.dll (Windows only)
+        if: matrix.goos == 'windows'
+        run: |
+          curl -L -o wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
+          unzip -j wintun.zip "*/${{ matrix.goarch }}/*.dll" -d cmd/server/
+          ls -la cmd/server/wintun.dll
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          cd api
+          go mod tidy
+          BINARY="la-lune-server"
+          if [ "$GOOS" = "windows" ]; then
+            BINARY="${BINARY}.exe"
+          fi
+          go build -ldflags="-s -w" -o "../${BINARY}" ./cmd/server/
+          cd ..
+          mkdir -p dist/${{ matrix.goos }}-${{ matrix.goarch }}
+          cp ${BINARY} dist/${{ matrix.goos }}-${{ matrix.goarch }}/
+          if [ "$GOOS" = "windows" ]; then
+            cp cmd/server/wintun.dll dist/${{ matrix.goos }}-${{ matrix.goarch }}/ 2>/dev/null || true
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: la-lune-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.goos }}-${{ matrix.goarch }}/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create api-bin.zip
+        run: |
+          mkdir -p api-bin
+          for dir in artifacts/*/; do
+            cp -r "$dir" api-bin/
+          done
+          cd api-bin
+          zip -r ../api-bin.zip .
+          cd ..
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          TAG=$(date -u +"%Y.%m.%d.%H.%M")
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          files: api-bin.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
