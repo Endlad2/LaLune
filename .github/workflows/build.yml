@@ -41,8 +41,8 @@ jobs:
         if: matrix.goos == 'windows'
         run: |
           curl -L -o wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
-          unzip -j wintun.zip "*/${{ matrix.goarch }}/*.dll" -d cmd/server/
-          ls -la cmd/server/wintun.dll
+          unzip -j wintun.zip "*/${{ matrix.goarch }}/*.dll" -d api/cmd/server/
+          ls -la api/cmd/server/wintun.dll
 
       - name: Build
         env:
@@ -55,13 +55,13 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             BINARY="${BINARY}.exe"
           fi
-          go build -ldflags="-s -w" -o "../${BINARY}" ./cmd/server/
-          cd ..
-          mkdir -p dist/${{ matrix.goos }}-${{ matrix.goarch }}
-          cp ${BINARY} dist/${{ matrix.goos }}-${{ matrix.goarch }}/
+          go build -ldflags="-s -w" -o "${BINARY}" ./cmd/server/
+          mkdir -p ../dist/${{ matrix.goos }}-${{ matrix.goarch }}
+          cp ${BINARY} ../dist/${{ matrix.goos }}-${{ matrix.goarch }}/
           if [ "$GOOS" = "windows" ]; then
-            cp cmd/server/wintun.dll dist/${{ matrix.goos }}-${{ matrix.goarch }}/ 2>/dev/null || true
+            cp cmd/server/wintun.dll ../dist/${{ matrix.goos }}-${{ matrix.goarch }}/ 2>/dev/null || true
           fi
+          cp -r web ../dist/${{ matrix.goos }}-${{ matrix.goarch }}/ 2>/dev/null || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -83,7 +83,7 @@ jobs:
         run: |
           mkdir -p api-bin
           for dir in artifacts/*/; do
-            cp -r "$dir" api-bin/
+            cp -r "$dir"/* api-bin/
           done
           cd api-bin
           zip -r ../api-bin.zip .
