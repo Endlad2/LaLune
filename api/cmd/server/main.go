@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,6 +59,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/api/start", handleStart).Methods("GET")
 	r.HandleFunc("/api/start-tunnel", handleStartTunnel).Methods("GET")
+	r.HandleFunc("/api/connect", handleConnect).Methods("POST")
 	r.HandleFunc("/api/logs", handleLogs).Methods("GET")
 	r.HandleFunc("/api/logs/write", handleLogsWrite).Methods("GET", "POST")
 	r.HandleFunc("/api/disconnect", handleDisconnect).Methods("GET")
@@ -283,6 +285,85 @@ func findConfigFile() string {
 		}
 	}
 	return ""
+}
+
+func handleConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		ConfigBase64 string `json:"config_base64"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.ConfigBase64 == "" {
+		http.Error(w, "config_base64 is required", http.StatusBadRequest)
+		return
+	}
+
+	configData, err := base64.StdEncoding.DecodeString(req.ConfigBase64)
+	if err != nil {
+		http.Error(w, "Invalid base64: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	configPath := filepath.Join(tempDir, fmt.Sprintf("wg_config_%d.conf", time.Now().Unix()))
+	if err := os.WriteFile(configPath, configData, 0600); err != nil {
+		http.Error(w, "Failed to write config file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	logrus.Infof("Config saved to: %s", configPath)
+
+	wgDeviceMu.Lock()
+	defer wgDeviceMu.Unlock()
+
+	if wgRunning {
+		if err := stopWireGuard(); err != nil {
+			logrus.Warnf("Failed to stop existing WireGuard: %v", err)
+		}
+	}
+
+	tunDev, err := createTUN("wg0", 1420)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create TUN device: %v", err), http.StatusInternalServerError)
+		return
+	}
+	wgTun = tunDev
+
+	wgDev := device.NewDevice(tunDev, nil, nil)
+	wgDevice = wgDev
+
+	if err := wgDev.IpcSet(string(configData)); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to apply config: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if err := wgDev.Up(); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to bring up interface: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	wgRunning = true
+	logrus.Info("Tunnel established via /api/connect")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":      "connected",
+		"config_path": configPath,
+	})
 }
 
 func handleStartTunnel(w http.ResponseWriter, r *http.Request) {
