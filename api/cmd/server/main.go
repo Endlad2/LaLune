@@ -109,14 +109,32 @@ func setupBinary() error {
 		return fmt.Errorf("failed to extract archive: %w", err)
 	}
 
-	wdttBinaryPath = filepath.Join(tempDir, "wdtt-rslib")
+	possibleNames := []string{"wdtt-client", "wdtt-rslib"}
 	if runtime.GOOS == "windows" {
-		wdttBinaryPath += ".exe"
+		for i := range possibleNames {
+			possibleNames[i] += ".exe"
+		}
 	}
 
-	if _, err := os.Stat(wdttBinaryPath); os.IsNotExist(err) {
-		return fmt.Errorf("binary not found after extraction")
+	found := false
+	for _, name := range possibleNames {
+		candidate := filepath.Join(tempDir, name)
+		if _, err := os.Stat(candidate); err == nil {
+			wdttBinaryPath = candidate
+			found = true
+			break
+		}
 	}
+
+	if !found {
+		return fmt.Errorf("binary not found after extraction (tried: %v)", possibleNames)
+	}
+
+	absPath, err := filepath.Abs(wdttBinaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+	wdttBinaryPath = absPath
 
 	if err := os.Chmod(wdttBinaryPath, 0755); err != nil {
 		logrus.Warnf("Failed to chmod binary: %v", err)
@@ -232,6 +250,7 @@ func extractZip(zipPath, destDir string) error {
 
 func handleStart(w http.ResponseWriter, r *http.Request) {
 	peer := r.URL.Query().Get("peer")
+	password := r.URL.Query().Get("password")
 	vk := r.URL.Query().Get("vk")
 	n := r.URL.Query().Get("n")
 	listen := r.URL.Query().Get("listen")
@@ -269,8 +288,12 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 		"-n", n,
 		"-listen", listen,
 	}
+	if password != "" {
+		args = append(args, "-password", password)
+	}
 
 	cmd := exec.Command(wdttBinaryPath, args...)
+	cmd.Dir = tempDir
 
 	if logFile != nil {
 		logFile.Close()
@@ -292,33 +315,41 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wdttProcess = cmd.Process
-	logrus.Infof("WDTT started with PID: %d", wdttProcess.Pid)
+	logrus.Infof("WDTT started with PID: %d (dir: %s)", wdttProcess.Pid, tempDir)
 
-	configPath = findConfigFile()
-	if configPath == "" {
-		logrus.Warn("Config file not found after start")
+	configPath = ""
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		configPath = findConfigFile()
+		if configPath != "" {
+			break
+		}
+	}
+
+	var configBase64 string
+	if configPath != "" {
+		configData, err := os.ReadFile(configPath)
+		if err == nil {
+			configBase64 = base64.StdEncoding.EncodeToString(configData)
+		}
+	} else {
+		logrus.Warn("Config file not found after 5 seconds")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"status": "started",
-		"pid":    strconv.Itoa(wdttProcess.Pid),
-		"config": configPath,
+		"status":        "started",
+		"pid":           strconv.Itoa(wdttProcess.Pid),
+		"config":        configPath,
+		"config_base64": configBase64,
 	})
 }
 
 func findConfigFile() string {
-	searchDirs := []string{
-		".",
-		tempDir,
-	}
-
-	for _, dir := range searchDirs {
-		cfgPath := filepath.Join(dir, "config.toml")
-		if _, err := os.Stat(cfgPath); err == nil {
-			abs, _ := filepath.Abs(cfgPath)
-			return abs
-		}
+	cfgPath := filepath.Join(tempDir, "config.toml")
+	if info, err := os.Stat(cfgPath); err == nil && !info.IsDir() {
+		abs, _ := filepath.Abs(cfgPath)
+		return abs
 	}
 	return ""
 }
