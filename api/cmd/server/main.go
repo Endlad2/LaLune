@@ -1,7 +1,7 @@
+// cmd/server/main.go
 package main
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,13 +20,6 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 )
-
-//go:embed wintun.dll
-var wintunDLL []byte
-
-func init() {
-	_ = wintunDLL // форсируем использование embed в Go 1.26+
-}
 
 var (
 	wdttBinaryPath string
@@ -47,17 +40,15 @@ const (
 	tempDir = "wdtt_temp"
 )
 
-
-
 func main() {
 	logrus.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})
 
-	logrus.Info("Starting La Lune API Server...")
+	logrus.Infof("Starting La Lune API Server on %s/%s...", runtime.GOOS, runtime.GOARCH)
 
-	if err := extractWintun(); err != nil {
-		logrus.Fatalf("Failed to extract wintun.dll: %v", err)
+	if err := platformSetup(); err != nil {
+		logrus.Fatalf("Platform setup failed: %v", err)
 	}
 
 	if err := setupBinary(); err != nil {
@@ -77,32 +68,6 @@ func main() {
 	if err := http.ListenAndServe(":"+apiPort, r); err != nil {
 		logrus.Fatalf("Server failed: %v", err)
 	}
-}
-
-func extractWintun() error {
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-	exeDir := filepath.Dir(exePath)
-	dllPath := filepath.Join(exeDir, "wintun.dll")
-
-	// Проверяем существующий файл
-	if existingData, err := os.ReadFile(dllPath); err == nil {
-		if len(existingData) == len(wintunDLL) {
-			logrus.Info("wintun.dll already exists with correct size")
-			return nil
-		}
-		logrus.Info("wintun.dll exists but size mismatch, overwriting...")
-	}
-
-	logrus.Infof("Extracting wintun.dll from embedded data (%d bytes)...", len(wintunDLL))
-	if err := os.WriteFile(dllPath, wintunDLL, 0644); err != nil {
-		return fmt.Errorf("failed to write wintun.dll: %w", err)
-	}
-
-	logrus.Infof("wintun.dll extracted to: %s", dllPath)
-	return nil
 }
 
 func setupBinary() error {
@@ -159,10 +124,10 @@ func setupBinary() error {
 }
 
 func getArchiveName() string {
-	os := runtime.GOOS
+	goos := runtime.GOOS
 	arch := runtime.GOARCH
 
-	switch os {
+	switch goos {
 	case "linux":
 		if arch == "amd64" {
 			return "wdtt-client-linux-x86_64.zip"
@@ -341,7 +306,7 @@ func handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tunDev, err := tun.CreateTUN("wg0", 1420)
+	tunDev, err := createTUN("wg0", 1420)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create TUN device: %v", err), http.StatusInternalServerError)
 		return
