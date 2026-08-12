@@ -33,10 +33,13 @@ jobs:
             goarch: arm64
           - goos: windows
             goarch: amd64
+            wintun_arch: amd64
           - goos: windows
             goarch: arm64
+            wintun_arch: arm64
           - goos: windows
             goarch: 386
+            wintun_arch: x86
 
     steps:
       - name: Checkout
@@ -51,7 +54,7 @@ jobs:
         if: matrix.goos == 'windows'
         run: |
           curl -L -o wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
-          unzip -j wintun.zip "*/${{ matrix.goarch }}/*.dll" -d api/cmd/server/
+          unzip -j wintun.zip "*/${{ matrix.wintun_arch }}/*.dll" -d api/cmd/server/
           ls -la api/cmd/server/wintun.dll
 
       - name: Build
