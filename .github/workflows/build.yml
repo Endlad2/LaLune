@@ -22,6 +22,11 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: arm64
+          - goos: linux
+            goarch: 386
+          - goos: linux
+            goarch: arm
+            goarm: 7
           - goos: darwin
             goarch: amd64
           - goos: darwin
@@ -30,6 +35,8 @@ jobs:
             goarch: amd64
           - goos: windows
             goarch: arm64
+          - goos: windows
+            goarch: 386
 
     steps:
       - name: Checkout
@@ -51,6 +58,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm || '6' }}
         run: |
           cd api
           go mod tidy
@@ -59,18 +67,25 @@ jobs:
             BINARY="${BINARY}.exe"
           fi
           go build -ldflags="-s -w" -o "${BINARY}" ./cmd/server/
-          mkdir -p ../dist/${{ matrix.goos }}-${{ matrix.goarch }}
-          cp ${BINARY} ../dist/${{ matrix.goos }}-${{ matrix.goarch }}/
-          if [ "$GOOS" = "windows" ]; then
-            cp cmd/server/wintun.dll ../dist/${{ matrix.goos }}-${{ matrix.goarch }}/ 2>/dev/null || true
+          PLATFORM_DIR="${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ -n "${{ matrix.goarm }}" ]; then
+            PLATFORM_DIR="${PLATFORM_DIR}v${{ matrix.goarm }}"
           fi
-          cp -r web ../dist/${{ matrix.goos }}-${{ matrix.goarch }}/ 2>/dev/null || true
+          mkdir -p ../dist/${PLATFORM_DIR}
+          cp ${BINARY} ../dist/${PLATFORM_DIR}/
+          if [ "$GOOS" = "windows" ]; then
+            cp cmd/server/wintun.dll ../dist/${PLATFORM_DIR}/ 2>/dev/null || true
+          fi
+          cp -r web ../dist/${PLATFORM_DIR}/ 2>/dev/null || true
+          cd ../dist
+          zip -r ../${PLATFORM_DIR}.zip ${PLATFORM_DIR}/
+          cd ..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: la-lune-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/${{ matrix.goos }}-${{ matrix.goarch }}/
+          name: la-lune-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
+          path: dist/
 
   release:
     name: Create Release
@@ -90,9 +105,7 @@ jobs:
       - name: Create api-bin.zip
         run: |
           mkdir -p api-bin
-          for dir in artifacts/*/; do
-            cp -r "$dir"/* api-bin/
-          done
+          find artifacts -name "*.zip" -exec cp {} api-bin/ \;
           cd api-bin
           zip -r ../api-bin.zip .
           cd ..
