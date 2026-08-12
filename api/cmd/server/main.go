@@ -130,6 +130,12 @@ func setupBinary() error {
 		return fmt.Errorf("binary not found after extraction (tried: %v)", possibleNames)
 	}
 
+	absPath, err := filepath.Abs(wdttBinaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+	wdttBinaryPath = absPath
+
 	if err := os.Chmod(wdttBinaryPath, 0755); err != nil {
 		logrus.Warnf("Failed to chmod binary: %v", err)
 	}
