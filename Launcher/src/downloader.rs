@@ -23,13 +23,22 @@ pub fn download_file(url: &str, output_path: &PathBuf) -> Result<(), String> {
     let mut file = File::create(output_path)
         .map_err(|e| format!("Failed to create output file: {}", e))?;
     
-    let mut downloaded = 0;
     let total_size = response.content_length().unwrap_or(0);
+    let mut downloaded = 0;
+    let mut buffer = [0u8; 8192];
     
-    while let Some(chunk) = response.chunk().map_err(|e| format!("Failed to read chunk: {}", e))? {
-        file.write_all(&chunk)
+    loop {
+        let bytes_read = response.read(&mut buffer)
+            .map_err(|e| format!("Failed to read chunk: {}", e))?;
+        
+        if bytes_read == 0 {
+            break;
+        }
+        
+        file.write_all(&buffer[..bytes_read])
             .map_err(|e| format!("Failed to write chunk: {}", e))?;
-        downloaded += chunk.len();
+        
+        downloaded += bytes_read;
         
         if total_size > 0 {
             let progress = (downloaded as f32 / total_size as f32) * 100.0;
@@ -45,28 +54,20 @@ pub fn download_file(url: &str, output_path: &PathBuf) -> Result<(), String> {
 }
 
 pub fn download_and_extract(app_dir: &PathBuf) -> Result<(), String> {
-    // Создаем директорию
     fs::create_dir_all(app_dir)
         .map_err(|e| format!("Failed to create app directory: {}", e))?;
     
-    // URL для скачивания
     let repo_url = "https://github.com/Endlad2/LaLune/archive/refs/heads/main.zip";
     let temp_zip = app_dir.join("LaLune-main.zip");
     
-    // Скачиваем архив
     download_file(repo_url, &temp_zip)?;
-    
-    // Распаковываем архив
     extract_zip(&temp_zip, app_dir)?;
     
-    // Удаляем временный архив
     let _ = fs::remove_file(&temp_zip);
     
-    // Перемещаем содержимое из LaLune-main в корень app_dir
     let extracted_dir = app_dir.join("LaLune-main");
     if extracted_dir.exists() {
         move_dir_contents(&extracted_dir, app_dir)?;
-        // Удаляем пустую директорию
         let _ = fs::remove_dir(&extracted_dir);
     }
     
@@ -80,20 +81,19 @@ fn extract_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), String> {
     let mut archive = ZipArchive::new(file)
         .map_err(|e| format!("Failed to read zip archive: {}", e))?;
     
-    println!("📦 Extracting {} files...", archive.len());
+    let total_files = archive.len();
+    println!("📦 Extracting {} files...", total_files);
     
-    for i in 0..archive.len() {
+    for i in 0..total_files {
         let mut file = archive.by_index(i)
             .map_err(|e| format!("Failed to access zip entry {}: {}", i, e))?;
         
         let outpath = dest_dir.join(file.name());
         
         if file.name().ends_with('/') {
-            // Создаем директорию
             fs::create_dir_all(&outpath)
                 .map_err(|e| format!("Failed to create directory: {}", e))?;
         } else {
-            // Создаем родительскую директорию если нужно
             if let Some(parent) = outpath.parent() {
                 if !parent.exists() {
                     fs::create_dir_all(parent)
@@ -101,7 +101,6 @@ fn extract_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), String> {
                 }
             }
             
-            // Записываем файл
             let mut outfile = File::create(&outpath)
                 .map_err(|e| format!("Failed to create file: {}", e))?;
             
@@ -113,9 +112,10 @@ fn extract_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), String> {
                 .map_err(|e| format!("Failed to write file: {}", e))?;
         }
         
-        // Показываем прогресс
-        if i % 10 == 0 {
-            print!("\r📦 Extracting: {:.0}%", (i as f32 / archive.len() as f32) * 100.0);
+        // Показываем прогресс каждые 10 файлов
+        if i % 10 == 0 && i > 0 {
+            let progress = (i as f32 / total_files as f32) * 100.0;
+            print!("\r📦 Extracting: {:.0}%", progress);
             let _ = std::io::stdout().flush();
         }
     }
@@ -133,26 +133,9 @@ fn move_dir_contents(src_dir: &PathBuf, dest_dir: &PathBuf) -> Result<(), String
         let src_path = entry.path();
         let dest_path = dest_dir.join(entry.file_name());
         
-        // Перемещаем файл/директорию в dest_dir
         fs::rename(&src_path, &dest_path)
             .map_err(|e| format!("Failed to move file: {}", e))?;
     }
     
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_download_and_extract() {
-        let temp_dir = tempdir().unwrap();
-        let app_dir = temp_dir.path().to_path_buf();
-        
-        // Этот тест будет скачивать реальный файл, поэтому может быть медленным
-        // Лучше запускать вручную
-        println!("Skipping actual download in unit test");
-    }
 }
