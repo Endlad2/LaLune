@@ -55,10 +55,7 @@ jobs:
 
     - name: Build release binary
       working-directory: ${{ env.WORKSPACE_DIR }}
-      uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --release --target ${{ matrix.target }}
+      run: cargo build --release --target ${{ matrix.target }}
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
