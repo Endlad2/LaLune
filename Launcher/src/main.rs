@@ -4,17 +4,14 @@ mod downloader;
 mod launcher;
 
 use std::process;
-use std::path::PathBuf;
 
 fn main() {
     println!("🚀 LaLune Launcher v1.0.0");
     println!("═══════════════════════════════\n");
 
-    // Получаем путь к директории приложения
     let app_dir = platform::get_app_dir();
     println!("📁 App directory: {}", app_dir.display());
 
-    // Проверяем, установлено ли приложение
     if !app_dir.exists() {
         println!("📦 First run detected. Downloading LaLune...");
         if let Err(e) = downloader::download_and_extract(&app_dir) {
@@ -26,7 +23,6 @@ fn main() {
         println!("✅ LaLune already installed.");
     }
 
-    // Проверяем Python
     let app_dir = platform::get_app_dir();
     let desktop_dir = app_dir.join("Desktop");
     
@@ -34,7 +30,6 @@ fn main() {
         Ok(python_cmd) => {
             println!("✅ Python found: {}", python_cmd);
             
-            // Устанавливаем зависимости
             println!("📦 Installing Python dependencies...");
             if let Err(e) = python::install_requirements(&desktop_dir) {
                 eprintln!("❌ Failed to install requirements: {}", e);
@@ -42,7 +37,6 @@ fn main() {
             }
             println!("✅ Dependencies installed successfully!");
             
-            // Запускаем приложение
             println!("🚀 Launching LaLune...");
             if let Err(e) = launcher::launch_application(&desktop_dir) {
                 eprintln!("❌ Failed to launch LaLune: {}", e);
