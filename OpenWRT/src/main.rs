@@ -44,8 +44,8 @@ fn get_data_dir() -> String {
     String::from("/etc/lalune")
 }
 
-fn get_db_path() -> String {
-    format!("{}/configs.db", get_data_dir())
+fn get_configs_path() -> String {
+    format!("{}/configs.json", get_data_dir())
 }
 
 fn get_settings_path() -> String {
@@ -180,6 +180,33 @@ fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
     }
 }
 
+fn load_configs(state: &Arc<Mutex<AppState>>) {
+    let configs_path = get_configs_path();
+    let _ = fs::create_dir_all(get_data_dir());
+
+    if Path::new(&configs_path).exists() {
+        if let Ok(content) = fs::read_to_string(&configs_path) {
+            if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&content) {
+                let mut s = state.lock().unwrap();
+                s.configs = parsed;
+                return;
+            }
+        }
+    }
+
+    let configs: Vec<Value> = vec![];
+    let _ = fs::write(&configs_path, "[]");
+
+    let mut s = state.lock().unwrap();
+    s.configs = configs;
+}
+
+fn save_configs(state: &Arc<Mutex<AppState>>) {
+    let s = state.lock().unwrap();
+    let configs_path = get_configs_path();
+    let _ = fs::write(&configs_path, serde_json::to_string_pretty(&s.configs).unwrap());
+}
+
 fn ensure_settings(state: &Arc<Mutex<AppState>>) {
     let settings_path = get_settings_path();
 
@@ -214,55 +241,6 @@ fn ensure_settings(state: &Arc<Mutex<AppState>>) {
 
     let mut s = state.lock().unwrap();
     s.settings = settings;
-}
-
-fn load_configs(state: &Arc<Mutex<AppState>>) {
-    let db_path = get_db_path();
-    let _ = fs::create_dir_all(get_data_dir());
-
-    let conn = match rusqlite::Connection::open(&db_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS configs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            protocol TEXT NOT NULL DEFAULT 'CSQTT',
-            peer TEXT NOT NULL DEFAULT '',
-            password TEXT NOT NULL DEFAULT '',
-            hashes TEXT NOT NULL DEFAULT '',
-            name TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )",
-        [],
-    );
-
-    let mut stmt = match conn.prepare(
-        "SELECT id, protocol, peer, password, hashes, name FROM configs ORDER BY id DESC",
-    ) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let configs: Vec<Value> = stmt
-        .query_map([], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "protocol": row.get::<_, String>(1)?,
-                "peer": row.get::<_, String>(2)?,
-                "password": row.get::<_, String>(3)?,
-                "hashes": row.get::<_, String>(4)?,
-                "name": row.get::<_, String>(5)?
-            }))
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
-
-    let mut s = state.lock().unwrap();
-    s.configs = configs;
 }
 
 fn add_log(state: &Arc<Mutex<AppState>>, message: &str) {
@@ -517,23 +495,20 @@ fn handle_request(state: &Arc<Mutex<AppState>>, mut request: tiny_http::Request)
             let parsed: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let link = parsed["link"].as_str().unwrap_or("").to_string();
 
-            let config = parse_csqtt_link(&link);
+            let mut config = parse_csqtt_link(&link);
 
-            let db_path = get_db_path();
-            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                let _ = conn.execute(
-                    "INSERT INTO configs (protocol, peer, password, hashes, name) VALUES (?, ?, ?, ?, ?)",
-                    rusqlite::params![
-                        config["protocol"].as_str().unwrap_or("CSQTT"),
-                        config["peer"].as_str().unwrap_or(""),
-                        config["password"].as_str().unwrap_or(""),
-                        config["hashes"].as_str().unwrap_or(""),
-                        config["name"].as_str().unwrap_or("")
-                    ],
-                );
+            {
+                let s = state.lock().unwrap();
+                let next_id = s.configs.len() as i64 + 1;
+                config["id"] = json!(next_id);
             }
 
-            load_configs(state);
+            {
+                let mut s = state.lock().unwrap();
+                s.configs.push(config);
+            }
+
+            save_configs(state);
 
             let response = Response::from_string(
                 serde_json::to_string(&json!({"success": true})).unwrap(),
@@ -544,11 +519,9 @@ fn handle_request(state: &Arc<Mutex<AppState>>, mut request: tiny_http::Request)
         ("DELETE", url_path) if url_path.starts_with("/api/configs/") => {
             let id_str = url_path.trim_start_matches("/api/configs/");
             if let Ok(id) = id_str.parse::<i64>() {
-                let db_path = get_db_path();
-                if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                    let _ = conn.execute("DELETE FROM configs WHERE id = ?", rusqlite::params![id]);
-                }
-                load_configs(state);
+                let mut s = state.lock().unwrap();
+                s.configs.retain(|c| c["id"].as_i64() != Some(id));
+                save_configs(state);
             }
 
             let response = Response::from_string(
