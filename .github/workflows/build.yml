@@ -10,10 +10,11 @@ env:
   CARGO_TERM_COLOR: always
   APP_NAME: la-lune-launcher
   WORKSPACE_DIR: Launcher
+  OPENWRT_DIR: OpenWRT
 
 jobs:
-  build:
-    name: Build for ${{ matrix.os }}
+  build-launcher:
+    name: Build Launcher for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -64,9 +65,57 @@ jobs:
         path: ${{ env.WORKSPACE_DIR }}/target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
         if-no-files-found: error
 
+  build-openwrt:
+    name: Build OpenWRT for ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            asset_name: LaLune-OpenWRT-aarch64
+          - target: armv7-unknown-linux-musleabihf
+            asset_name: LaLune-OpenWRT-armv7
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+        profile: minimal
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ${{ env.OPENWRT_DIR }}/target
+        key: ${{ runner.os }}-openwrt-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-openwrt-${{ matrix.target }}-
+
+    - name: Build release binary
+      working-directory: ${{ env.OPENWRT_DIR }}
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.asset_name }}
+        path: ${{ env.OPENWRT_DIR }}/target/${{ matrix.target }}/release/lalune-openwrt
+        if-no-files-found: error
+
   create-release:
     name: Create Release
-    needs: build
+    needs: [build-launcher, build-openwrt]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,10 +136,14 @@ jobs:
       with:
         path: artifacts
 
+    - name: List artifacts
+      run: |
+        find artifacts -type f -exec ls -la {} \;
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        name: "LaLune Launcher v${{ steps.version.outputs.version }}"
+        name: "LaLune v${{ steps.version.outputs.version }}"
         tag_name: "v${{ steps.version.outputs.version }}"
         draft: false
         prerelease: false

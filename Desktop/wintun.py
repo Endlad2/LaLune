@@ -6,7 +6,6 @@ import threading
 import socket
 from pathlib import Path
 
-
 class WintunAdapter:
     def __init__(self, dll_path):
         self.dll = ctypes.WinDLL(dll_path)
@@ -79,7 +78,6 @@ class WintunAdapter:
         if self.adapter:
             self.dll.WintunCloseAdapter(self.adapter)
             self.adapter = 0
-
 
 class TunnelController:
     def __init__(self, wintun: WintunAdapter, core_process):

@@ -11,7 +11,6 @@ from PyQt6.QtWebChannel import QWebChannel
 
 from api import DesktopAPI
 
-
 def ensure_admin():
     if sys.platform == 'win32':
         try:
@@ -23,7 +22,6 @@ def ensure_admin():
                 None, "runas", sys.executable, " ".join(sys.argv), None, 1
             )
             sys.exit(0)
-
 
 class LaLuneDesktop(QMainWindow):
     def __init__(self):
@@ -55,8 +53,10 @@ class LaLuneDesktop(QMainWindow):
         
         html_path = Path(__file__).parent.parent / "Frontend" / "app.html"
         if html_path.exists():
-            html_url = QUrl.fromLocalFile(str(html_path))
-            self.webview.load(html_url)
+            html_content = html_path.read_text(encoding='utf-8')
+            html_content = html_content.replace('{API_SCRIPT}', 'desktop-api.js')
+            html_content = html_content.replace('{QTWEBCHANNEL_SCRIPT}', 'qrc:///qtwebchannel/qwebchannel.js')
+            self.webview.setHtml(html_content, QUrl.fromLocalFile(str(html_path)))
             print(f"[INFO] Loaded: {html_path}")
         else:
             error_html = "<html><body style='background:#0a0e2a;color:white;display:flex;justify-content:center;align-items:center;height:100vh;font-family:monospace;'><div><h1 style='color:#f7e84e;'>ERROR</h1><p>File not found</p></div></body></html>"
@@ -121,7 +121,6 @@ class LaLuneDesktop(QMainWindow):
         else:
             event.ignore()
 
-
 def main():
     ensure_admin()
     
@@ -133,7 +132,6 @@ def main():
     window.show()
     
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

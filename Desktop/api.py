@@ -9,6 +9,7 @@ import urllib.request
 import uuid
 import threading
 import socket
+import time
 import re
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote, quote
@@ -26,6 +27,7 @@ PROXY_URL = "http://31.77.148.203:8855/?url="
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+MIN_SPEED_MBPS = 1.0
 
 def parse_csqtt_link(link):
     result = {
@@ -89,7 +91,6 @@ def parse_csqtt_link(link):
     
     return result
 
-
 def strip_vk_url(value):
     v = value.strip()
     prefixes = ["https://vk.com/call/join/", "https://m.vk.com/call/join/", "https://vk.ru/call/join/"]
@@ -104,7 +105,6 @@ def strip_vk_url(value):
     if cut >= 0:
         v = v[:cut]
     return v.rstrip('/')
-
 
 def fetch_url(url, timeout=8):
     urls_to_try = [url, PROXY_URL + quote(url, safe='')]
@@ -121,36 +121,73 @@ def fetch_url(url, timeout=8):
     
     return None
 
-
 def download_file(url, destination, timeout=30):
     urls_to_try = [url, PROXY_URL + quote(url, safe='')]
     
-    for attempt_url in urls_to_try:
+    for attempt_index, attempt_url in enumerate(urls_to_try):
         try:
             print(f"[DOWNLOAD] Пробую: {attempt_url[:100]}...")
+            
             req = urllib.request.Request(attempt_url, headers={'User-Agent': USER_AGENT})
+            
             with urllib.request.urlopen(req, timeout=timeout) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                start_time = time.time()
+                last_check_time = start_time
+                last_check_downloaded = 0
+                slow_detected = False
+                
                 with open(destination, 'wb') as f:
                     while True:
                         chunk = response.read(8192)
                         if not chunk:
                             break
+                        
                         f.write(chunk)
-            
-            file_size = os.path.getsize(destination)
-            if file_size < 1024:
-                print(f"[DOWNLOAD] Файл слишком маленький ({file_size} байт)")
-                os.remove(destination)
-                continue
-            
-            print(f"[DOWNLOAD] Успешно: {destination} ({file_size} байт)")
-            return True
+                        downloaded += len(chunk)
+                        
+                        now = time.time()
+                        elapsed_since_check = now - last_check_time
+                        
+                        if elapsed_since_check >= 2.0:
+                            bytes_since_check = downloaded - last_check_downloaded
+                            speed_mbps = (bytes_since_check / elapsed_since_check) / (1024 * 1024)
+                            
+                            print(f"[DOWNLOAD] Скорость: {speed_mbps:.2f} МБ/с ({downloaded}/{total_size})")
+                            
+                            if attempt_index == 0 and speed_mbps < MIN_SPEED_MBPS and total_size > 0:
+                                print(f"[DOWNLOAD] Скорость ниже {MIN_SPEED_MBPS} МБ/с, переключаюсь на зеркало...")
+                                slow_detected = True
+                                break
+                            
+                            last_check_time = now
+                            last_check_downloaded = downloaded
+                
+                if slow_detected:
+                    if os.path.exists(destination):
+                        os.remove(destination)
+                    continue
+                
+                file_size = os.path.getsize(destination)
+                if file_size < 1024:
+                    print(f"[DOWNLOAD] Файл слишком маленький ({file_size} байт)")
+                    os.remove(destination)
+                    continue
+                
+                print(f"[DOWNLOAD] Успешно: {destination} ({file_size} байт)")
+                return True
+                
         except Exception as e:
             print(f"[DOWNLOAD] Ошибка ({attempt_url[:50]}...): {e}")
+            if os.path.exists(destination):
+                try:
+                    os.remove(destination)
+                except:
+                    pass
             continue
     
     return False
-
 
 class RouteManager:
     def __init__(self):
@@ -160,11 +197,9 @@ class RouteManager:
     
     def configure(self, ip, dns, protected_hosts):
         self._find_physical_gateway()
-        
         self._add_bypass_routes(protected_hosts)
         
         self._exec(['netsh', 'interface', 'ipv4', 'set', 'address', 'name="CSQTT"', 'source=static', f'address={ip}', 'mask=255.255.255.255'])
-        
         self._exec(['netsh', 'interface', 'ipv4', 'set', 'subinterface', '"CSQTT"', 'mtu=1300', 'store=active'])
         
         dns_servers = [d for d in dns.split(',') if d.strip()]
@@ -247,7 +282,6 @@ class RouteManager:
             subprocess.run(cmd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         except:
             pass
-
 
 class DesktopAPI(QObject):
     log_updated = pyqtSignal(str)
