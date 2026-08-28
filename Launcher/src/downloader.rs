@@ -65,9 +65,21 @@ pub fn download_and_extract(app_dir: &PathBuf) -> Result<(), String> {
     
     let _ = fs::remove_file(&temp_zip);
     
+    // Перемещаем содержимое из LaLune-main в корень app_dir
     let extracted_dir = app_dir.join("LaLune-main");
     if extracted_dir.exists() {
-        move_dir_contents(&extracted_dir, app_dir)?;
+        // Проверяем, есть ли внутри папка Desktop
+        let desktop_src = extracted_dir.join("Desktop");
+        if desktop_src.exists() && desktop_src.is_dir() {
+            // Перемещаем содержимое Desktop в корень app_dir
+            move_dir_contents(&desktop_src, app_dir)?;
+            // Удаляем пустую Desktop папку
+            let _ = fs::remove_dir(&desktop_src);
+        } else {
+            // Если нет Desktop, перемещаем все содержимое
+            move_dir_contents(&extracted_dir, app_dir)?;
+        }
+        // Удаляем пустую директорию LaLune-main
         let _ = fs::remove_dir(&extracted_dir);
     }
     
@@ -112,7 +124,6 @@ fn extract_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), String> {
                 .map_err(|e| format!("Failed to write file: {}", e))?;
         }
         
-        // Показываем прогресс каждые 10 файлов
         if i % 10 == 0 && i > 0 {
             let progress = (i as f32 / total_files as f32) * 100.0;
             print!("\r📦 Extracting: {:.0}%", progress);

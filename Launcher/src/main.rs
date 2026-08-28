@@ -2,6 +2,7 @@ mod platform;
 mod python;
 mod downloader;
 mod launcher;
+mod shortcuts;
 
 use std::process;
 
@@ -23,22 +24,25 @@ fn main() {
         println!("✅ LaLune already installed.");
     }
 
-    let app_dir = platform::get_app_dir();
-    let desktop_dir = app_dir.join("Desktop");
-    
     match python::ensure_python_installed() {
         Ok(python_cmd) => {
             println!("✅ Python found: {}", python_cmd);
             
             println!("📦 Installing Python dependencies...");
-            if let Err(e) = python::install_requirements(&desktop_dir) {
+            if let Err(e) = python::install_requirements(&app_dir) {
                 eprintln!("❌ Failed to install requirements: {}", e);
                 process::exit(1);
             }
             println!("✅ Dependencies installed successfully!");
             
+            // Создаем ярлыки
+            if let Err(e) = shortcuts::create_shortcuts(&app_dir) {
+                eprintln!("⚠️ Failed to create shortcuts: {}", e);
+                println!("ℹ️ You can still run LaLune manually from: {}", app_dir.display());
+            }
+            
             println!("🚀 Launching LaLune...");
-            if let Err(e) = launcher::launch_application(&desktop_dir) {
+            if let Err(e) = launcher::launch_application(&app_dir) {
                 eprintln!("❌ Failed to launch LaLune: {}", e);
                 process::exit(1);
             }
