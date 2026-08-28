@@ -77,13 +77,11 @@ jobs:
           - target: aarch64-unknown-linux-musl
             asset_name: LaLune-OpenWRT-aarch64
             cross_cc: aarch64-linux-gnu-gcc
-            apt_packages: gcc-aarch64-linux-gnu musl-tools lld
-            linker: rust-lld
+            apt_packages: gcc-aarch64-linux-gnu musl-tools
           - target: armv7-unknown-linux-musleabihf
             asset_name: LaLune-OpenWRT-armv7
             cross_cc: arm-linux-gnueabihf-gcc
-            apt_packages: gcc-arm-linux-gnueabihf musl-tools lld
-            linker: rust-lld
+            apt_packages: gcc-arm-linux-gnueabihf musl-tools
 
     steps:
     - name: Checkout code
@@ -118,9 +116,8 @@ jobs:
       env:
         CC_aarch64_unknown_linux_musl: ${{ matrix.cross_cc }}
         CC_armv7_unknown_linux_musleabihf: ${{ matrix.cross_cc }}
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
-        CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: ${{ matrix.linker }}
-        RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+        CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: rust-lld
       run: cargo build --release --target ${{ matrix.target }}
 
     - name: Upload artifacts
