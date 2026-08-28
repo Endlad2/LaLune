@@ -76,12 +76,21 @@ jobs:
         include:
           - target: aarch64-unknown-linux-musl
             asset_name: LaLune-OpenWRT-aarch64
+            cross_cc: aarch64-linux-gnu-gcc
+            apt_packages: gcc-aarch64-linux-gnu musl-tools
           - target: armv7-unknown-linux-musleabihf
             asset_name: LaLune-OpenWRT-armv7
+            cross_cc: arm-linux-gnueabihf-gcc
+            apt_packages: gcc-arm-linux-gnueabihf musl-tools
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Install cross-compilation tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ${{ matrix.apt_packages }}
 
     - name: Setup Rust
       uses: actions-rs/toolchain@v1
@@ -104,6 +113,9 @@ jobs:
 
     - name: Build release binary
       working-directory: ${{ env.OPENWRT_DIR }}
+      env:
+        CC_aarch64_unknown_linux_musl: ${{ matrix.cross_cc }}
+        CC_armv7_unknown_linux_musleabihf: ${{ matrix.cross_cc }}
       run: cargo build --release --target ${{ matrix.target }}
 
     - name: Upload artifacts
