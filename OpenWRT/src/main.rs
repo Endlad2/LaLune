@@ -178,6 +178,7 @@ fn get_core_path() -> String {
 }
 
 fn http_get(url: &str) -> Option<String> {
+    let url = url.trim();
     println!("[NET] GET: {}", url);
 
     let output = Command::new("curl")
@@ -193,9 +194,10 @@ fn http_get(url: &str) -> Option<String> {
         Ok(o) => {
             if o.status.success() {
                 let body = String::from_utf8_lossy(&o.stdout).to_string();
-                if !body.trim().is_empty() {
-                    println!("[NET] OK: {} bytes", body.len());
-                    return Some(body);
+                let trimmed = body.trim().to_string();
+                if !trimmed.is_empty() {
+                    println!("[NET] OK: {} bytes", trimmed.len());
+                    return Some(trimmed);
                 }
                 println!("[NET] Пустой ответ");
             } else {
@@ -212,13 +214,15 @@ fn http_get(url: &str) -> Option<String> {
 }
 
 fn download_file(url: &str, destination: &str) -> bool {
+    let url = url.trim();
     let mut urls = vec![url.to_string()];
 
     if !url.starts_with(PROXY_URL) {
-        urls.push(format!("{}?url={}", PROXY_URL, url));
+        urls.push(format!("{}?url={}", PROXY_URL.trim(), url));
     }
 
     for attempt_url in urls {
+        let attempt_url = attempt_url.trim();
         println!("[DOWNLOAD] Trying: {}", attempt_url);
 
         let output = Command::new("curl")
@@ -230,7 +234,7 @@ fn download_file(url: &str, destination: &str) -> bool {
             .arg("Mozilla/5.0")
             .arg("-o")
             .arg(destination)
-            .arg(&attempt_url)
+            .arg(attempt_url)
             .output();
 
         let success = match output {
@@ -269,17 +273,21 @@ fn fetch_latest_version() -> Option<String> {
     if let Some(data) = direct {
         let version = data.trim().to_string();
         if !version.is_empty() {
-            println!("[UPDATE] Версия: {}", version);
+            println!("[UPDATE] Версия: '{}' ({} chars)", version, version.len());
             return Some(version);
         }
         println!("[UPDATE] LATEST пустой");
     } else {
         println!("[UPDATE] Прямой запрос не удался, пробую прокси...");
-        let proxied = format!("{}?url={}", PROXY_URL, LATEST_URL);
+        let proxied = format!("{}?url={}", PROXY_URL.trim(), LATEST_URL);
         if let Some(data) = http_get(&proxied) {
             let version = data.trim().to_string();
             if !version.is_empty() {
-                println!("[UPDATE] Версия (через прокси): {}", version);
+                println!(
+                    "[UPDATE] Версия (через прокси): '{}' ({} chars)",
+                    version,
+                    version.len()
+                );
                 return Some(version);
             }
         }
@@ -296,7 +304,7 @@ fn get_local_version() -> String {
 
 fn save_latest_version(version: &str) {
     let _ = fs::create_dir_all(get_data_dir());
-    let _ = fs::write(get_latest_path(), version);
+    let _ = fs::write(get_latest_path(), version.trim());
 }
 
 fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
@@ -304,6 +312,7 @@ fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
 
     let version = match fetch_latest_version() {
         Some(v) => {
+            let v = v.trim().to_string();
             add_log(state, &format!("[UPDATE] Версия: {}", v));
             v
         }
@@ -324,7 +333,7 @@ fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
 
     let url = format!(
         "https://github.com/Endlad2/csqtt-core/releases/download/{}/{}",
-        version,
+        version.trim(),
         get_platform()
     );
 
