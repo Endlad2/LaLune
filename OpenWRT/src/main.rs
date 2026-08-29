@@ -22,6 +22,123 @@ struct AppState {
     logs: Vec<String>,
 }
 
+fn parse_host_arg() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--host" && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+    }
+    None
+}
+
+fn parse_port_arg() -> Option<u16> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--port" && i + 1 < args.len() {
+            if let Ok(port) = args[i + 1].parse::<u16>() {
+                return Some(port);
+            }
+        }
+    }
+    None
+}
+
+fn detect_lan_ip() -> Option<String> {
+    if let Ok(output) = Command::new("ip")
+        .args(["addr", "show", "dev", "br0"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("inet ") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let ip = parts[1];
+                        if let Some(pos) = ip.find('/') {
+                            return Some(ip[..pos].to_string());
+                        }
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("ip")
+        .args(["addr", "show", "dev", "br-lan"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("inet ") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let ip = parts[1];
+                        if let Some(pos) = ip.find('/') {
+                            return Some(ip[..pos].to_string());
+                        }
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn detect_lan_ip_from_default_route() -> Option<String> {
+    if let Ok(output) = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                for i in 0..parts.len() {
+                    if parts[i] == "dev" && i + 1 < parts.len() {
+                        let iface = parts[i + 1];
+                        if iface.starts_with("usb")
+                            || iface.contains("qmi")
+                            || iface.contains("wan")
+                            || iface.contains("ppp")
+                        {
+                            continue;
+                        }
+                        if let Ok(ip_output) = Command::new("ip")
+                            .args(["addr", "show", "dev", iface])
+                            .output()
+                        {
+                            if ip_output.status.success() {
+                                let ip_stdout = String::from_utf8_lossy(&ip_output.stdout);
+                                for ip_line in ip_stdout.lines() {
+                                    if ip_line.contains("inet ") {
+                                        let ip_parts: Vec<&str> =
+                                            ip_line.split_whitespace().collect();
+                                        if ip_parts.len() >= 2 {
+                                            let ip = ip_parts[1];
+                                            if let Some(pos) = ip.find('/') {
+                                                return Some(ip[..pos].to_string());
+                                            }
+                                            return Some(ip.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn get_platform() -> &'static str {
     let uname = Command::new("uname")
         .arg("-m")
@@ -102,9 +219,7 @@ fn download_file(url: &str, destination: &str) -> bool {
 
         match status {
             Ok(s) if s.success() => {
-                let size = fs::metadata(destination)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let size = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
 
                 if size < 1024 {
                     let _ = fs::remove_file(destination);
@@ -204,7 +319,10 @@ fn load_configs(state: &Arc<Mutex<AppState>>) {
 fn save_configs(state: &Arc<Mutex<AppState>>) {
     let s = state.lock().unwrap();
     let configs_path = get_configs_path();
-    let _ = fs::write(&configs_path, serde_json::to_string_pretty(&s.configs).unwrap());
+    let _ = fs::write(
+        &configs_path,
+        serde_json::to_string_pretty(&s.configs).unwrap(),
+    );
 }
 
 fn ensure_settings(state: &Arc<Mutex<AppState>>) {
@@ -351,19 +469,31 @@ fn build_command(config: &Value, state: &Arc<Mutex<AppState>>) -> Vec<String> {
         "-vk".to_string(),
         config["hashes"].as_str().unwrap_or("").to_string(),
         "-fingerprint".to_string(),
-        s.settings["fingerprint"].as_str().unwrap_or("firefox").to_string(),
+        s.settings["fingerprint"]
+            .as_str()
+            .unwrap_or("firefox")
+            .to_string(),
         "-client-ids".to_string(),
-        s.settings["clientIds"].as_str().unwrap_or("8202606,6287487").to_string(),
+        s.settings["clientIds"]
+            .as_str()
+            .unwrap_or("8202606,6287487")
+            .to_string(),
         "-obfs".to_string(),
         s.settings["obfs"].as_str().unwrap_or("video").to_string(),
         "-vk-auth-mode".to_string(),
-        s.settings["vkAuthMode"].as_str().unwrap_or("vkcalls").to_string(),
+        s.settings["vkAuthMode"]
+            .as_str()
+            .unwrap_or("vkcalls")
+            .to_string(),
         "-device-id".to_string(),
         s.settings["deviceId"].as_str().unwrap_or("").to_string(),
         "-password".to_string(),
         config["password"].as_str().unwrap_or("").to_string(),
         "-captcha-mode".to_string(),
-        s.settings["captchaMode"].as_str().unwrap_or("auto").to_string(),
+        s.settings["captchaMode"]
+            .as_str()
+            .unwrap_or("auto")
+            .to_string(),
     ];
 
     let turn_host = s.settings["turnHost"].as_str().unwrap_or("");
@@ -467,13 +597,15 @@ fn handle_request(state: &Arc<Mutex<AppState>>, mut request: tiny_http::Request)
         ("GET", "/") | ("GET", "/app") => {
             let html = APP_HTML.replace("{API_SCRIPT}", "/static/openwrt-api.js");
             let html = html.replace("{QTWEBCHANNEL_SCRIPT}", "");
-            let response = Response::from_string(html)
-                .with_header(Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap());
+            let response = Response::from_string(html).with_header(
+                Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
+            );
             let _ = request.respond(response);
         }
         ("GET", "/static/openwrt-api.js") => {
-            let response = Response::from_string(OPENWRT_JS)
-                .with_header(Header::from_bytes("Content-Type", "application/javascript").unwrap());
+            let response = Response::from_string(OPENWRT_JS).with_header(
+                Header::from_bytes("Content-Type", "application/javascript").unwrap(),
+            );
             let _ = request.respond(response);
         }
         ("GET", "/api/configs") => {
@@ -630,8 +762,7 @@ fn handle_request(state: &Arc<Mutex<AppState>>, mut request: tiny_http::Request)
             let _ = request.respond(response);
         }
         _ => {
-            let response = Response::from_string("Not Found")
-                .with_status_code(StatusCode(404));
+            let response = Response::from_string("Not Found").with_status_code(StatusCode(404));
             let _ = request.respond(response);
         }
     }
@@ -651,16 +782,40 @@ fn main() {
     ensure_settings(&state);
     load_configs(&state);
 
-    let server = Server::http("0.0.0.0:9988").unwrap();
+    let host = if let Some(h) = parse_host_arg() {
+        h
+    } else {
+        detect_lan_ip()
+            .or_else(detect_lan_ip_from_default_route)
+            .or_else(|| {
+                local_ip_address::local_ip()
+                    .ok()
+                    .map(|ip| ip.to_string())
+            })
+            .unwrap_or_else(|| "0.0.0.0".to_string())
+    };
 
-    let local_ip = local_ip_address::local_ip()
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|_| "192.168.1.1".to_string());
+    let port = parse_port_arg().unwrap_or(9988);
+
+    let bind_addr = format!("{}:{}", host, port);
 
     println!("========================================");
     println!(" LaLune OpenWRT");
-    println!(" UI: http://{}:9988/", local_ip);
+    println!(" UI: http://{}/", bind_addr);
     println!("========================================");
+
+    let server = match Server::http(&bind_addr) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[ERROR] Не удалось запустить сервер на {}: {}",
+                bind_addr, e
+            );
+            let fallback = format!("0.0.0.0:{}", port);
+            println!("[FALLBACK] Пробую: {}", fallback);
+            Server::http(&fallback).unwrap()
+        }
+    };
 
     for request in server.incoming_requests() {
         handle_request(&state, request);
