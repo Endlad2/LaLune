@@ -178,6 +178,8 @@ fn get_core_path() -> String {
 }
 
 fn http_get(url: &str) -> Option<String> {
+    println!("[NET] GET: {}", url);
+
     let output = Command::new("curl")
         .arg("-s")
         .arg("--max-time")
@@ -185,14 +187,28 @@ fn http_get(url: &str) -> Option<String> {
         .arg("-A")
         .arg("Mozilla/5.0")
         .arg(url)
-        .output()
-        .ok()?;
+        .output();
 
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        None
+    match output {
+        Ok(o) => {
+            if o.status.success() {
+                let body = String::from_utf8_lossy(&o.stdout).to_string();
+                if !body.trim().is_empty() {
+                    println!("[NET] OK: {} bytes", body.len());
+                    return Some(body);
+                }
+                println!("[NET] Пустой ответ");
+            } else {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                println!("[NET] curl error: {}", stderr.trim());
+            }
+        }
+        Err(e) => {
+            println!("[NET] curl не найден: {}", e);
+        }
     }
+
+    None
 }
 
 fn download_file(url: &str, destination: &str) -> bool {
@@ -205,7 +221,7 @@ fn download_file(url: &str, destination: &str) -> bool {
     for attempt_url in urls {
         println!("[DOWNLOAD] Trying: {}", attempt_url);
 
-        let status = Command::new("curl")
+        let output = Command::new("curl")
             .arg("-L")
             .arg("-s")
             .arg("--max-time")
@@ -215,37 +231,61 @@ fn download_file(url: &str, destination: &str) -> bool {
             .arg("-o")
             .arg(destination)
             .arg(&attempt_url)
-            .status();
+            .output();
 
-        match status {
-            Ok(s) if s.success() => {
-                let size = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
-
-                if size < 1024 {
-                    let _ = fs::remove_file(destination);
-                    continue;
-                }
-
-                println!("[DOWNLOAD] Success: {} ({} bytes)", destination, size);
-                return true;
+        let success = match output {
+            Ok(o) => o.status.success(),
+            Err(e) => {
+                println!("[DOWNLOAD] curl не найден: {}", e);
+                false
             }
-            _ => {
-                let _ = fs::remove_file(destination);
-            }
+        };
+
+        if !success {
+            let _ = fs::remove_file(destination);
+            continue;
         }
+
+        let size = fs::metadata(destination).map(|m| m.len()).unwrap_or(0);
+
+        if size < 1024 {
+            println!("[DOWNLOAD] Файл слишком маленький ({} байт)", size);
+            let _ = fs::remove_file(destination);
+            continue;
+        }
+
+        println!("[DOWNLOAD] Success: {} ({} bytes)", destination, size);
+        return true;
     }
 
+    println!("[DOWNLOAD] Все попытки не удались");
     false
 }
 
 fn fetch_latest_version() -> Option<String> {
+    println!("[UPDATE] Проверяю LATEST...");
+
     let direct = http_get(LATEST_URL);
-    if direct.is_some() {
-        return direct.map(|s| s.trim().to_string());
+    if let Some(data) = direct {
+        let version = data.trim().to_string();
+        if !version.is_empty() {
+            println!("[UPDATE] Версия: {}", version);
+            return Some(version);
+        }
+        println!("[UPDATE] LATEST пустой");
+    } else {
+        println!("[UPDATE] Прямой запрос не удался, пробую прокси...");
+        let proxied = format!("{}?url={}", PROXY_URL, LATEST_URL);
+        if let Some(data) = http_get(&proxied) {
+            let version = data.trim().to_string();
+            if !version.is_empty() {
+                println!("[UPDATE] Версия (через прокси): {}", version);
+                return Some(version);
+            }
+        }
     }
 
-    let proxied = format!("{}?url={}", PROXY_URL, LATEST_URL);
-    http_get(&proxied).map(|s| s.trim().to_string())
+    None
 }
 
 fn get_local_version() -> String {
@@ -260,20 +300,27 @@ fn save_latest_version(version: &str) {
 }
 
 fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
+    add_log(state, "[UPDATE] Проверяю LATEST...");
+
     let version = match fetch_latest_version() {
-        Some(v) => v,
+        Some(v) => {
+            add_log(state, &format!("[UPDATE] Версия: {}", v));
+            v
+        }
         None => {
-            add_log(state, "[UPDATE] Failed to fetch version");
+            add_log(state, "[UPDATE] Ошибка: не удалось получить LATEST");
+            add_log(state, "[UPDATE] URL: https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST");
             return false;
         }
     };
 
     let local = get_local_version();
     if version == local && Path::new(&get_core_path()).exists() {
+        add_log(state, "[UPDATE] Ядро уже актуально");
         return true;
     }
 
-    add_log(state, &format!("[UPDATE] Downloading core v{}...", version));
+    add_log(state, &format!("[UPDATE] Скачиваю ядро v{}...", version));
 
     let url = format!(
         "https://github.com/Endlad2/csqtt-core/releases/download/{}/{}",
@@ -281,16 +328,19 @@ fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
         get_platform()
     );
 
+    add_log(state, &format!("[UPDATE] URL: {}", url));
+
     if download_file(&url, &get_core_path()) {
         let _ = Command::new("chmod")
             .arg("+x")
             .arg(get_core_path())
             .status();
         save_latest_version(&version);
-        add_log(state, &format!("[UPDATE] Core v{} ready", version));
+        add_log(state, &format!("[UPDATE] Ядро v{} готово", version));
         true
     } else {
-        add_log(state, "[UPDATE] Download failed");
+        add_log(state, &format!("[UPDATE] Ошибка скачивания ядра v{}", version));
+        add_log(state, &format!("[UPDATE] URL: {}", url));
         false
     }
 }
