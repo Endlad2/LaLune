@@ -195,11 +195,16 @@ fn http_get(url: &str) -> Option<String> {
             if o.status.success() {
                 let body = String::from_utf8_lossy(&o.stdout).to_string();
                 let trimmed = body.trim().to_string();
-                if !trimmed.is_empty() {
+
+                if !trimmed.is_empty()
+                    && !trimmed.contains("No connection adapters")
+                    && !trimmed.contains("Server error")
+                {
                     println!("[NET] OK: {} bytes", trimmed.len());
                     return Some(trimmed);
                 }
-                println!("[NET] Пустой ответ");
+
+                println!("[NET] Прокси вернул ошибку: {}", trimmed);
             } else {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 println!("[NET] curl error: {}", stderr.trim());
@@ -318,7 +323,6 @@ fn update_core(state: &Arc<Mutex<AppState>>) -> bool {
         }
         None => {
             add_log(state, "[UPDATE] Ошибка: не удалось получить LATEST");
-            add_log(state, "[UPDATE] URL: https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST");
             return false;
         }
     };
