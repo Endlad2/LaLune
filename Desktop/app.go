@@ -22,8 +22,6 @@ import (
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
-	"github.com/songgao/water"
-	"golang.zx2c4.com/wintun"
 )
 
 const (
@@ -88,6 +86,16 @@ type Settings struct {
 	AutoConnect    bool   `json:"autoConnect"`
 }
 
+// TUN интерфейс (абстракция)
+type TunInterface interface {
+	Setup() error
+	Start(udpConn net.Conn, running *bool)
+	Stop()
+	SetupRoutes(tunIP string, tunDNS string)
+	CleanupRoutes()
+	AddLog(message string)
+}
+
 type App struct {
 	ctx             context.Context
 	db              *sql.DB
@@ -107,19 +115,15 @@ type App struct {
 	updateCallback  func(string)
 	isDownloading   bool
 
-	// TUN для Windows
-	wintunAdapter    *wintun.Adapter
-	wintunSession    wintun.Session
-	hasWintunSession bool
-	
-	// TUN для Linux
-	waterIface       *water.Interface
-	
-	// Общие поля
-	udpConn          net.Conn
-	tunRunning       bool
-	tunSetupDone     bool
+	// TUN интерфейс
+	tun            TunInterface
+	udpConn        net.Conn
+	tunRunning     bool
+	tunSetupDone   bool
 }
+
+// Функция для создания TUN интерфейса (будет переопределена в платформозависимых файлах)
+var newTun func(app *App) TunInterface
 
 func NewApp() *App {
 	return &App{
@@ -139,6 +143,13 @@ func (a *App) startup(ctx context.Context) {
 
 	a.initDB()
 	a.loadSettings()
+	
+	// Создаем TUN интерфейс через глобальную функцию
+	if newTun != nil {
+		a.tun = newTun(a)
+	} else {
+		a.addLog("[ERROR] TUN не инициализирован для этой платформы")
+	}
 
 	go a.checkUpdateBackground()
 }
@@ -402,42 +413,15 @@ func (a *App) setupTun() error {
 		return nil
 	}
 
-	if runtime.GOOS == "windows" {
-		adapter, err := wintun.CreateAdapter("CSQTT", "Wintun", nil)
-		if err != nil {
-			adapter, err = wintun.OpenAdapter("CSQTT")
-			if err != nil {
-				return fmt.Errorf("не удалось создать Wintun адаптер: %v", err)
-			}
-		}
-
-		a.wintunAdapter = adapter
-
-		session, err := adapter.StartSession(0x400000)
-		if err != nil {
-			adapter.Close()
-			return fmt.Errorf("не удалось открыть сессию: %v", err)
-		}
-
-		a.wintunSession = session
-		a.hasWintunSession = true
-		a.tunSetupDone = true
-		a.addLog("[TUN] Wintun адаптер создан")
-		return nil
+	if a.tun == nil {
+		return fmt.Errorf("TUN интерфейс не инициализирован")
 	}
 
-	config := water.Config{
-		DeviceType: water.TUN,
+	if err := a.tun.Setup(); err != nil {
+		return err
 	}
 
-	iface, err := water.New(config)
-	if err != nil {
-		return fmt.Errorf("не удалось создать TUN: %v", err)
-	}
-
-	a.waterIface = iface
 	a.tunSetupDone = true
-	a.addLog(fmt.Sprintf("[TUN] TUN устройство: %s", iface.Name()))
 	return nil
 }
 
@@ -460,55 +444,8 @@ func (a *App) startTunnel(corePort int) {
 	a.tunRunning = true
 	a.mu.Unlock()
 
-	if runtime.GOOS == "windows" {
-		go func() {
-			for a.tunRunning {
-				packet, err := a.wintunSession.ReceivePacket()
-				if err != nil {
-					continue
-				}
-				udpConn.Write(packet)
-				a.wintunSession.ReleaseReceivePacket(packet)
-			}
-		}()
-
-		go func() {
-			buf := make([]byte, 65535)
-			for a.tunRunning {
-				n, err := udpConn.Read(buf)
-				if err != nil {
-					return
-				}
-				packet, err := a.wintunSession.AllocateSendPacket(n)
-				if err != nil {
-					continue
-				}
-				copy(packet, buf[:n])
-				a.wintunSession.SendPacket(packet)
-			}
-		}()
-	} else {
-		go func() {
-			buf := make([]byte, 65535)
-			for a.tunRunning {
-				n, err := a.waterIface.Read(buf)
-				if err != nil {
-					return
-				}
-				udpConn.Write(buf[:n])
-			}
-		}()
-
-		go func() {
-			buf := make([]byte, 65535)
-			for a.tunRunning {
-				n, err := udpConn.Read(buf)
-				if err != nil {
-					return
-				}
-				a.waterIface.Write(buf[:n])
-			}
-		}()
+	if a.tun != nil {
+		a.tun.Start(udpConn, &a.tunRunning)
 	}
 
 	a.addLog("[TUN] Пакетный мост запущен")
@@ -524,20 +461,8 @@ func (a *App) stopTunnel() {
 		a.udpConn = nil
 	}
 
-	if runtime.GOOS == "windows" {
-		if a.hasWintunSession {
-			a.wintunSession.End()
-			a.hasWintunSession = false
-		}
-		if a.wintunAdapter != nil {
-			a.wintunAdapter.Close()
-			a.wintunAdapter = nil
-		}
-	} else {
-		if a.waterIface != nil {
-			a.waterIface.Close()
-			a.waterIface = nil
-		}
+	if a.tun != nil {
+		a.tun.Stop()
 	}
 
 	a.mu.Lock()
@@ -546,46 +471,15 @@ func (a *App) stopTunnel() {
 }
 
 func (a *App) setupRoutes(tunIP string, tunDNS string) {
-	if runtime.GOOS == "windows" {
-		exec.Command("netsh", "interface", "ipv4", "set", "address", "name=\"CSQTT\"", "source=static", "address="+tunIP, "mask=255.255.255.255").Run()
-		exec.Command("netsh", "interface", "ipv4", "set", "subinterface", "\"CSQTT\"", "mtu=1300", "store=active").Run()
-
-		dnsServers := strings.Split(tunDNS, ",")
-		for i, dns := range dnsServers {
-			if dns != "" && i < 2 {
-				exec.Command("netsh", "interface", "ipv4", "add", "dnsservers", "name=\"CSQTT\"", "address="+dns, fmt.Sprintf("index=%d", i+1), "validate=no").Run()
-			}
-		}
-
-		exec.Command("netsh", "interface", "ipv4", "add", "route", "prefix=0.0.0.0/0", "interface=\"CSQTT\"", "nexthop=0.0.0.0", "metric=5", "store=active").Run()
-	} else {
-		ifaceName := "csqtt0"
-		if a.waterIface != nil {
-			ifaceName = a.waterIface.Name()
-		}
-
-		exec.Command("ip", "addr", "add", tunIP+"/32", "dev", ifaceName).Run()
-		exec.Command("ip", "link", "set", ifaceName, "up").Run()
-		exec.Command("ip", "link", "set", ifaceName, "mtu", "1300").Run()
-
-		dnsServers := strings.Split(tunDNS, ",")
-		for _, dns := range dnsServers {
-			if dns != "" {
-				exec.Command("sh", "-c", fmt.Sprintf("echo 'nameserver %s' >> /etc/resolv.conf", dns)).Run()
-			}
-		}
-
-		exec.Command("ip", "route", "add", "default", "dev", ifaceName).Run()
+	if a.tun != nil {
+		a.tun.SetupRoutes(tunIP, tunDNS)
+		a.addLog("[TUN] Маршруты и DNS настроены")
 	}
-
-	a.addLog("[TUN] Маршруты и DNS настроены")
 }
 
 func (a *App) cleanupRoutes() {
-	if runtime.GOOS == "windows" {
-		exec.Command("netsh", "interface", "ipv4", "delete", "route", "prefix=0.0.0.0/0", "interface=\"CSQTT\"", "store=active").Run()
-	} else {
-		exec.Command("ip", "route", "del", "default", "dev", "csqtt0").Run()
+	if a.tun != nil {
+		a.tun.CleanupRoutes()
 	}
 }
 
