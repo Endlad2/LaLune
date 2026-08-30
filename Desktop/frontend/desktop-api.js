@@ -1,9 +1,12 @@
-var api = null;
 var selectedConfigId = null;
 var isConnected = false;
+var isConnecting = false;
 var configs = [];
 var importMethod = 'manual';
 var settings = { peer: '', vkHashes: '', turnHost: '', turnPort: '', workersPerHash: 9, obfs: 'video', fingerprint: 'firefox', clientIds: '8202606,6287487', vkAuthMode: 'vkcalls', captchaMode: 'auto', deviceId: '', autoConnect: false };
+var selectedPassword = '';
+var logsPollingInterval = null;
+var hasReceivedLogs = false;
 
 function generateStars() {
     var container = document.getElementById('stars');
@@ -43,16 +46,25 @@ function switchTab(tab) {
         updateSelectedConfigDisplay();
         updateMoonState();
         var btn = document.getElementById('moonBtn');
-        if (btn) btn.disabled = !selectedConfigId && !isConnected;
+        if (btn) btn.disabled = !selectedConfigId && !isConnected && !isConnecting;
     }
     if (tab === 'settings') loadSettings();
     if (tab === 'logs') {
-        var container = document.getElementById('logsContainer');
-        if (container && window._logBuffer) {
-            container.textContent = window._logBuffer || '';
-            container.scrollTop = container.scrollHeight;
-        }
+        showLogsLoading();
+        fetchLogsImmediately();
     }
+}
+
+function getStatusText() {
+    if (isConnected) return '● Подключено';
+    if (isConnecting) return '● Подключение...';
+    if (selectedConfigId) {
+        for (var i = 0; i < configs.length; i++) {
+            if (configs[i].id === selectedConfigId) return 'Готов к подключению: ' + (configs[i].name || configs[i].peer);
+        }
+        return 'Готов к подключению';
+    }
+    return 'Выберите конфиг';
 }
 
 function getConnectionPageHTML() {
@@ -60,7 +72,7 @@ function getConnectionPageHTML() {
     html += '<button class="moon-btn" id="moonBtn" onclick="toggleConnect()">';
     html += '<svg viewBox="0 0 100 100" width="130" height="130"><circle cx="50" cy="50" r="48" fill="#1a1a3e" stroke="#4a6cf7" stroke-width="2"/><path d="M60 18 A28 28 0 1 0 82 58 A34 34 0 1 1 60 18 Z" fill="#f7e84e" stroke="#d4c42a" stroke-width="1.5"/><circle cx="28" cy="30" r="2" fill="#4a6cf7" opacity="0.35"/><circle cx="74" cy="26" r="1.5" fill="#4a6cf7" opacity="0.25"/><circle cx="22" cy="70" r="1.8" fill="#4a6cf7" opacity="0.3"/><circle cx="78" cy="68" r="1.2" fill="#4a6cf7" opacity="0.2"/><circle cx="34" cy="76" r="1.5" fill="#4a6cf7" opacity="0.25"/></svg>';
     html += '</button><div class="moon-stars" id="moonStars"></div></div>';
-    html += '<div id="statusText" class="status-text">' + (isConnected ? 'Подключено' : (selectedConfigId ? 'Готов к подключению' : 'Выберите конфиг')) + '</div>';
+    html += '<div id="statusText" class="status-text">' + getStatusText() + '</div>';
     html += '<div class="config-selector" id="configSelector">';
     html += '<div class="config-selector-header" onclick="toggleConfigDropdown()"><span id="selectedConfigName">' + getSelectedConfigName() + '</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div>';
     html += '<div class="config-dropdown" id="configDropdown"><div id="configList"></div></div></div>';
@@ -72,7 +84,7 @@ function getSettingsPageHTML() {
     html += '<div class="settings-group"><div class="group-title open" onclick="toggleSettingsGroup(this)">Основные параметры<span class="arrow">v</span></div>';
     html += '<div class="group-body open">';
     html += '<div class="settings-row"><label>Peer</label><input type="text" id="peerInput" placeholder="203.0.113.10:46000" value="' + settings.peer + '"></div>';
-    html += '<div class="settings-row"><label>Пароль</label><input type="password" id="passwordInput" style="flex:1;"></div>';
+    html += '<div class="settings-row"><label>Пароль</label><input type="password" id="passwordInput" style="flex:1;" value="' + selectedPassword + '"></div>';
     html += '<div class="settings-row"><label>VK хеши</label><textarea id="hashesInput" rows="2">' + settings.vkHashes + '</textarea></div>';
     html += '<div class="settings-row"><label>Воркеров на хеш</label><input type="range" id="workersSlider" min="9" max="27" step="9" value="' + settings.workersPerHash + '" oninput="updateWorkers(this.value)"><input type="number" id="workersInput" min="9" max="27" step="9" value="' + settings.workersPerHash + '" onchange="updateWorkersFromInput(this.value)"><span class="hint">(кратно 9)</span></div>';
     html += '</div></div>';
@@ -106,7 +118,7 @@ function getInfoPageHTML() {
 
 function getLogsPageHTML() {
     return '<div class="logs-header"><h3>Журнал</h3><button class="btn-clear" onclick="clearLogs()"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 6h18v2H3z" fill="#E67E22"/><path d="M5 8h14v1H5z" fill="#E67E22"/><path d="M8 3c0-1.5 8-1.5 8 0v2h-2V3.5c0-0.5-6-0.5-6 0V5H8z" fill="#E67E22"/><path d="M6 8l1.5 13h9L18 8H6z" fill="#F39C12" stroke="#E67E22" stroke-width="1"/><path d="M6 8l1.5 13h4V8H6z" fill="#E67E22" opacity="0.3"/><line x1="8" y1="12" x2="16" y2="12" stroke="#E67E22" stroke-width="0.8"/><line x1="8.5" y1="16" x2="15.5" y2="16" stroke="#E67E22" stroke-width="0.8"/></svg></button></div>' +
-        '<div class="logs-container" id="logsContainer"></div>';
+        '<div class="logs-container" id="logsContainer"><div class="logs-loading"><div class="spinner"></div><span>Загрузка логов...</span></div></div>';
 }
 
 function getSelectedConfigName() {
@@ -151,115 +163,127 @@ function updateConfigList() {
 
 function selectConfig(id) {
     selectedConfigId = id;
+    
+    for (var i = 0; i < configs.length; i++) {
+        if (configs[i].id === id) {
+            settings.peer = configs[i].peer || '';
+            settings.vkHashes = configs[i].hashes || '';
+            selectedPassword = configs[i].password || '';
+            break;
+        }
+    }
+    
     updateConfigList();
     updateSelectedConfigDisplay();
     toggleConfigDropdown();
     updateMoonState();
+    
+    var peerInput = document.getElementById('peerInput');
+    if (peerInput) peerInput.value = settings.peer;
+    var hashesInput = document.getElementById('hashesInput');
+    if (hashesInput) hashesInput.value = settings.vkHashes;
+    var passwordInput = document.getElementById('passwordInput');
+    if (passwordInput) passwordInput.value = selectedPassword;
 }
 
 function updateMoonState() {
     var btn = document.getElementById('moonBtn');
     var status = document.getElementById('statusText');
-    if (btn) btn.disabled = !selectedConfigId && !isConnected;
+    if (btn) btn.disabled = !selectedConfigId && !isConnected && !isConnecting;
     if (status) {
-        if (isConnected) status.textContent = 'Подключено';
-        else if (selectedConfigId) {
-            var name = 'Готов к подключению';
-            for (var i = 0; i < configs.length; i++) {
-                if (configs[i].id === selectedConfigId) name = 'Готов к подключению: ' + (configs[i].name || configs[i].peer);
-            }
-            status.textContent = name;
-        } else status.textContent = 'Выберите конфиг';
+        status.textContent = getStatusText();
+    }
+    
+    var stars = document.getElementById('moonStars');
+    if (stars) {
+        if (isConnected || isConnecting) {
+            stars.classList.add('active');
+        } else {
+            stars.classList.remove('active');
+        }
     }
 }
 
 function toggleConnect() {
     if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    if (isConnected) { window.go.main.App.Disconnect(); return; }
+    
+    if (isConnected) {
+        isConnected = false;
+        isConnecting = false;
+        hasReceivedLogs = false;
+        updateMoonState();
+        window.go.main.App.Disconnect().then(function() {});
+        return;
+    }
+    
+    if (isConnecting) { return; }
+    
     if (!selectedConfigId) { showToast('Выберите конфиг'); return; }
-    window.go.main.App.Connect(selectedConfigId);
+    
+    isConnecting = true;
+    hasReceivedLogs = false;
+    updateMoonState();
+    
+    window.go.main.App.Connect(selectedConfigId).then(function(result) {
+        if (!result) {
+            isConnecting = false;
+            updateMoonState();
+            showToast('Ошибка подключения');
+        }
+    });
 }
 
 function setConnected(state) {
     isConnected = state;
+    if (!state) {
+        isConnecting = false;
+        hasReceivedLogs = false;
+    }
     updateMoonState();
-    var stars = document.getElementById('moonStars');
-    if (stars) stars.classList.toggle('active', state);
-    var btn = document.getElementById('moonBtn');
-    if (btn) btn.disabled = false;
-    var status = document.getElementById('statusText');
-    if (status) status.textContent = state ? 'Подключено' : (selectedConfigId ? 'Готов к подключению' : 'Выберите конфиг');
 }
 
-function showAddModal() {
-    document.getElementById('addModal').classList.add('open');
-    document.getElementById('configInput').value = '';
+function showLogsLoading() {
+    var container = document.getElementById('logsContainer');
+    if (container) {
+        container.innerHTML = '<div class="logs-loading"><div class="spinner"></div><span>Загрузка логов...</span></div>';
+    }
 }
 
-function closeAddModal() {
-    document.getElementById('addModal').classList.remove('open');
-}
-
-function setImportMethod(method) {
-    importMethod = method;
-    document.querySelectorAll('.import-btn').forEach(function(b) { b.classList.remove('active'); });
-    var btns = document.querySelectorAll('.import-btn');
-    btns[method === 'manual' ? 0 : 1].classList.add('active');
-    if (method === 'clipboard') {
-        navigator.clipboard.readText().then(function(text) {
-            document.getElementById('configInput').value = text;
-        }).catch(function() {
-            showToast('Не удалось прочитать буфер обмена');
+function fetchLogsImmediately() {
+    if (window.go && window.go.main && window.go.main.App) {
+        window.go.main.App.GetLogsJson().then(function(logsJson) {
+            var logs = JSON.parse(logsJson);
+            var container = document.getElementById('logsContainer');
+            if (container) {
+                if (logs.length > 0) {
+                    container.textContent = logs.join('\n');
+                    container.scrollTop = container.scrollHeight;
+                } else {
+                    container.innerHTML = '<div style="color:rgba(255,255,255,0.3);text-align:center;padding:20px;">Логов пока нет</div>';
+                }
+            }
         });
     }
 }
 
-function saveConfig() {
-    var input = document.getElementById('configInput');
-    var link = input.value.trim();
-    if (!link) { showToast('Введите ссылку'); return; }
-    if (link.indexOf('csqtt://') !== 0) { showToast('Неверный формат ссылки'); return; }
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    
-    var result = window.go.main.App.SaveConfig(link);
-    closeAddModal();
-    if (result) {
-        showToast('Конфиг сохранён');
-    } else {
-        showToast('Ошибка сохранения');
-    }
-}
-
-function deleteConfig(id) {
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    if (!confirm('Удалить конфиг?')) return;
-    window.go.main.App.DeleteConfig(id);
-}
-
-function refreshConfigs(json) {
-    try {
-        configs = JSON.parse(json);
-        updateConfigList();
-        updateSelectedConfigDisplay();
-        updateMoonState();
-    } catch(e) {
-        console.error('refreshConfigs error:', e);
-    }
-}
-
-function refreshSettings(json) {
-    try {
-        settings = JSON.parse(json);
-        var deviceInput = document.getElementById('deviceIdInput');
-        if (deviceInput) deviceInput.value = settings.deviceId || '';
-    } catch(e) {
-        console.error('refreshSettings error:', e);
-    }
-}
-
 function appendLog(line) {
+    if (isConnecting && !hasReceivedLogs) {
+        hasReceivedLogs = true;
+        isConnected = true;
+        isConnecting = false;
+        updateMoonState();
+    }
+    
     var container = document.getElementById('logsContainer');
     if (!container) { if (!window._logBuffer) window._logBuffer = ''; window._logBuffer += line + '\n'; return; }
+    
+    if (container.querySelector('.logs-loading')) {
+        container.textContent = '';
+    }
+    if (container.querySelector('.logs-empty')) {
+        container.textContent = '';
+    }
+    
     container.textContent += line + '\n';
     container.scrollTop = container.scrollHeight;
 }
@@ -268,7 +292,9 @@ function clearLogs() {
     window._logBuffer = '';
     var container = document.getElementById('logsContainer');
     if (container) container.textContent = '';
-    if (window.go && window.go.main && window.go.main.App) window.go.main.App.ClearLogs();
+    if (window.go && window.go.main && window.go.main.App) {
+        window.go.main.App.ClearLogs().then(function() {});
+    }
 }
 
 function showToast(msg) {
@@ -288,7 +314,7 @@ function toggleSettingsGroup(el) {
 function loadSettings() {
     var fields = {
         peerInput: settings.peer,
-        passwordInput: '',
+        passwordInput: selectedPassword,
         hashesInput: settings.vkHashes,
         workersSlider: settings.workersPerHash,
         workersInput: settings.workersPerHash,
@@ -348,9 +374,15 @@ function saveSettings() {
         settings.deviceId = deviceValue;
     }
     settings.autoConnect = autoConnect ? autoConnect.checked : false;
+    if (password && password.value) selectedPassword = password.value;
     
-    window.go.main.App.SaveSettings(JSON.stringify(settings));
-    showToast('Настройки сохранены');
+    window.go.main.App.SaveSettings(JSON.stringify(settings)).then(function(result) {
+        if (result) {
+            showToast('Настройки сохранены');
+        } else {
+            showToast('Ошибка сохранения');
+        }
+    });
 }
 
 function updateWorkers(val) {
@@ -391,10 +423,31 @@ function showUpdateBanner(version) {
 function updateCore() {
     if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
     if (isConnected) { showToast('Сначала отключитесь'); return; }
-    window.go.main.App.UpdateCore();
+    window.go.main.App.UpdateCore().then(function() {});
     var banner = document.getElementById('updateBanner');
     if (banner) banner.classList.remove('show');
     showToast('Обновление запущено');
+}
+
+function refreshConfigs(json) {
+    try {
+        configs = JSON.parse(json);
+        updateConfigList();
+        updateSelectedConfigDisplay();
+        updateMoonState();
+    } catch(e) {
+        console.error('refreshConfigs error:', e);
+    }
+}
+
+function refreshSettings(json) {
+    try {
+        settings = JSON.parse(json);
+        var deviceInput = document.getElementById('deviceIdInput');
+        if (deviceInput) deviceInput.value = settings.deviceId || '';
+    } catch(e) {
+        console.error('refreshSettings error:', e);
+    }
 }
 
 function initApp() {
@@ -406,25 +459,64 @@ function initApp() {
         
         app.SetLogCallback(function(message) {
             appendLog(message);
+        }).then(function() {
+            return app.SetStatusCallback(function(connected) {
+                setConnected(connected);
+            });
+        }).then(function() {
+            return app.SetConfigsCallback(function(json) {
+                refreshConfigs(json);
+            });
+        }).then(function() {
+            return app.SetUpdateCallback(function(version) {
+                showUpdateBanner(version);
+            });
+        }).then(function() {
+            return app.GetConfigsJson();
+        }).then(function(configsJson) {
+            refreshConfigs(configsJson);
+            
+            if (configs.length > 0) {
+                selectedConfigId = configs[0].id;
+                settings.peer = configs[0].peer || '';
+                settings.vkHashes = configs[0].hashes || '';
+                selectedPassword = configs[0].password || '';
+                updateSelectedConfigDisplay();
+                updateMoonState();
+            }
+            
+            return app.GetSettingsJson();
+        }).then(function(settingsJson) {
+            settings = JSON.parse(settingsJson);
+            var deviceInput = document.getElementById('deviceIdInput');
+            if (deviceInput) {
+                deviceInput.value = settings.deviceId || '';
+            }
+        }).then(function() {
+            // Периодически опрашиваем логи ВЕЗДЕ (на любой вкладке)
+            logsPollingInterval = setInterval(function() {
+                app.GetLogsJson().then(function(logsJson) {
+                    var logs = JSON.parse(logsJson);
+                    
+                    // Если есть логи и мы в состоянии "Подключение" — переключаем в "Подключено"
+                    if (logs.length > 0 && isConnecting) {
+                        hasReceivedLogs = true;
+                        isConnected = true;
+                        isConnecting = false;
+                        updateMoonState();
+                    }
+                    
+                    // Обновляем контейнер логов если он есть
+                    var container = document.getElementById('logsContainer');
+                    if (container && logs.length > 0) {
+                        container.textContent = logs.join('\n');
+                        container.scrollTop = container.scrollHeight;
+                    }
+                });
+            }, 1000);
+        }).catch(function(e) {
+            console.error('[JS] Init error:', e);
         });
-        
-        app.SetStatusCallback(function(connected) {
-            setConnected(connected);
-        });
-        
-        app.SetConfigsCallback(function(json) {
-            refreshConfigs(json);
-        });
-        
-        app.SetUpdateCallback(function(version) {
-            showUpdateBanner(version);
-        });
-        
-        var configsJson = app.GetConfigsJson();
-        refreshConfigs(configsJson);
-        
-        var settingsJson = app.GetSettingsJson();
-        refreshSettings(settingsJson);
     }
     
     document.addEventListener('click', function(e) {

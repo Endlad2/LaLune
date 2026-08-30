@@ -8,61 +8,79 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  APP_NAME: la-lune-launcher
-  WORKSPACE_DIR: Launcher
   OPENWRT_DIR: OpenWRT
+  DESKTOP_DIR: Desktop
 
 jobs:
-  build-launcher:
-    name: Build Launcher for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  build-desktop-windows:
+    name: Build Desktop (Windows x86_64)
+    runs-on: windows-latest
     permissions:
       contents: write
       actions: read
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: la-lune-launcher
-            asset_name: la-lune-launcher-linux-x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: la-lune-launcher.exe
-            asset_name: la-lune-launcher-windows-x86_64.exe
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup Rust
-      uses: actions-rs/toolchain@v1
+    - name: Setup Go
+      uses: actions/setup-go@v5
       with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
-        profile: minimal
+        go-version: '1.22'
 
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ${{ env.WORKSPACE_DIR }}/target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+    - name: Setup Wails
+      run: |
+        go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-    - name: Build release binary
-      working-directory: ${{ env.WORKSPACE_DIR }}
-      run: cargo build --release --target ${{ matrix.target }}
+    - name: Build Desktop
+      working-directory: ${{ env.DESKTOP_DIR }}
+      run: |
+        go mod tidy
+        wails build -clean
 
-    - name: Upload artifacts
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.asset_name }}
-        path: ${{ env.WORKSPACE_DIR }}/target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        name: LaLune-Desktop-Windows
+        path: ${{ env.DESKTOP_DIR }}/build/bin/LaLune.exe
+        if-no-files-found: error
+
+  build-desktop-linux:
+    name: Build Desktop (Linux x86_64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+
+    - name: Setup Wails
+      run: |
+        go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+    - name: Build Desktop
+      working-directory: ${{ env.DESKTOP_DIR }}
+      run: |
+        go mod tidy
+        wails build -clean
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LaLune-Desktop-Linux
+        path: ${{ env.DESKTOP_DIR }}/build/bin/LaLune
         if-no-files-found: error
 
   build-openwrt:
@@ -75,13 +93,23 @@ jobs:
       matrix:
         include:
           - target: aarch64-unknown-linux-musl
-            asset_name: LaLune-OpenWRT-aarch64
+            asset_name: lalune-openwrt-aarch64
             cross_cc: aarch64-linux-gnu-gcc
             apt_packages: gcc-aarch64-linux-gnu musl-tools
+            goos: linux
+            goarch: arm64
           - target: armv7-unknown-linux-musleabihf
-            asset_name: LaLune-OpenWRT-armv7
+            asset_name: lalune-openwrt-armv7
             cross_cc: arm-linux-gnueabihf-gcc
             apt_packages: gcc-arm-linux-gnueabihf musl-tools
+            goos: linux
+            goarch: arm
+          - target: x86_64-unknown-linux-musl
+            asset_name: lalune-openwrt-x86_64
+            cross_cc: x86_64-linux-gnu-gcc
+            apt_packages: gcc-x86-64-linux-gnu musl-tools
+            goos: linux
+            goarch: amd64
 
     steps:
     - name: Checkout code
@@ -92,44 +120,34 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ${{ matrix.apt_packages }}
 
-    - name: Setup Rust
-      uses: actions-rs/toolchain@v1
+    - name: Setup Go
+      uses: actions/setup-go@v5
       with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
-        profile: minimal
+        go-version: '1.22'
 
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ${{ env.OPENWRT_DIR }}/target
-        key: ${{ runner.os }}-openwrt-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-openwrt-${{ matrix.target }}-
-
-    - name: Build release binary
+    - name: Build OpenWRT
       working-directory: ${{ env.OPENWRT_DIR }}
       env:
-        CC_aarch64_unknown_linux_musl: ${{ matrix.cross_cc }}
-        CC_armv7_unknown_linux_musleabihf: ${{ matrix.cross_cc }}
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
-        CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: rust-lld
-      run: cargo build --release --target ${{ matrix.target }}
+        CGO_ENABLED: 0
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        if [ "${{ matrix.goarch }}" = "arm" ]; then
+          GOARM=7 go build -ldflags="-s -w" -o ${{ matrix.asset_name }} .
+        else
+          go build -ldflags="-s -w" -o ${{ matrix.asset_name }} .
+        fi
 
-    - name: Upload artifacts
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.asset_name }}
-        path: ${{ env.OPENWRT_DIR }}/target/${{ matrix.target }}/release/lalune-openwrt
+        path: ${{ env.OPENWRT_DIR }}/${{ matrix.asset_name }}
         if-no-files-found: error
 
   create-release:
     name: Create Release
-    needs: [build-launcher, build-openwrt]
+    needs: [build-desktop-windows, build-desktop-linux, build-openwrt]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -149,13 +167,14 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: artifacts
+        merge-multiple: true
 
     - name: List artifacts
       run: |
         find artifacts -type f -exec ls -la {} \;
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         name: "LaLune v${{ steps.version.outputs.version }}"
         tag_name: "v${{ steps.version.outputs.version }}"
@@ -163,6 +182,6 @@ jobs:
         prerelease: false
         generate_release_notes: true
         files: |
-          artifacts/**/*
+          artifacts/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
