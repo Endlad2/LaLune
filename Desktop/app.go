@@ -107,10 +107,15 @@ type App struct {
 	updateCallback  func(string)
 	isDownloading   bool
 
+	// TUN для Windows
 	wintunAdapter    *wintun.Adapter
 	wintunSession    wintun.Session
 	hasWintunSession bool
+	
+	// TUN для Linux
 	waterIface       *water.Interface
+	
+	// Общие поля
 	udpConn          net.Conn
 	tunRunning       bool
 	tunSetupDone     bool
@@ -387,7 +392,7 @@ func (a *App) SetUpdateCallback(callback func(string)) {
 	a.updateCallback = callback
 }
 
-// ============ TUN / Wintun / Water ============
+// ============ TUN методы ============
 
 func (a *App) setupTun() error {
 	a.mu.Lock()
@@ -965,7 +970,6 @@ func (a *App) connectWorkerWithConfig(config Config) {
 
 							a.addLog(line)
 
-							// Парсим TUNCONF или Tunnel IP
 							tunIP, tunDNS := a.parseTunconf(line)
 							if tunIP != "" && tunDNS != "" {
 								a.addLog(fmt.Sprintf("[TUN] IP: %s, DNS: %s", tunIP, tunDNS))
