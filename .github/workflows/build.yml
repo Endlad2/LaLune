@@ -1,187 +1,155 @@
-name: Build and Release
+name: Build LaLune
 
 on:
   push:
     branches:
       - main
+      - release
   workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
-  OPENWRT_DIR: OpenWRT
-  DESKTOP_DIR: Desktop
-
 jobs:
-  build-desktop-windows:
-    name: Build Desktop (Windows x86_64)
-    runs-on: windows-latest
-    permissions:
-      contents: write
-      actions: read
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
-
-    - name: Setup Wails
-      run: |
-        go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-    - name: Build Desktop
-      working-directory: ${{ env.DESKTOP_DIR }}
-      run: |
-        go mod tidy
-        wails build -clean
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: LaLune-Desktop-Windows
-        path: ${{ env.DESKTOP_DIR }}/build/bin/LaLune.exe
-        if-no-files-found: error
-
   build-desktop-linux:
-    name: Build Desktop (Linux x86_64)
+    name: Desktop Linux
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Setup Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
-    - name: Setup Wails
-      run: |
-        go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Setup Wails
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
 
-    - name: Install Linux dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 
-    - name: Build Desktop
-      working-directory: ${{ env.DESKTOP_DIR }}
-      run: |
-        go mod tidy
-        wails build -clean
+      - name: Build Desktop Linux
+        run: |
+          python3 build_desktop.py --platform Linux
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: LaLune-Desktop-Linux
-        path: ${{ env.DESKTOP_DIR }}/build/bin/LaLune
-        if-no-files-found: error
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Linux
+          path: |
+            Desktop/Linux/build/bin/*
+          if-no-files-found: error
 
-  build-openwrt:
-    name: Build OpenWRT for ${{ matrix.target }}
+  build-desktop-windows:
+    name: Desktop Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Wails
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Desktop Windows
+        run: |
+          python build_desktop.py --platform Windows
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Windows
+          path: |
+            Desktop/Windows/build/bin/*
+          if-no-files-found: error
+
+  build-openwrt-armv7:
+    name: OpenWRT ARMv7
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-unknown-linux-musl
-            asset_name: lalune-openwrt-aarch64
-            cross_cc: aarch64-linux-gnu-gcc
-            apt_packages: gcc-aarch64-linux-gnu musl-tools
-            goos: linux
-            goarch: arm64
-          - target: armv7-unknown-linux-musleabihf
-            asset_name: lalune-openwrt-armv7
-            cross_cc: arm-linux-gnueabihf-gcc
-            apt_packages: gcc-arm-linux-gnueabihf musl-tools
-            goos: linux
-            goarch: arm
-          - target: x86_64-unknown-linux-musl
-            asset_name: lalune-openwrt-x86_64
-            cross_cc: x86_64-linux-gnu-gcc
-            apt_packages: gcc-x86-64-linux-gnu musl-tools
-            goos: linux
-            goarch: amd64
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install cross-compilation tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ${{ matrix.apt_packages }}
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
-    - name: Setup Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
+      - name: Build OpenWRT ARMv7
+        run: |
+          cd OpenWRT
+          GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o csqtt-client-armv7 main.go
+          ls -la csqtt-client-armv7
 
-    - name: Build OpenWRT
-      working-directory: ${{ env.OPENWRT_DIR }}
-      env:
-        CGO_ENABLED: 0
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-      run: |
-        if [ "${{ matrix.goarch }}" = "arm" ]; then
-          GOARM=7 go build -ldflags="-s -w" -o ${{ matrix.asset_name }} .
-        else
-          go build -ldflags="-s -w" -o ${{ matrix.asset_name }} .
-        fi
+      - name: Upload ARMv7 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-OpenWRT-armv7
+          path: OpenWRT/csqtt-client-armv7
+          if-no-files-found: error
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.asset_name }}
-        path: ${{ env.OPENWRT_DIR }}/${{ matrix.asset_name }}
-        if-no-files-found: error
+  build-openwrt-arm64:
+    name: OpenWRT ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build OpenWRT ARM64
+        run: |
+          cd OpenWRT
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o csqtt-client-arm64 main.go
+          ls -la csqtt-client-arm64
+
+      - name: Upload ARM64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-OpenWRT-arm64
+          path: OpenWRT/csqtt-client-arm64
+          if-no-files-found: error
 
   create-release:
     name: Create Release
-    needs: [build-desktop-windows, build-desktop-linux, build-openwrt]
+    needs: [build-desktop-linux, build-desktop-windows, build-openwrt-armv7, build-openwrt-arm64]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release/
 
-    - name: Generate version from date
-      id: version
-      run: |
-        VERSION=$(date +'%y.%m.%d.%H.%M')
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Create ZIP archives
+        run: |
+          cd release
+          zip -r LaLune-Linux.zip LaLune-Linux/
+          zip -r LaLune-Windows.zip LaLune-Windows/
+          zip -r LaLune-OpenWRT-armv7.zip LaLune-OpenWRT-armv7/
+          zip -r LaLune-OpenWRT-arm64.zip LaLune-OpenWRT-arm64/
 
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-        merge-multiple: true
-
-    - name: List artifacts
-      run: |
-        find artifacts -type f -exec ls -la {} \;
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        name: "LaLune v${{ steps.version.outputs.version }}"
-        tag_name: "v${{ steps.version.outputs.version }}"
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-        files: |
-          artifacts/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

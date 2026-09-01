@@ -1,447 +1,807 @@
-var api = null;
-var selectedConfigId = null;
-var isConnected = false;
-var configs = [];
-var importMethod = 'manual';
-var settings = { peer: '', vkHashes: '', turnHost: '', turnPort: '', workersPerHash: 9, obfs: 'video', fingerprint: 'firefox', clientIds: '8202606,6287487', vkAuthMode: 'vkcalls', captchaMode: 'auto', deviceId: '', autoConnect: false };
+// Desktop API для LaLune
 
-function generateStars() {
-    var container = document.getElementById('stars');
-    for (var i = 0; i < 80; i++) {
-        var star = document.createElement('div');
-        star.className = 'star';
-        var size = 0.5 + Math.random() * 1.8;
-        star.style.cssText = 'width:' + size + 'px;height:' + size + 'px;left:' + (Math.random()*100) + '%;top:' + (Math.random()*100) + '%;opacity:' + (0.2+Math.random()*0.7) + ';animation:twinkle ' + (1.5+Math.random()*2) + 's ease-in-out infinite alternate';
-        container.appendChild(star);
-    }
-}
-
-function generateMoonStars() {
-    var container = document.getElementById('moonStars');
-    if (!container) return;
-    container.innerHTML = '';
-    for (var i = 0; i < 16; i++) {
-        var star = document.createElement('div');
-        star.className = 'moon-star';
-        var angle = Math.random() * 2 * Math.PI;
-        var dist = 40 + Math.random() * 60;
-        star.style.cssText = 'left:' + (50+Math.cos(angle)*dist) + '%;top:' + (50+Math.sin(angle)*dist) + '%;width:' + (2+Math.random()*4) + 'px;height:' + (2+Math.random()*4) + 'px;animation-delay:' + (Math.random()*0.6) + 's;animation-duration:' + (0.5+Math.random()*0.5) + 's';
-        container.appendChild(star);
-    }
-}
-
-function switchTab(tab) {
-    document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
-    var navBtn = document.querySelector('.nav-btn[data-tab="' + tab + '"]');
-    if (navBtn) navBtn.classList.add('active');
-    var content = document.getElementById('content');
-    var pages = { connection: getConnectionPageHTML(), settings: getSettingsPageHTML(), info: getInfoPageHTML(), logs: getLogsPageHTML() };
-    content.innerHTML = pages[tab];
-    if (tab === 'connection') {
-        generateMoonStars();
-        updateConfigList();
-        updateSelectedConfigDisplay();
-        updateMoonState();
-        var btn = document.getElementById('moonBtn');
-        if (btn) btn.disabled = !selectedConfigId && !isConnected;
-    }
-    if (tab === 'settings') loadSettings();
-    if (tab === 'logs') {
-        var container = document.getElementById('logsContainer');
-        if (container && window._logBuffer) {
-            container.textContent = window._logBuffer || '';
-            container.scrollTop = container.scrollHeight;
-        }
-    }
-}
-
-function getConnectionPageHTML() {
-    var html = '<div class="moon-container">';
-    html += '<button class="moon-btn" id="moonBtn" onclick="toggleConnect()">';
-    html += '<svg viewBox="0 0 100 100" width="130" height="130"><circle cx="50" cy="50" r="48" fill="#1a1a3e" stroke="#4a6cf7" stroke-width="2"/><path d="M60 18 A28 28 0 1 0 82 58 A34 34 0 1 1 60 18 Z" fill="#f7e84e" stroke="#d4c42a" stroke-width="1.5"/><circle cx="28" cy="30" r="2" fill="#4a6cf7" opacity="0.35"/><circle cx="74" cy="26" r="1.5" fill="#4a6cf7" opacity="0.25"/><circle cx="22" cy="70" r="1.8" fill="#4a6cf7" opacity="0.3"/><circle cx="78" cy="68" r="1.2" fill="#4a6cf7" opacity="0.2"/><circle cx="34" cy="76" r="1.5" fill="#4a6cf7" opacity="0.25"/></svg>';
-    html += '</button><div class="moon-stars" id="moonStars"></div></div>';
-    html += '<div id="statusText" class="status-text">' + (isConnected ? 'Подключено' : (selectedConfigId ? 'Готов к подключению' : 'Выберите конфиг')) + '</div>';
-    html += '<div class="config-selector" id="configSelector">';
-    html += '<div class="config-selector-header" onclick="toggleConfigDropdown()"><span id="selectedConfigName">' + getSelectedConfigName() + '</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></div>';
-    html += '<div class="config-dropdown" id="configDropdown"><div id="configList"></div></div></div>';
-    return html;
-}
-
-function getSettingsPageHTML() {
-    var html = '<div style="width:100%;max-width:550px;margin:0 auto;"><div class="settings-scroll">';
-    html += '<div class="settings-group"><div class="group-title open" onclick="toggleSettingsGroup(this)">Основные параметры<span class="arrow">v</span></div>';
-    html += '<div class="group-body open">';
-    html += '<div class="settings-row"><label>Peer</label><input type="text" id="peerInput" placeholder="203.0.113.10:46000" value="' + settings.peer + '"></div>';
-    html += '<div class="settings-row"><label>Пароль</label><input type="password" id="passwordInput" style="flex:1;"></div>';
-    html += '<div class="settings-row"><label>VK хеши</label><textarea id="hashesInput" rows="2">' + settings.vkHashes + '</textarea></div>';
-    html += '<div class="settings-row"><label>Воркеров на хеш</label><input type="range" id="workersSlider" min="9" max="27" step="9" value="' + settings.workersPerHash + '" oninput="updateWorkers(this.value)"><input type="number" id="workersInput" min="9" max="27" step="9" value="' + settings.workersPerHash + '" onchange="updateWorkersFromInput(this.value)"><span class="hint">(кратно 9)</span></div>';
-    html += '</div></div>';
-    html += '<div class="settings-group"><div class="group-title" onclick="toggleSettingsGroup(this)">Дополнительные настройки<span class="arrow">v</span></div>';
-    html += '<div class="group-body"><div class="settings-grid">';
-    html += '<div class="settings-row"><label>TURN host</label><input type="text" id="turnHostInput" value="' + settings.turnHost + '"></div>';
-    html += '<div class="settings-row"><label>TURN port</label><input type="text" id="turnPortInput" value="' + settings.turnPort + '"></div>';
-    html += '<div class="settings-row"><label>Обфускация</label><select id="obfsSelect"><option value="video"' + (settings.obfs==='video'?' selected':'') + '>video</option><option value="audio"' + (settings.obfs==='audio'?' selected':'') + '>audio</option></select></div>';
-    html += '<div class="settings-row"><label>TLS fingerprint</label><select id="fingerprintSelect"><option value="firefox"' + (settings.fingerprint==='firefox'?' selected':'') + '>firefox</option><option value="chrome"' + (settings.fingerprint==='chrome'?' selected':'') + '>chrome</option><option value="edge"' + (settings.fingerprint==='edge'?' selected':'') + '>edge</option><option value="safari"' + (settings.fingerprint==='safari'?' selected':'') + '>safari</option><option value="opera"' + (settings.fingerprint==='opera'?' selected':'') + '>opera</option></select></div>';
-    html += '<div class="settings-row"><label>Client IDs</label><input type="text" id="clientIdsInput" value="' + settings.clientIds + '"></div>';
-    html += '<div class="settings-row"><label>VK auth</label><select id="vkAuthSelect"><option value="vkcalls"' + (settings.vkAuthMode==='vkcalls'?' selected':'') + '>vkcalls</option><option value="legacy"' + (settings.vkAuthMode==='legacy'?' selected':'') + '>legacy</option></select></div>';
-    html += '<div class="settings-row"><label>Captcha</label><select id="captchaSelect"><option value="auto"' + (settings.captchaMode==='auto'?' selected':'') + '>auto</option><option value="manual"' + (settings.captchaMode==='manual'?' selected':'') + '>manual</option></select></div>';
-    html += '</div></div></div>';
-    html += '<div class="settings-group"><div class="group-title" onclick="toggleSettingsGroup(this)">Системные<span class="arrow">v</span></div>';
-    html += '<div class="group-body">';
-    html += '<div class="settings-row"><label>Device ID</label><input type="text" id="deviceIdInput" value="' + (settings.deviceId||'') + '" style="flex:1;"><button class="btn-secondary" onclick="document.getElementById(\'deviceIdInput\').value=generateDeviceId();" style="padding:4px 12px;font-size:13px;">Сгенерировать</button></div>';
-    html += '<div class="settings-row"><label class="toggle-label"><input type="checkbox" id="autoConnectCheck"' + (settings.autoConnect?' checked':'') + ' onchange="saveSettings()">Автоподключение при запуске</label></div>';
-    html += '</div></div>';
-    html += '<button class="btn-primary" onclick="saveSettings()" style="width:100%;margin-top:8px;">Сохранить настройки</button>';
-    html += '</div></div>';
-    return html;
-}
-
-function getInfoPageHTML() {
-    return '<div class="info-title">LaLune</div><div class="info-sub">Кроссплатформенный клиент CSQTT</div>' +
-        '<div class="info-block"><div class="label">Разработчики</div><div class="value">CSQTT - amurcanov</div><div class="value" style="margin-top:4px;">LaLune - Endlad7373</div></div>' +
-        '<div class="info-block"><div class="label">Поддержать CSQTT</div><div class="value"><a href="https://yoomoney.ru/to/4100119505530465/100" target="_blank">YooMoney</a></div></div>' +
-        '<div class="info-block"><div class="label">Поддержать LaLune</div><div class="value">2202208453630882 (Сбер)</div></div>' +
-        '<div class="info-block"><div class="label">Версии</div><div class="value">CSQTT 2.0.5 - LaLune 0.4</div></div>';
-}
-
-function getLogsPageHTML() {
-    return '<div class="logs-header"><h3>Журнал</h3><button class="btn-clear" onclick="clearLogs()"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 6h18v2H3z" fill="#E67E22"/><path d="M5 8h14v1H5z" fill="#E67E22"/><path d="M8 3c0-1.5 8-1.5 8 0v2h-2V3.5c0-0.5-6-0.5-6 0V5H8z" fill="#E67E22"/><path d="M6 8l1.5 13h9L18 8H6z" fill="#F39C12" stroke="#E67E22" stroke-width="1"/><path d="M6 8l1.5 13h4V8H6z" fill="#E67E22" opacity="0.3"/><line x1="8" y1="12" x2="16" y2="12" stroke="#E67E22" stroke-width="0.8"/><line x1="8.5" y1="16" x2="15.5" y2="16" stroke="#E67E22" stroke-width="0.8"/></svg></button></div>' +
-        '<div class="logs-container" id="logsContainer"></div>';
-}
-
-function getSelectedConfigName() {
-    if (!selectedConfigId) return 'Нет конфига';
-    for (var i = 0; i < configs.length; i++) {
-        if (configs[i].id === selectedConfigId) return configs[i].name || configs[i].peer;
-    }
-    return 'Нет конфига';
-}
-
-function updateSelectedConfigDisplay() {
-    var el = document.getElementById('selectedConfigName');
-    if (el) el.textContent = getSelectedConfigName();
-}
-
-function toggleConfigDropdown() {
-    var dd = document.getElementById('configDropdown');
-    var h = document.querySelector('.config-selector-header');
-    if (dd) { dd.classList.toggle('open'); if (h) h.classList.toggle('open'); }
-}
-
-function updateConfigList() {
-    var container = document.getElementById('configList');
-    if (!container) return;
-    if (!configs || configs.length === 0) {
-        container.innerHTML = '<div style="padding:16px;text-align:center;color:rgba(255,255,255,0.3);font-size:16px;">Нет сохранённых конфигов</div>';
-        return;
-    }
-    var html = '';
-    for (var i = 0; i < configs.length; i++) {
-        var c = configs[i];
-        var name = c.name || c.peer;
-        html += '<div class="config-item' + (selectedConfigId===c.id?' selected':'') + '" onclick="selectConfig(' + c.id + ')">';
-        html += '<span class="protocol-badge">' + c.protocol + '</span>';
-        html += '<span class="config-name">' + name + '</span>';
-        html += '<button class="delete-btn" onclick="event.stopPropagation();deleteConfig(' + c.id + ')">';
-        html += '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 6h18v2H3z" fill="#E67E22"/><path d="M5 8h14v1H5z" fill="#E67E22"/><path d="M8 3c0-1.5 8-1.5 8 0v2h-2V3.5c0-0.5-6-0.5-6 0V5H8z" fill="#E67E22"/><path d="M6 8l1.5 13h9L18 8H6z" fill="#F39C12" stroke="#E67E22" stroke-width="1"/><path d="M6 8l1.5 13h4V8H6z" fill="#E67E22" opacity="0.3"/><line x1="8" y1="12" x2="16" y2="12" stroke="#E67E22" stroke-width="0.8"/><line x1="8.5" y1="16" x2="15.5" y2="16" stroke="#E67E22" stroke-width="0.8"/></svg>';
-        html += '</button></div>';
-    }
-    container.innerHTML = html;
-}
-
-function selectConfig(id) {
-    selectedConfigId = id;
-    updateConfigList();
-    updateSelectedConfigDisplay();
-    toggleConfigDropdown();
-    updateMoonState();
-}
-
-function updateMoonState() {
-    var btn = document.getElementById('moonBtn');
-    var status = document.getElementById('statusText');
-    if (btn) btn.disabled = !selectedConfigId && !isConnected;
-    if (status) {
-        if (isConnected) status.textContent = 'Подключено';
-        else if (selectedConfigId) {
-            var name = 'Готов к подключению';
-            for (var i = 0; i < configs.length; i++) {
-                if (configs[i].id === selectedConfigId) name = 'Готов к подключению: ' + (configs[i].name || configs[i].peer);
-            }
-            status.textContent = name;
-        } else status.textContent = 'Выберите конфиг';
-    }
-}
-
-function toggleConnect() {
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    if (isConnected) { window.go.main.App.Disconnect(); return; }
-    if (!selectedConfigId) { showToast('Выберите конфиг'); return; }
-    window.go.main.App.Connect(selectedConfigId);
-}
-
-function setConnected(state) {
-    isConnected = state;
-    updateMoonState();
-    var stars = document.getElementById('moonStars');
-    if (stars) stars.classList.toggle('active', state);
-    var btn = document.getElementById('moonBtn');
-    if (btn) btn.disabled = false;
-    var status = document.getElementById('statusText');
-    if (status) status.textContent = state ? 'Подключено' : (selectedConfigId ? 'Готов к подключению' : 'Выберите конфиг');
-}
-
-function showAddModal() {
-    document.getElementById('addModal').classList.add('open');
-    document.getElementById('configInput').value = '';
-}
-
-function closeAddModal() {
-    document.getElementById('addModal').classList.remove('open');
-}
-
-function setImportMethod(method) {
-    importMethod = method;
-    document.querySelectorAll('.import-btn').forEach(function(b) { b.classList.remove('active'); });
-    var btns = document.querySelectorAll('.import-btn');
-    btns[method === 'manual' ? 0 : 1].classList.add('active');
-    if (method === 'clipboard') {
-        navigator.clipboard.readText().then(function(text) {
-            document.getElementById('configInput').value = text;
-        }).catch(function() {
-            showToast('Не удалось прочитать буфер обмена');
-        });
-    }
-}
-
-function saveConfig() {
-    var input = document.getElementById('configInput');
-    var link = input.value.trim();
-    if (!link) { showToast('Введите ссылку'); return; }
-    if (link.indexOf('csqtt://') !== 0) { showToast('Неверный формат ссылки'); return; }
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
+if (typeof window._lalune_loaded === 'undefined') {
+    window._lalune_loaded = true;
     
-    var result = window.go.main.App.SaveConfig(link);
-    closeAddModal();
-    if (result) {
-        showToast('Конфиг сохранён');
-    } else {
-        showToast('Ошибка сохранения');
-    }
-}
+    let currentConfigs = [];
+    let selectedConfigId = null;
+    let isConnected = false;
+    let currentTab = 'connection';
+    let logPollTimer = null;
+    let statusPollTimer = null;
+    let isCheckingUpdate = false;
+    let isUpdating = false;
 
-function deleteConfig(id) {
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    if (!confirm('Удалить конфиг?')) return;
-    window.go.main.App.DeleteConfig(id);
-}
-
-function refreshConfigs(json) {
-    try {
-        configs = JSON.parse(json);
-        updateConfigList();
-        updateSelectedConfigDisplay();
-        updateMoonState();
-    } catch(e) {
-        console.error('refreshConfigs error:', e);
-    }
-}
-
-function refreshSettings(json) {
-    try {
-        settings = JSON.parse(json);
-        var deviceInput = document.getElementById('deviceIdInput');
-        if (deviceInput) deviceInput.value = settings.deviceId || '';
-    } catch(e) {
-        console.error('refreshSettings error:', e);
-    }
-}
-
-function appendLog(line) {
-    var container = document.getElementById('logsContainer');
-    if (!container) { if (!window._logBuffer) window._logBuffer = ''; window._logBuffer += line + '\n'; return; }
-    container.textContent += line + '\n';
-    container.scrollTop = container.scrollHeight;
-}
-
-function clearLogs() {
-    window._logBuffer = '';
-    var container = document.getElementById('logsContainer');
-    if (container) container.textContent = '';
-    if (window.go && window.go.main && window.go.main.App) window.go.main.App.ClearLogs();
-}
-
-function showToast(msg) {
-    var el = document.getElementById('toast');
-    if (!el) return;
-    el.textContent = msg;
-    el.classList.add('show');
-    clearTimeout(el._timeout);
-    el._timeout = setTimeout(function() { el.classList.remove('show'); }, 3000);
-}
-
-function toggleSettingsGroup(el) {
-    var body = el.parentElement.querySelector('.group-body');
-    if (body) { body.classList.toggle('open'); el.classList.toggle('open'); }
-}
-
-function loadSettings() {
-    var fields = {
-        peerInput: settings.peer,
-        passwordInput: '',
-        hashesInput: settings.vkHashes,
-        workersSlider: settings.workersPerHash,
-        workersInput: settings.workersPerHash,
-        turnHostInput: settings.turnHost,
-        turnPortInput: settings.turnPort,
-        obfsSelect: settings.obfs,
-        fingerprintSelect: settings.fingerprint,
-        clientIdsInput: settings.clientIds,
-        vkAuthSelect: settings.vkAuthMode,
-        captchaSelect: settings.captchaMode,
-        deviceIdInput: settings.deviceId || ''
+    let currentSettings = {
+        peer: '',
+        vkHashes: '',
+        password: '',
+        workersPerHash: 9
     };
-    for (var id in fields) {
-        var el = document.getElementById(id);
-        if (el) {
-            if (el.tagName === 'SELECT') {
-                for (var i = 0; i < el.options.length; i++) {
-                    if (el.options[i].value === fields[id]) { el.options[i].selected = true; break; }
+
+    function getApi() {
+        if (window.go && window.go.main && window.go.main.App) {
+            return window.go.main.App;
+        }
+        return null;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('LaLune Desktop UI загружен');
+        createStars();
+        loadConfigs();
+        startPolling();
+        switchTab('connection');
+    });
+
+    function startPolling() {
+        statusPollTimer = setInterval(function() {
+            const api = getApi();
+            if (!api) return;
+            api.GetStatusJson().then(function(result) {
+                try {
+                    const status = JSON.parse(result);
+                    if (status.connected !== isConnected) {
+                        setConnected(status.connected);
+                    }
+                } catch(e) {}
+            }).catch(function() {});
+        }, 2000);
+
+        logPollTimer = setInterval(function() {
+            if (currentTab === 'logs') {
+                loadLogs();
+            }
+        }, 2000);
+    }
+
+    function createStars() {
+        const container = document.getElementById('stars');
+        if (!container) return;
+        for (let i = 0; i < 150; i++) {
+            const star = document.createElement('div');
+            star.className = 'star';
+            const size = Math.random() * 3 + 1;
+            star.style.width = size + 'px';
+            star.style.height = size + 'px';
+            star.style.left = Math.random() * 100 + '%';
+            star.style.top = Math.random() * 100 + '%';
+            star.style.opacity = Math.random() * 0.8 + 0.2;
+            star.style.animationDelay = Math.random() * 3 + 's';
+            container.appendChild(star);
+        }
+    }
+
+    function loadConfigs() {
+        const api = getApi();
+        if (!api) {
+            setTimeout(loadConfigs, 1000);
+            return;
+        }
+        
+        api.GetConfigsJson().then(function(result) {
+            try {
+                currentConfigs = JSON.parse(result);
+                renderConfigs();
+            } catch(e) {
+                currentConfigs = [];
+                renderConfigs();
+            }
+        }).catch(function() {
+            currentConfigs = [];
+            renderConfigs();
+        });
+    }
+
+    function renderConfigs() {
+        const dropdown = document.getElementById('configDropdown');
+        if (!dropdown) return;
+        
+        dropdown.innerHTML = '';
+        
+        if (currentConfigs.length === 0) {
+            dropdown.innerHTML = '<div class="config-item" style="justify-content:center;color:rgba(255,255,255,0.5);">Нет конфигов. Нажмите + чтобы добавить</div>';
+            return;
+        }
+        
+        currentConfigs.forEach(function(config) {
+            const item = document.createElement('div');
+            item.className = 'config-item';
+            if (selectedConfigId === config.id) item.classList.add('selected');
+            
+            const badge = document.createElement('span');
+            badge.className = 'protocol-badge';
+            badge.textContent = config.protocol || 'CSQTT';
+            item.appendChild(badge);
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'config-name';
+            nameSpan.textContent = config.name || config.peer || 'Config';
+            item.appendChild(nameSpan);
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+            deleteBtn.onclick = function(e) {
+                e.stopPropagation();
+                deleteConfig(config.id);
+            };
+            item.appendChild(deleteBtn);
+            
+            item.onclick = function() {
+                selectConfig(config.id);
+            };
+            
+            dropdown.appendChild(item);
+        });
+        
+        updateSelectedConfigName();
+    }
+
+    function updateSelectedConfigName() {
+        const nameSpan = document.getElementById('selectedConfigName');
+        if (!nameSpan) return;
+        if (selectedConfigId === null) {
+            nameSpan.textContent = 'Выберите конфиг';
+            return;
+        }
+        const config = currentConfigs.find(c => c.id === selectedConfigId);
+        nameSpan.textContent = config ? (config.name || config.peer || 'Config') : 'Выберите конфиг';
+    }
+
+    function toggleConfigDropdown() {
+        const dropdown = document.getElementById('configDropdown');
+        const header = document.querySelector('.config-selector-header');
+        if (!dropdown || !header) return;
+        dropdown.classList.toggle('open');
+        header.classList.toggle('open');
+    }
+
+    function selectConfig(id) {
+        selectedConfigId = id;
+        
+        const config = currentConfigs.find(c => c.id === id);
+        if (!config) return;
+
+        currentSettings.peer = config.peer || '';
+        currentSettings.vkHashes = config.hashes || '';
+        currentSettings.password = config.password || '';
+
+        updateSelectedConfigName();
+        const dropdown = document.getElementById('configDropdown');
+        const header = document.querySelector('.config-selector-header');
+        if (dropdown) dropdown.classList.remove('open');
+        if (header) header.classList.remove('open');
+        
+        document.querySelectorAll('.config-item').forEach(function(item) {
+            item.classList.remove('selected');
+        });
+        
+        const statusText = document.getElementById('statusText');
+        if (statusText) statusText.textContent = 'Готов к подключению';
+
+        if (currentTab === 'settings') {
+            renderSettingsTab();
+        }
+    }
+
+    function deleteConfig(id) {
+        if (!confirm('Удалить этот конфиг?')) return;
+        const api = getApi();
+        if (!api) return;
+        
+        api.DeleteConfig(id).then(function(result) {
+            if (result) {
+                showToast('Конфиг удален');
+                if (selectedConfigId === id) {
+                    selectedConfigId = null;
+                    currentSettings = {
+                        peer: '',
+                        vkHashes: '',
+                        password: '',
+                        workersPerHash: 9
+                    };
                 }
+                loadConfigs();
             } else {
-                el.value = fields[id];
+                showToast('Ошибка удаления');
+            }
+        }).catch(function() {
+            showToast('Ошибка удаления');
+        });
+    }
+
+    function saveConfig() {
+        const input = document.getElementById('configInput');
+        if (!input || !input.value.trim()) {
+            showToast('Введите ссылку');
+            return;
+        }
+        const link = input.value.trim();
+        const api = getApi();
+        if (!api) return;
+        
+        api.SaveConfig(link).then(function(result) {
+            if (result) {
+                showToast('Конфиг сохранен');
+                closeAddModal();
+                loadConfigs();
+            } else {
+                showToast('Ошибка сохранения');
+            }
+        }).catch(function() {
+            showToast('Ошибка сохранения');
+        });
+    }
+
+    function toggleConnect() {
+        if (isConnected) {
+            disconnect();
+        } else {
+            connectWithUpdateCheck();
+        }
+    }
+
+    function connectWithUpdateCheck() {
+        if (isCheckingUpdate || isUpdating) return;
+        
+        const api = getApi();
+        if (!api) return;
+        
+        isCheckingUpdate = true;
+        showToast('Проверка обновлений...');
+        
+        api.CheckUpdate().then(function(result) {
+            isCheckingUpdate = false;
+            try {
+                const data = JSON.parse(result);
+                if (data.update) {
+                    showUpdateBanner(data.version);
+                    showToast('Доступна новая версия!');
+                } else {
+                    connect();
+                }
+            } catch(e) {
+                connect();
+            }
+        }).catch(function() {
+            isCheckingUpdate = false;
+            connect();
+        });
+    }
+
+    function connect() {
+        const api = getApi();
+        if (!api) return;
+        
+        const settings = {
+            peer: currentSettings.peer,
+            vkHashes: currentSettings.vkHashes,
+            workersPerHash: currentSettings.workersPerHash,
+            obfs: document.getElementById('settingObfs')?.value || 'video',
+            fingerprint: document.getElementById('settingFingerprint')?.value || 'firefox',
+            clientIds: document.getElementById('settingClientIds')?.value || '8202606,6287487',
+            vkAuthMode: 'vkcalls',
+            captchaMode: 'auto',
+            deviceId: '',
+            autoConnect: false,
+            password: currentSettings.password
+        };
+
+        if (!settings.peer || !settings.password) {
+            showToast('Выберите конфиг или заполните настройки');
+            return;
+        }
+
+        api.SaveSettings(JSON.stringify(settings)).then(function(saved) {
+            if (saved && selectedConfigId !== null) {
+                api.Connect(selectedConfigId).then(function(result) {
+                    if (result) {
+                        showToast('Подключение...');
+                    } else {
+                        showToast('Ошибка подключения');
+                    }
+                }).catch(function() {
+                    showToast('Ошибка подключения');
+                });
+            } else if (!saved) {
+                showToast('Ошибка сохранения настроек');
+            } else {
+                showToast('Выберите конфиг');
+            }
+        }).catch(function() {
+            showToast('Ошибка сохранения настроек');
+        });
+    }
+
+    function disconnect() {
+        const api = getApi();
+        if (!api) return;
+        
+        api.Disconnect().then(function(result) {
+            if (result) {
+                showToast('Отключено');
+            }
+        }).catch(function() {});
+    }
+
+    function setConnected(connected) {
+        isConnected = connected;
+        const statusText = document.getElementById('statusText');
+        const moonBtn = document.getElementById('moonBtn');
+        const moonStars = document.getElementById('moonStars');
+        if (statusText) {
+            statusText.textContent = connected ? 'Подключено' : 'Отключено';
+        }
+        if (moonBtn) {
+            moonBtn.disabled = false;
+            moonBtn.style.opacity = '1';
+        }
+        if (moonStars) {
+            if (connected) {
+                moonStars.classList.add('active');
+            } else {
+                moonStars.classList.remove('active');
             }
         }
     }
-    var autoCheck = document.getElementById('autoConnectCheck');
-    if (autoCheck) autoCheck.checked = settings.autoConnect || false;
-}
 
-function saveSettings() {
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    var peer = document.getElementById('peerInput');
-    var password = document.getElementById('passwordInput');
-    var hashes = document.getElementById('hashesInput');
-    var workers = document.getElementById('workersInput');
-    var turnHost = document.getElementById('turnHostInput');
-    var turnPort = document.getElementById('turnPortInput');
-    var obfs = document.getElementById('obfsSelect');
-    var fingerprint = document.getElementById('fingerprintSelect');
-    var clientIds = document.getElementById('clientIdsInput');
-    var vkAuth = document.getElementById('vkAuthSelect');
-    var captcha = document.getElementById('captchaSelect');
-    var deviceId = document.getElementById('deviceIdInput');
-    var autoConnect = document.getElementById('autoConnectCheck');
-    
-    settings.peer = peer ? peer.value : '';
-    settings.vkHashes = hashes ? hashes.value : '';
-    settings.turnHost = turnHost ? turnHost.value : '';
-    settings.turnPort = turnPort ? turnPort.value : '';
-    settings.workersPerHash = workers ? parseInt(workers.value) || 9 : 9;
-    settings.obfs = obfs ? obfs.value : 'video';
-    settings.fingerprint = fingerprint ? fingerprint.value : 'firefox';
-    settings.clientIds = clientIds ? clientIds.value : '8202606,6287487';
-    settings.vkAuthMode = vkAuth ? vkAuth.value : 'vkcalls';
-    settings.captchaMode = captcha ? captcha.value : 'auto';
-    var deviceValue = deviceId ? deviceId.value.trim() : '';
-    if (deviceValue && deviceValue !== 'auto') {
-        settings.deviceId = deviceValue;
+    function loadLogs() {
+        const api = getApi();
+        if (!api) return;
+        
+        api.GetLogsJson().then(function(result) {
+            try {
+                const logs = JSON.parse(result);
+                renderLogs(logs);
+            } catch(e) {}
+        }).catch(function() {});
     }
-    settings.autoConnect = autoConnect ? autoConnect.checked : false;
-    
-    window.go.main.App.SaveSettings(JSON.stringify(settings));
-    showToast('Настройки сохранены');
-}
 
-function updateWorkers(val) {
-    var input = document.getElementById('workersInput');
-    if (input) input.value = val;
-    settings.workersPerHash = parseInt(val);
-}
-
-function updateWorkersFromInput(val) {
-    var v = parseInt(val);
-    if (isNaN(v)) v = 9;
-    v = Math.max(9, Math.min(27, v));
-    v = Math.round(v/9)*9;
-    if (v < 9) v = 9;
-    var slider = document.getElementById('workersSlider');
-    if (slider) slider.value = v;
-    var input = document.getElementById('workersInput');
-    if (input) input.value = v;
-    settings.workersPerHash = v;
-}
-
-function generateDeviceId() {
-    var id = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function() {
-        return Math.floor(Math.random()*16).toString(16);
-    });
-    var input = document.getElementById('deviceIdInput');
-    if (input) input.value = id;
-    settings.deviceId = id;
-}
-
-function showUpdateBanner(version) {
-    var banner = document.getElementById('updateBanner');
-    if (!banner) return;
-    banner.innerHTML = '<span>Доступна новая версия ядра: ' + version + '</span><button onclick="updateCore()">Обновить</button>';
-    banner.classList.add('show');
-}
-
-function updateCore() {
-    if (!window.go || !window.go.main || !window.go.main.App) { showToast('API не подключен'); return; }
-    if (isConnected) { showToast('Сначала отключитесь'); return; }
-    window.go.main.App.UpdateCore();
-    var banner = document.getElementById('updateBanner');
-    if (banner) banner.classList.remove('show');
-    showToast('Обновление запущено');
-}
-
-function initApp() {
-    generateStars();
-    switchTab('connection');
-    
-    if (window.go && window.go.main && window.go.main.App) {
-        var app = window.go.main.App;
-        
-        app.SetLogCallback(function(message) {
-            appendLog(message);
-        });
-        
-        app.SetStatusCallback(function(connected) {
-            setConnected(connected);
-        });
-        
-        app.SetConfigsCallback(function(json) {
-            refreshConfigs(json);
-        });
-        
-        app.SetUpdateCallback(function(version) {
-            showUpdateBanner(version);
-        });
-        
-        var configsJson = app.GetConfigsJson();
-        refreshConfigs(configsJson);
-        
-        var settingsJson = app.GetSettingsJson();
-        refreshSettings(settingsJson);
-    }
-    
-    document.addEventListener('click', function(e) {
-        var sel = document.getElementById('configSelector');
-        if (sel && !sel.contains(e.target)) {
-            var dd = document.getElementById('configDropdown');
-            var h = document.querySelector('.config-selector-header');
-            if (dd) dd.classList.remove('open');
-            if (h) h.classList.remove('open');
+    function renderLogs(logs) {
+        const content = document.getElementById('logsContent');
+        if (!content) return;
+        if (!logs || logs.length === 0) {
+            content.textContent = 'Логи пусты';
+            return;
         }
-    });
-    
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') closeAddModal();
-    });
-}
+        content.textContent = logs.join('\n');
+        content.scrollTop = content.scrollHeight;
+    }
 
-document.addEventListener('DOMContentLoaded', function() {
-    initApp();
-});
+    function clearLogs() {
+        const api = getApi();
+        if (!api) return;
+        
+        api.ClearLogs().then(function(result) {
+            if (result) {
+                const content = document.getElementById('logsContent');
+                if (content) content.textContent = 'Логи очищены';
+                showToast('Логи очищены');
+            }
+        }).catch(function() {});
+    }
+
+    function switchTab(tab) {
+        currentTab = tab;
+        document.querySelectorAll('.nav-btn').forEach(function(btn) {
+            btn.classList.remove('active');
+            if (btn.dataset.tab === tab) {
+                btn.classList.add('active');
+            }
+        });
+        
+        const container = document.getElementById('content');
+        if (!container) return;
+        
+        container.innerHTML = '';
+        container.style.justifyContent = 'center';
+        container.style.overflowY = 'auto';
+        
+        if (tab === 'connection') {
+            renderConnectionTab(container);
+        } else if (tab === 'logs') {
+            renderLogsTab(container);
+        } else if (tab === 'settings') {
+            renderSettingsTab(container);
+        } else if (tab === 'info') {
+            renderInfoTab(container);
+        }
+    }
+
+    function renderConnectionTab(container) {
+        container.style.justifyContent = 'center';
+        container.style.overflowY = 'hidden';
+        
+        const moonContainer = document.createElement('div');
+        moonContainer.className = 'moon-container';
+        moonContainer.id = 'moonContainer';
+        moonContainer.innerHTML = `
+            <button class="moon-btn" id="moonBtn" onclick="toggleConnect()">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+                    <circle cx="50" cy="50" r="48" fill="#1a1a3e" stroke="#4a6cf7" stroke-width="2"/>
+                    <path d="M 60 18 A 28 28 0 1 0 82 58 A 34 34 0 1 1 60 18 Z" fill="#f7e84e" stroke="#d4c42a" stroke-width="1.5"/>
+                    <circle cx="28" cy="30" r="2" fill="#4a6cf7" opacity="0.35"/>
+                    <circle cx="74" cy="26" r="1.5" fill="#4a6cf7" opacity="0.25"/>
+                    <circle cx="22" cy="70" r="1.8" fill="#4a6cf7" opacity="0.3"/>
+                    <circle cx="78" cy="68" r="1.2" fill="#4a6cf7" opacity="0.2"/>
+                    <circle cx="34" cy="76" r="1.5" fill="#4a6cf7" opacity="0.25"/>
+                </svg>
+            </button>
+            <div class="moon-stars" id="moonStars">
+                <div class="moon-star" style="left:15%;top:10%;width:6px;height:6px;"></div>
+                <div class="moon-star" style="left:75%;top:25%;width:4px;height:4px;animation-delay:0.3s;"></div>
+                <div class="moon-star" style="left:20%;top:60%;width:5px;height:5px;animation-delay:0.5s;"></div>
+                <div class="moon-star" style="left:85%;top:65%;width:3px;height:3px;animation-delay:0.2s;"></div>
+                <div class="moon-star" style="left:50%;top:80%;width:7px;height:7px;animation-delay:0.6s;"></div>
+                <div class="moon-star" style="left:65%;top:5%;width:5px;height:5px;animation-delay:0.4s;"></div>
+            </div>
+        `;
+        container.appendChild(moonContainer);
+        
+        const statusText = document.createElement('div');
+        statusText.className = 'status-text';
+        statusText.id = 'statusText';
+        statusText.textContent = isConnected ? 'Подключено' : 'Отключено';
+        container.appendChild(statusText);
+        
+        const configSelector = document.createElement('div');
+        configSelector.className = 'config-selector';
+        configSelector.innerHTML = `
+            <div class="config-selector-header" onclick="toggleConfigDropdown()">
+                <span id="selectedConfigName">Выберите конфиг</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+            </div>
+            <div class="config-dropdown" id="configDropdown"></div>
+        `;
+        container.appendChild(configSelector);
+        
+        renderConfigs();
+        setConnected(isConnected);
+    }
+
+    function renderLogsTab(container) {
+        container.style.justifyContent = 'flex-start';
+        container.style.overflowY = 'hidden';
+        
+        const logsContainer = document.createElement('div');
+        logsContainer.id = 'logsContainer';
+        logsContainer.className = 'logs-container';
+        logsContainer.style.display = 'block';
+        logsContainer.style.width = '100%';
+        logsContainer.style.maxWidth = '600px';
+        logsContainer.innerHTML = `
+            <div class="logs-header">
+                <h3>Логи</h3>
+                <button class="btn-clear" onclick="clearLogs()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                </button>
+            </div>
+            <div id="logsContent">Загрузка логов...</div>
+        `;
+        container.appendChild(logsContainer);
+        
+        loadLogs();
+    }
+
+    function renderSettingsTab(container) {
+        container.style.justifyContent = 'flex-start';
+        container.style.overflowY = 'auto';
+        
+        const settingsBlock = document.createElement('div');
+        settingsBlock.id = 'settingsBlock';
+        settingsBlock.style.width = '100%';
+        settingsBlock.style.maxWidth = '500px';
+        settingsBlock.innerHTML = `
+            <div class="settings-scroll">
+                <div class="settings-group">
+                    <div class="group-title open" onclick="toggleSettingsGroup(this)">
+                        <span>Основные настройки</span>
+                        <span class="arrow">▼</span>
+                    </div>
+                    <div class="group-body open">
+                        <div class="settings-row">
+                            <label>Peer</label>
+                            <input type="text" id="settingPeer" placeholder="host:port" value="${currentSettings.peer || ''}">
+                        </div>
+                        <div class="settings-row">
+                            <label>VK Hashes</label>
+                            <input type="text" id="settingVkHashes" placeholder="hash1,hash2,hash3" value="${currentSettings.vkHashes || ''}">
+                        </div>
+                        <div class="settings-row">
+                            <label>Password</label>
+                            <input type="password" id="settingPassword" placeholder="password" value="${currentSettings.password || ''}">
+                        </div>
+                        <div class="settings-row">
+                            <label>Workers on hash</label>
+                            <input type="number" id="settingWorkers" value="${currentSettings.workersPerHash || 9}" min="9" max="27">
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-group">
+                    <div class="group-title" onclick="toggleSettingsGroup(this)">
+                        <span>Продвинутые настройки</span>
+                        <span class="arrow">▼</span>
+                    </div>
+                    <div class="group-body">
+                        <div class="settings-row">
+                            <label>Obfs</label>
+                            <select id="settingObfs">
+                                <option value="video">video</option>
+                                <option value="audio">audio</option>
+                                <option value="text">text</option>
+                            </select>
+                        </div>
+                        <div class="settings-row">
+                            <label>Fingerprint</label>
+                            <select id="settingFingerprint">
+                                <option value="firefox">firefox</option>
+                                <option value="chrome">chrome</option>
+                                <option value="edge">edge</option>
+                            </select>
+                        </div>
+                        <div class="settings-row">
+                            <label>Client IDs</label>
+                            <input type="text" id="settingClientIds" value="8202606,6287487">
+                        </div>
+                        <div class="settings-row">
+                            <label>Turn Host</label>
+                            <input type="text" id="settingTurnHost" placeholder="turn.example.com">
+                        </div>
+                        <div class="settings-row">
+                            <label>Turn Port</label>
+                            <input type="text" id="settingTurnPort" placeholder="3478">
+                        </div>
+                        <div class="settings-row">
+                            <label>Auto Connect</label>
+                            <div class="toggle-label">
+                                <input type="checkbox" id="settingAutoConnect">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn-primary" style="width:100%;margin-top:10px;" onclick="saveSettings()">Сохранить настройки</button>
+            </div>
+        `;
+        container.appendChild(settingsBlock);
+        
+        const api = getApi();
+        if (!api) return;
+        
+        api.GetSettingsJson().then(function(result) {
+            try {
+                const settings = JSON.parse(result);
+                document.getElementById('settingObfs').value = settings.obfs || 'video';
+                document.getElementById('settingFingerprint').value = settings.fingerprint || 'firefox';
+                document.getElementById('settingClientIds').value = settings.clientIds || '8202606,6287487';
+                document.getElementById('settingTurnHost').value = settings.turnHost || '';
+                document.getElementById('settingTurnPort').value = settings.turnPort || '';
+                document.getElementById('settingAutoConnect').checked = settings.autoConnect || false;
+                if (settings.workersPerHash) {
+                    currentSettings.workersPerHash = settings.workersPerHash;
+                    document.getElementById('settingWorkers').value = settings.workersPerHash;
+                }
+            } catch(e) {}
+        }).catch(function() {});
+    }
+
+    function saveSettings() {
+        currentSettings.peer = document.getElementById('settingPeer')?.value || '';
+        currentSettings.vkHashes = document.getElementById('settingVkHashes')?.value || '';
+        currentSettings.password = document.getElementById('settingPassword')?.value || '';
+        currentSettings.workersPerHash = parseInt(document.getElementById('settingWorkers')?.value) || 9;
+
+        const settings = {
+            peer: currentSettings.peer,
+            vkHashes: currentSettings.vkHashes,
+            turnHost: document.getElementById('settingTurnHost')?.value || '',
+            turnPort: document.getElementById('settingTurnPort')?.value || '',
+            workersPerHash: currentSettings.workersPerHash,
+            obfs: document.getElementById('settingObfs')?.value || 'video',
+            fingerprint: document.getElementById('settingFingerprint')?.value || 'firefox',
+            clientIds: document.getElementById('settingClientIds')?.value || '8202606,6287487',
+            vkAuthMode: 'vkcalls',
+            captchaMode: 'auto',
+            deviceId: '',
+            autoConnect: document.getElementById('settingAutoConnect')?.checked || false
+        };
+
+        const api = getApi();
+        if (!api) return;
+        
+        api.SaveSettings(JSON.stringify(settings)).then(function(result) {
+            if (result) {
+                showToast('Настройки сохранены');
+            } else {
+                showToast('Ошибка сохранения');
+            }
+        }).catch(function() {
+            showToast('Ошибка сохранения');
+        });
+    }
+
+    function renderInfoTab(container) {
+        container.style.justifyContent = 'flex-start';
+        container.style.overflowY = 'auto';
+        container.style.paddingTop = '20px';
+        
+        const infoBlock = document.createElement('div');
+        infoBlock.id = 'infoBlock';
+        infoBlock.style.textAlign = 'center';
+        infoBlock.style.width = '100%';
+        infoBlock.style.maxWidth = '450px';
+        infoBlock.innerHTML = `
+            <div class="info-title">🌙 LaLune</div>
+            <div class="info-sub">Desktop Client v0.5.0</div>
+            
+            <div class="info-block">
+                <div class="label">Версия ядра</div>
+                <div class="value">2.0.0</div>
+            </div>
+            
+            <div class="info-block">
+                <div class="label">Авторы</div>
+                <div class="value" style="line-height:1.8;">
+                    <div>CSQTT — <span style="color:#4a6cf7;">amurcanov</span></div>
+                    <div>LaLune — <span style="color:#4a6cf7;">@Endlad7373</span></div>
+                </div>
+            </div>
+            
+            <div class="info-block" style="text-align:left;">
+                <div class="label" style="margin-bottom:8px;">Поддержать LaLune</div>
+                <div class="value" style="line-height:1.6;font-size:14px;">
+                    <div>💳 Сбер: <span style="color:#4a6cf7;">2202208453630882</span></div>
+                    <div>🎨 NFT: <span style="color:#4a6cf7;">в Telegram @Endlad7373</span></div>
+                </div>
+            </div>
+            
+            <div class="info-block" style="text-align:left;">
+                <div class="label" style="margin-bottom:8px;">Поддержать CSQTT</div>
+                <div class="value" style="line-height:1.8;font-size:14px;">
+                    <div>💳 ЮMoney: <a href="https://yoomoney.ru/to/4100119505530465/100" target="_blank" style="color:#4a6cf7;">yoomoney.ru/to/4100119505530465/100</a></div>
+                    <div>💎 GRAM (TON):<br><span style="color:#4a6cf7;word-break:break-all;">UQCsHSj_Bev5AG3vCz-84TQC7BSwjNdNdoJp9M2gWUEmbyD7</span></div>
+                    <div>💎 USDT (TON):<br><span style="color:#4a6cf7;word-break:break-all;">UQCsHSj_Bev5AG3vCz-84TQC7BSwjNdNdoJp9M2gWUEmbyD7</span></div>
+                    <div>💎 USDT (TRC20):<br><span style="color:#4a6cf7;word-break:break-all;">TD1oiQiHmjqsRDPxfUjUbSWxEmcr4k7Lob</span></div>
+                </div>
+            </div>
+        `;
+        container.appendChild(infoBlock);
+    }
+
+    function toggleSettingsGroup(el) {
+        el.classList.toggle('open');
+        const body = el.parentElement.querySelector('.group-body');
+        if (body) {
+            body.classList.toggle('open');
+        }
+    }
+
+    function showAddModal() {
+        document.getElementById('addModal').classList.add('open');
+        document.getElementById('configInput').value = '';
+    }
+
+    function closeAddModal() {
+        document.getElementById('addModal').classList.remove('open');
+    }
+
+    function setImportMethod(method) {
+        document.querySelectorAll('.import-btn').forEach(function(btn) {
+            btn.classList.remove('active');
+        });
+        event.target.classList.add('active');
+        if (method === 'clipboard') {
+            if (navigator.clipboard) {
+                navigator.clipboard.readText().then(function(text) {
+                    document.getElementById('configInput').value = text;
+                    showToast('Вставлено из буфера обмена');
+                }).catch(function() {
+                    showToast('Нет доступа к буферу обмена');
+                });
+            } else {
+                showToast('Буфер обмена не поддерживается');
+            }
+        }
+    }
+
+    function showToast(message) {
+        const toast = document.getElementById('toast');
+        if (!toast) return;
+        toast.textContent = message;
+        toast.classList.add('show');
+        clearTimeout(toast._timeout);
+        toast._timeout = setTimeout(function() {
+            toast.classList.remove('show');
+        }, 3000);
+    }
+
+    function showUpdateBanner(version) {
+        const banner = document.getElementById('updateBanner');
+        if (!banner) return;
+        banner.innerHTML = '<span>Доступна новая версия: ' + version + '</span><button onclick="updateCoreFromBanner()">Обновить</button>';
+        banner.classList.add('show');
+    }
+
+    function updateCoreFromBanner() {
+        if (isUpdating) return;
+        isUpdating = true;
+        
+        const api = getApi();
+        if (!api) {
+            isUpdating = false;
+            return;
+        }
+        
+        showToast('Обновление...');
+        
+        api.UpdateCoreAndWait().then(function(result) {
+            isUpdating = false;
+            if (result) {
+                document.getElementById('updateBanner').classList.remove('show');
+                showToast('Обновление успешно! Можно подключаться');
+            } else {
+                showToast('Ошибка обновления');
+            }
+        }).catch(function() {
+            isUpdating = false;
+            showToast('Ошибка обновления');
+        });
+    }
+
+    function updateCore() {
+        if (isUpdating) return;
+        isUpdating = true;
+        
+        const api = getApi();
+        if (!api) {
+            isUpdating = false;
+            return;
+        }
+        
+        showToast('Обновление...');
+        
+        api.UpdateCoreAndWait().then(function(result) {
+            isUpdating = false;
+            if (result) {
+                showToast('Обновление успешно!');
+            } else {
+                showToast('Ошибка обновления');
+            }
+        }).catch(function() {
+            isUpdating = false;
+            showToast('Ошибка обновления');
+        });
+    }
+
+    // Экспорт
+    window.loadConfigs = loadConfigs;
+    window.renderConfigs = renderConfigs;
+    window.selectConfig = selectConfig;
+    window.deleteConfig = deleteConfig;
+    window.saveConfig = saveConfig;
+    window.toggleConnect = toggleConnect;
+    window.connect = connect;
+    window.connectWithUpdateCheck = connectWithUpdateCheck;
+    window.disconnect = disconnect;
+    window.setConnected = setConnected;
+    window.loadLogs = loadLogs;
+    window.clearLogs = clearLogs;
+    window.switchTab = switchTab;
+    window.saveSettings = saveSettings;
+    window.showAddModal = showAddModal;
+    window.closeAddModal = closeAddModal;
+    window.setImportMethod = setImportMethod;
+    window.showToast = showToast;
+    window.showUpdateBanner = showUpdateBanner;
+    window.updateCore = updateCore;
+    window.updateCoreFromBanner = updateCoreFromBanner;
+    window.toggleConfigDropdown = toggleConfigDropdown;
+    window.toggleSettingsGroup = toggleSettingsGroup;
+
+    console.log('LaLune Desktop API загружен');
+}

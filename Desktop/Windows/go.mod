@@ -4,9 +4,7 @@ go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
 	github.com/wailsapp/wails/v2 v2.14.0
-	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	modernc.org/sqlite v1.29.5
 )
 

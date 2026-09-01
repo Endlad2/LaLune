@@ -6,7 +6,9 @@
   "frontend:build": "",
   "frontend:dev:watcher": "",
   "frontend:dev:serverUrl": "",
+  "icon": "icon.png",
   "author": {
-    "name": "Endlad7373"
+    "name": "Endlad7373",
+    "email": "vladut7373@gmail.com"
   }
 }
