@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +42,8 @@ func (t *LinuxTun) Setup() error {
 	return nil
 }
 
-func (t *LinuxTun) Start(udpConn interface{ Call() }, running *bool) {
+func (t *LinuxTun) Start(udpConn net.Conn, running *bool) {
+	// Не используется — ядро само работает с TUN
 }
 
 func (t *LinuxTun) Stop() {
