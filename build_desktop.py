@@ -22,7 +22,7 @@ class ProgressBar:
         percent = (self.current_step / self.total_steps) * 100
         bar_width = 50
         filled = int(bar_width * self.current_step / self.total_steps)
-        bar = "█" * filled + "░" * (bar_width - filled)
+        bar = "#" * filled + "-" * (bar_width - filled)
 
         elapsed = time.time() - self.start_time
         sys.stdout.write(f"\r{self.desc}: [{bar}] {percent:.1f}% ({self.current_step}/{self.total_steps}) {step_desc}")
