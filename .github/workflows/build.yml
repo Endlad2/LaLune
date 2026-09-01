@@ -133,7 +133,6 @@ jobs:
   create-release:
     name: Create Release
     needs: [build-desktop-linux, build-desktop-windows, build-openwrt-armv7, build-openwrt-arm64]
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -149,9 +148,15 @@ jobs:
           zip -r LaLune-OpenWRT-armv7.zip LaLune-OpenWRT-armv7/
           zip -r LaLune-OpenWRT-arm64.zip LaLune-OpenWRT-arm64/
 
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.date.outputs.date }}
+          name: Release ${{ steps.date.outputs.date }}
           files: |
             release/*.zip
           draft: false
