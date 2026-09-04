@@ -1,4 +1,4 @@
-name: Build iOS
+name: iOS сборка
 
 on:
   push:
@@ -6,44 +6,69 @@ on:
       - main
       - release
   workflow_dispatch:
+    inputs:
+      тип_сборки:
+        description: 'Тип сборки'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Debug
+          - Release
 
 jobs:
   build-ios:
-    name: Build iOS
+    name: Сборка iOS приложения
     runs-on: macos-latest
+    
     steps:
-      - name: Checkout
+      - name: Клонирование репозитория
         uses: actions/checkout@v4
 
-      - name: Setup Xcode
+      - name: Установка Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '15.4'
+          xcode-version: '26.0.1'
 
-      - name: Install XcodeGen
+      - name: Установка XcodeGen
         run: |
           brew install xcodegen
-
-      - name: Generate Xcode Project
+          
+      - name: Генерация Xcode проекта
         run: |
           cd Mobile/IOS
           xcodegen generate
-
-      - name: Build IPA
+          
+      - name: Сборка .app бандла
         run: |
           cd Mobile/IOS
+          
+          CONFIG="${{ github.event.inputs.тип_сборки || 'Release' }}"
+          
           xcodebuild \
             -project LaLune.xcodeproj \
             -scheme LaLune \
-            -configuration Release \
+            -configuration $CONFIG \
             -destination 'generic/platform=iOS' \
-            -archivePath build/LaLune.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
-            archive
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            build
 
-      - name: Upload IPA
+      - name: Создание неподписанного .ipa
+        run: |
+          cd Mobile/IOS
+          
+          mkdir -p build/Payload
+          
+          cp -R "build/Release-iphoneos/LaLune.app" "build/Payload/"
+          
+          cd build
+          zip -r LaLune.ipa Payload/
+
+      - name: Загрузка .ipa артефакта
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-iOS
-          path: Mobile/IOS/build/LaLune.xcarchive/Products/Applications/*.app
+          name: LaLune-iOS-${{ github.sha }}
+          path: Mobile/IOS/build/LaLune.ipa
           if-no-files-found: error
