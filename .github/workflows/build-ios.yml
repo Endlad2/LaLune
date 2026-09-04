@@ -1,0 +1,49 @@
+name: Build iOS
+
+on:
+  push:
+    branches:
+      - main
+      - release
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: |
+          cd Mobile/IOS
+          xcodegen generate
+
+      - name: Build IPA
+        run: |
+          cd Mobile/IOS
+          xcodebuild \
+            -project LaLune.xcodeproj \
+            -scheme LaLune \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/LaLune.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-iOS
+          path: Mobile/IOS/build/LaLune.xcarchive/Products/Applications/*.app
+          if-no-files-found: error

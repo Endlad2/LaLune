@@ -1,0 +1,52 @@
+name: LaLune
+options:
+  bundleIdPrefix: com.lalune
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+targets:
+  LaLune:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/App
+    resources:
+      - path: ../../Frontend/app.html
+      - path: ../../Frontend/ios.js
+      - path: ../../Frontend/desktop-api.js
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app
+        INFOPLIST_FILE: Sources/App/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+    dependencies:
+      - framework: libcsqtt_core.a
+        embed: false
+
+  LaLuneTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/Tunnel
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lalune.tunnel
+        INFOPLIST_FILE: Sources/Tunnel/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+    dependencies:
+      - framework: libcsqtt_core.a
+        embed: false
+
+schemes:
+  LaLune:
+    build:
+      targets:
+        LaLune: all
+        LaLuneTunnel: all
+    run:
+      config: Debug
+    archive:
+      config: Release
