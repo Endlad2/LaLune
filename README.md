@@ -100,11 +100,12 @@ IPA устанавливается через AltStore или Scarlet.
 csqtt://connect?v=2&host=HOST&peer=PORT&password=PASSWORD&hashes=HASH1+HASH2+HASH3
 ```
 
-## Лицензия
+> [!WARNING]
+> **Некоммерческий статус и запрет коммерческого использования**
+> Проект является строго некоммерческим исследовательским инструментом и не преследует извлечения выгоды.
+> 
+> Я и (**amurcanov**) прямо запрещаю любое использование исходного кода данного репозитория ([github.com/amurcanov/csqtt](https://github.com/amurcanov/csqtt)) в коммерческих целях в соответствии с условиями лицензии **PolyForm Noncommercial License 1.0.0**. Любая продажа, перепродажа, интеграция в платные сервисы или извлечение прибыли на базе данного кода запрещены.
 
-Проект распространяется под [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
-
-Коммерческое использование запрещено. Для получения коммерческой лицензии свяжитесь с автором.
 
 Ядро CSQTT: [github.com/Endlad2/csqtt-core](https://github.com/Endlad2/csqtt-core)
 
