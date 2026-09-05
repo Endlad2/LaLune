@@ -49,15 +49,6 @@ jobs:
             "https://github.com/Endlad2/csqtt-core/releases/download/${VERSION}/libcsqtt_ios_core.a"
           ls -la Mobile/IOS/Core/
 
-      - name: Проверка функций в .a
-        run: |
-          echo "=== Символы csqtt в .a ==="
-          nm -gU Mobile/IOS/Core/libcsqtt_ios_core.a | grep -i csqtt || echo "НЕТ СИМВОЛОВ CSQTT"
-          echo "=== Архитектура .a ==="
-          lipo -info Mobile/IOS/Core/libcsqtt_ios_core.a
-          echo "=== Размер файла ==="
-          du -h Mobile/IOS/Core/libcsqtt_ios_core.a
-
       - name: Подготовка HTML для iOS
         run: |
           cp Frontend/app.html Frontend/app-ios.html
@@ -81,6 +72,7 @@ jobs:
             -scheme LaLune \
             -configuration $CONFIG \
             -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
@@ -94,7 +86,7 @@ jobs:
           
           mkdir -p build/Payload
           
-          cp -R "build/$CONFIG-iphoneos/LaLune.app" "build/Payload/"
+          cp -R "build/Build/Products/$CONFIG-iphoneos/LaLune.app" "build/Payload/"
           
           cd build
           zip -r LaLune.ipa Payload/
