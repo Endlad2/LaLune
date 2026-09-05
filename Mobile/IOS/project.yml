@@ -20,9 +20,10 @@ targets:
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_STYLE: Automatic
         SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
+        LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/Core"
+        OTHER_LDFLAGS: "-lcsqtt_ios_core"
     dependencies:
-      - framework: Core/libcsqtt_ios_core.a
-        embed: false
+      - sdk: Core/libcsqtt_ios_core.a
 
   LaLuneTunnel:
     type: app-extension
@@ -35,10 +36,11 @@ targets:
         INFOPLIST_FILE: Sources/Tunnel/Info.plist
         CODE_SIGN_STYLE: Automatic
         SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
+        LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/Core"
+        OTHER_LDFLAGS: "-lcsqtt_ios_core"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Tunnel/LaLune-Bridging-Header.h
     dependencies:
-      - framework: Core/libcsqtt_ios_core.a
-        embed: false
+      - sdk: Core/libcsqtt_ios_core.a
 
 schemes:
   LaLune:
