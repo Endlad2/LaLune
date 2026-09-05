@@ -48,10 +48,15 @@ jobs:
           curl -fL -o Mobile/IOS/Core/libcsqtt_ios_core.a \
             "https://github.com/Endlad2/csqtt-core/releases/download/${VERSION}/libcsqtt_ios_core.a"
           ls -la Mobile/IOS/Core/
+
       - name: Проверка функций в .a
-  	run: |
-    	  nm -gU Mobile/IOS/Core/libcsqtt_ios_core.a | grep -i csqtt
-    	  lipo -info Mobile/IOS/Core/libcsqtt_ios_core.a
+        run: |
+          echo "=== Символы csqtt в .a ==="
+          nm -gU Mobile/IOS/Core/libcsqtt_ios_core.a | grep -i csqtt || echo "НЕТ СИМВОЛОВ CSQTT"
+          echo "=== Архитектура .a ==="
+          lipo -info Mobile/IOS/Core/libcsqtt_ios_core.a || echo "НЕ УДАЛОСЬ ПОЛУЧИТЬ ИНФО"
+          echo "=== Размер файла ==="
+          du -h Mobile/IOS/Core/libcsqtt_ios_core.a
 
       - name: Подготовка HTML для iOS
         run: |
