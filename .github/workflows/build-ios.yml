@@ -84,9 +84,14 @@ jobs:
           
           CONFIG="${{ github.event.inputs.build_config || 'Release' }}"
           
-          mkdir -p build/Payload
+          APP_PATH="build/Build/Products/$CONFIG-iphoneos/LaLune.app"
+          TUNNEL_PATH="build/Build/Products/$CONFIG-iphoneos/LaLuneTunnel.appex"
           
-          cp -R "build/Build/Products/$CONFIG-iphoneos/LaLune.app" "build/Payload/"
+          mkdir -p "$APP_PATH/PlugIns"
+          cp -R "$TUNNEL_PATH" "$APP_PATH/PlugIns/"
+          
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" "build/Payload/"
           
           cd build
           zip -r LaLune.ipa Payload/
