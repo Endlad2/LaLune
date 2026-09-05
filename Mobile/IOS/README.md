@@ -5,12 +5,10 @@
 ```
 
 Mobile/IOS/
-├── project.yml              — Конфигурация XcodeGen
-├── ExportOptions.plist      — Настройки экспорта IPA
-├── build.sh                 — Скрипт сборки
+├── project.yml              — XcodeGen конфигурация
 ├── Core/
 │   ├── csqtt_bridge.h       — C-интерфейс ядра
-│   ├── libcsqtt_core.a      — Сюда положить скомпилированное ядро
+│   ├── libcsqtt_ios_core.a  — Скомпилированное ядро (положи сюда)
 │   └── module.modulemap     — Swift module map
 └── Sources/
 ├── App/
@@ -25,30 +23,32 @@ Mobile/IOS/
 
 ## Требования
 
-- macOS с Xcode 15+
+- Xcode 15+
 - XcodeGen (`brew install xcodegen`)
-- Rust для сборки ядра
-- `libcsqtt_core.a` в `Core/`
+- `libcsqtt_ios_core.a` в `Core/`
 
-## Сборка ядра (.a)
+## Скачивание ядра
 
 ```bash
-cd /path/to/csqtt-core
-cargo build --release --target aarch64-apple-ios
-cp target/aarch64-apple-ios/release/libcsqtt_core.a ../Mobile/IOS/Core/
-```
-
-## Сборка IPA
-
-```
-./build.sh
+cd Mobile/IOS/Core
+curl -L -o libcsqtt_ios_core.a \
+  https://github.com/Endlad2/csqtt-core/releases/download/2026.09.05.07.28/libcsqtt_ios_core.a
 ```
 
 ## App Group
 
-Необходимо настроить App Group `group.com.lalune` в Apple Developer Portal.
+Настроить `group.com.lalune` в Apple Developer Portal.
+
+## Сборка
+
+```
+cd Mobile/IOS
+xcodegen generate
+xcodebuild -project LaLune.xcodeproj -scheme LaLune -configuration Release \
+  -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+```
 
 ## Для AltStore
 
-IPA собирается с `method=ad-hoc`. Пользователь подписывает через AltStore.
+IPA собирается unsigned — AltStore подпишет при установке.
 

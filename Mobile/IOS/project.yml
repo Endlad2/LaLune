@@ -20,9 +20,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
     dependencies:
-      - framework: libcsqtt_core.a
+      - framework: Core/libcsqtt_ios_core.a
         embed: false
 
   LaLuneTunnel:
@@ -35,9 +35,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.tunnel
         INFOPLIST_FILE: Sources/Tunnel/Info.plist
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
     dependencies:
-      - framework: libcsqtt_core.a
+      - framework: Core/libcsqtt_ios_core.a
         embed: false
 
 schemes:

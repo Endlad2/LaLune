@@ -280,18 +280,28 @@ class ViewController: UIViewController, WKScriptMessageHandler {
     // ============ VPN ============
     
     func connect(_ configId: Int64) -> Bool {
-        // Получаем конфиг из БД
         let config = getConfigById(configId)
         guard !config.peer.isEmpty else { return false }
         
-        // Сохраняем конфиг в App Group для Extension
         let sharedDefaults = UserDefaults(suiteName: appGroup)
         sharedDefaults?.set(config.peer, forKey: "peer")
         sharedDefaults?.set(config.password, forKey: "password")
         sharedDefaults?.set(config.hashes, forKey: "hashes")
+        
+        // Загружаем настройки
+        let settingsPath = (appDir as NSString).appendingPathComponent("settings.json")
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+           let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            sharedDefaults?.set(settings["workersPerHash"] as? Int ?? 9, forKey: "workers")
+            sharedDefaults?.set(settings["obfs"] as? String ?? "video", forKey: "obfs")
+            sharedDefaults?.set(settings["fingerprint"] as? String ?? "firefox", forKey: "fingerprint")
+            sharedDefaults?.set(settings["clientIds"] as? String ?? "8202606,6287487", forKey: "clientIds")
+            sharedDefaults?.set(settings["vkAuthMode"] as? String ?? "vkcalls", forKey: "vkAuthMode")
+            sharedDefaults?.set(settings["captchaMode"] as? String ?? "auto", forKey: "captchaMode")
+            sharedDefaults?.set(settings["deviceId"] as? String ?? "", forKey: "deviceId")
+        }
         sharedDefaults?.synchronize()
         
-        // Запускаем VPN
         let tunnelManager = NETunnelProviderManager()
         let protocolConfig = NETunnelProviderProtocol()
         protocolConfig.providerBundleIdentifier = "com.lalune.tunnel"
