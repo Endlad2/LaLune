@@ -12,6 +12,8 @@ targets:
     sources:
       - path: Sources/App
         buildPhase: sources
+        excludes:
+          - "Info.plist"
       - path: ../../Frontend/app.html
         buildPhase: resources
         type: file
@@ -35,6 +37,9 @@ targets:
     sources:
       - path: Sources/Tunnel
         buildPhase: sources
+        excludes:
+          - "Info.plist"
+          - "LaLune-Bridging-Header.h"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app.tunnel
