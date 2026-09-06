@@ -13,7 +13,9 @@ targets:
       - path: Sources/App
     resources:
       - path: ../../Frontend/app.html
+        buildPhase: resources
       - path: ../../Frontend/ios.js
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app
@@ -32,7 +34,7 @@ targets:
       - path: Sources/Tunnel
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.lalune.tunnel
+        PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app.tunnel
         INFOPLIST_FILE: Sources/Tunnel/Info.plist
         CODE_SIGN_STYLE: Automatic
         SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
