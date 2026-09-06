@@ -11,11 +11,13 @@ targets:
     platform: iOS
     sources:
       - path: Sources/App
-    resources:
+        buildPhase: sources
       - path: ../../Frontend/app.html
         buildPhase: resources
+        type: file
       - path: ../../Frontend/ios.js
         buildPhase: resources
+        type: file
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app
@@ -32,6 +34,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources/Tunnel
+        buildPhase: sources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app.tunnel
