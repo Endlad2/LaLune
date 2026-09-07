@@ -9,31 +9,40 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
+import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private val appDir: File by lazy { File(filesDir, "la-lune") }
     private val configsFile: File by lazy { File(appDir, "configs.json") }
     private val logsFile: File by lazy { File(appDir, "logs.txt") }
-    private val coreDir: File by lazy { File(appDir, "core") }
-    private val latestFile: File by lazy { File(appDir, "LATEST") }
+    private val settingsFile: File by lazy { File(appDir, "settings.json") }
+    
+    private lateinit var termuxManager: TermuxManager
+    private lateinit var tunManager: TunManager
     private var configs = JSONArray()
     private var isConnected = false
     private var isCoreReady = false
-
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        
         appDir.mkdirs()
-        coreDir.mkdirs()
+        
+        termuxManager = TermuxManager(this)
+        tunManager = TunManager(object : VpnService() {
+            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                return START_STICKY
+            }
+        })
+        
         loadConfigs()
-
+        
         webView = WebView(this)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
@@ -41,18 +50,21 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = WebViewClient()
         webView.webChromeClient = WebChromeClient()
         webView.addJavascriptInterface(AndroidBridge(), "lalune")
-
+        
         setContentView(webView)
         webView.loadUrl("file:///android_asset/app.html")
-
-        // Скачиваем ядро в фоне при запуске
-        Thread {
-            ensureCore()
-            isCoreReady = true
-            writeLog("[CORE] Ядро готово")
-        }.start()
+        
+        // Предзагрузка ядра
+        scope.launch {
+            isCoreReady = termuxManager.ensureCore()
+            if (isCoreReady) {
+                writeLog("[CORE] Ядро готово")
+            } else {
+                writeLog("[CORE] Ошибка подготовки ядра")
+            }
+        }
     }
-
+    
     private fun loadConfigs() {
         if (configsFile.exists()) {
             try {
@@ -62,24 +74,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
+    
     private fun saveConfigs() {
         configsFile.writeText(configs.toString())
     }
-
+    
     private fun writeLog(message: String) {
         logsFile.appendText(message + "\n")
     }
-
+    
     inner class AndroidBridge {
         @JavascriptInterface
         fun getConfigs(): String {
             return configs.toString()
         }
-
+        
         @JavascriptInterface
         fun getSettings(): String {
-            val settingsFile = File(appDir, "settings.json")
             if (settingsFile.exists()) {
                 return settingsFile.readText()
             }
@@ -94,19 +105,19 @@ class MainActivity : AppCompatActivity() {
             }
             return default.toString()
         }
-
+        
         @JavascriptInterface
         fun getLogs(): String {
-            if (!logsFile.exists()) return "[]"
-            val lines = logsFile.readLines().filter { it.isNotEmpty() }
+            val logs = termuxManager.getLogs()
+            val lines = logs.split("\n").filter { it.isNotEmpty() }
             return JSONArray(lines).toString()
         }
-
+        
         @JavascriptInterface
         fun getStatus(): String {
             return "{\"connected\":$isConnected}"
         }
-
+        
         @JavascriptInterface
         fun saveConfig(link: String): Boolean {
             val config = parseCsqttLink(link)
@@ -122,7 +133,7 @@ class MainActivity : AppCompatActivity() {
             saveConfigs()
             return true
         }
-
+        
         @JavascriptInterface
         fun deleteConfig(id: Long): Boolean {
             val newConfigs = JSONArray()
@@ -136,272 +147,137 @@ class MainActivity : AppCompatActivity() {
             saveConfigs()
             return true
         }
-
+        
         @JavascriptInterface
         fun saveSettings(settingsJson: String): Boolean {
-            val settingsFile = File(appDir, "settings.json")
             settingsFile.writeText(settingsJson)
             return true
         }
-
+        
         @JavascriptInterface
         fun connect(configId: Long): Boolean {
-            // Всё в фоновом потоке
-            Thread {
-                var selectedPeer = ""
-                var selectedPassword = ""
-                var selectedHashes = ""
-
-                synchronized(configs) {
-                    for (i in 0 until configs.length()) {
-                        val obj = configs.getJSONObject(i)
-                        if (obj.getLong("id") == configId) {
-                            selectedPeer = obj.getString("peer")
-                            selectedPassword = obj.getString("password")
-                            selectedHashes = obj.getString("hashes")
-                            break
-                        }
+            var selectedPeer = ""
+            var selectedPassword = ""
+            var selectedHashes = ""
+            
+            synchronized(configs) {
+                for (i in 0 until configs.length()) {
+                    val obj = configs.getJSONObject(i)
+                    if (obj.getLong("id") == configId) {
+                        selectedPeer = obj.getString("peer")
+                        selectedPassword = obj.getString("password")
+                        selectedHashes = obj.getString("hashes")
+                        break
                     }
                 }
-
-                if (selectedPeer.isEmpty()) {
-                    runOnUiThread {
-                        webView.evaluateJavascript("window._androidConnectResult(false)", null)
-                    }
-                    return@Thread
+            }
+            
+            if (selectedPeer.isEmpty()) {
+                writeLog("[VPN] Конфиг не найден")
+                return false
+            }
+            
+            // Запускаем ядро через Termux
+            val settings = if (settingsFile.exists()) {
+                try {
+                    JSONObject(settingsFile.readText())
+                } catch (e: Exception) {
+                    JSONObject()
                 }
-
-                // Ждём готовности ядра
-                if (!isCoreReady) {
-                    writeLog("[CORE] Ожидание ядра...")
-                    val latch = CountDownLatch(1)
-                    Thread {
-                        ensureCore()
-                        isCoreReady = true
-                        latch.countDown()
-                    }.start()
-                    latch.await(60, TimeUnit.SECONDS)
-                }
-
-                val corePath = getCorePath()
-                if (corePath == null) {
-                    runOnUiThread {
-                        webView.evaluateJavascript("window._androidConnectResult(false)", null)
-                    }
-                    return@Thread
-                }
-
-                getSharedPreferences("lalune", MODE_PRIVATE).edit().apply {
-                    putString("peer", selectedPeer)
-                    putString("password", selectedPassword)
-                    putString("hashes", selectedHashes)
-                    putString("corePath", corePath)
-                    putString("coreDir", coreDir.absolutePath)
-                    apply()
-                }
-
-                runOnUiThread {
-                    val intent = VpnService.prepare(this@MainActivity)
-                    if (intent != null) {
-                        startActivityForResult(intent, 100)
-                    } else {
-                        startVpn()
-                    }
-                    webView.evaluateJavascript("window._androidConnectResult(true)", null)
-                }
-            }.start()
-
+            } else {
+                JSONObject()
+            }
+            
+            val workers = settings.optInt("workersPerHash", 9)
+            
+            val success = termuxManager.runCoreViaTermux(
+                peer = selectedPeer,
+                password = selectedPassword,
+                hashes = selectedHashes,
+                workers = workers
+            )
+            
+            if (!success) {
+                writeLog("[VPN] Ошибка запуска ядра")
+                return false
+            }
+            
+            // Запускаем VPN
+            val intent = VpnService.prepare(this@MainActivity)
+            if (intent != null) {
+                startActivityForResult(intent, 100)
+            } else {
+                startVpn()
+            }
+            
+            isConnected = true
             return true
         }
-
+        
         @JavascriptInterface
         fun disconnect(): Boolean {
-            val intent = Intent(this@MainActivity, LaLuneVpnService::class.java)
-            intent.action = "DISCONNECT"
-            startService(intent)
+            termuxManager.stopCore()
+            tunManager.stop()
             isConnected = false
             return true
         }
-
+        
         @JavascriptInterface
         fun clearLogs(): Boolean {
-            logsFile.writeText("")
+            termuxManager.clearLogs()
             return true
         }
-
+        
         @JavascriptInterface
         fun checkUpdate(): String {
             return "{\"update\":false,\"version\":\"\"}"
         }
-
+        
         @JavascriptInterface
         fun updateCore(): Boolean {
+            scope.launch {
+                isCoreReady = termuxManager.ensureCore()
+            }
             return true
         }
-
+        
         @JavascriptInterface
         fun updateCoreAndWait(): Boolean {
             return true
         }
     }
-
-    private fun getCorePath(): String? {
-        val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
-        val coreName = when {
-            arch.contains("arm64") -> "client-linux-arm64"
-            arch.contains("arm") -> "client-linux-armv7"
-            arch.contains("x86_64") -> "client-linux-x86_64"
-            else -> return null
-        }
-
-        val coreFile = File(coreDir, coreName)
-        if (coreFile.exists()) {
-            return coreFile.absolutePath
-        }
-        return null
-    }
-
-    private fun ensureCore() {
-        val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return
-        val coreName = when {
-            arch.contains("arm64") -> "client-linux-arm64"
-            arch.contains("arm") -> "client-linux-armv7"
-            arch.contains("x86_64") -> "client-linux-x86_64"
-            else -> return
-        }
-
-        val coreFile = File(coreDir, coreName)
-        if (coreFile.exists() && coreFile.length() > 1024) {
-            return
-        }
-
-        val latest = fetchURL("https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST")
-        if (latest == null) {
-            writeLog("[CORE] Ошибка получения LATEST")
-            return
-        }
-
-        val tag = latest.trim()
-        val url = "https://github.com/Endlad2/csqtt-core/releases/download/$tag/$coreName"
-
-        writeLog("[CORE] Скачивание $coreName (тег: $tag)...")
-
-        val success = downloadFile(url, coreFile)
-        if (success) {
-            coreFile.setExecutable(true)
-            latestFile.writeText(tag)
-            writeLog("[CORE] Ядро установлено")
-        } else {
-            writeLog("[CORE] Ошибка скачивания")
-        }
-    }
-
-    private fun fetchURL(urlStr: String): String? {
-        // Уровень 1: прямой
-        try {
-            val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-            if (conn.responseCode == 200) {
-                return conn.inputStream.bufferedReader().readText()
-            }
-        } catch (e: Exception) {}
-
-        // Уровень 2: прокси
-        try {
-            val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
-            val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
-            if (conn.responseCode == 200) {
-                return conn.inputStream.bufferedReader().readText()
-            }
-        } catch (e: Exception) {}
-
-        // Уровень 3: прокси с другим UA
-        try {
-            val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
-            val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
-            conn.setRequestProperty("User-Agent", "curl/7.68.0")
-            if (conn.responseCode == 200) {
-                return conn.inputStream.bufferedReader().readText()
-            }
-        } catch (e: Exception) {}
-
-        return null
-    }
-
-    private fun downloadFile(urlStr: String, dest: File): Boolean {
-        // Уровень 1: прямой
-        try {
-            val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-            if (conn.responseCode == 200) {
-                conn.inputStream.use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
-                }
-                return dest.length() > 1024
-            }
-        } catch (e: Exception) {}
-
-        // Уровень 2: прокси
-        try {
-            val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
-            val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            if (conn.responseCode == 200) {
-                conn.inputStream.use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
-                }
-                return dest.length() > 1024
-            }
-        } catch (e: Exception) {}
-
-        // Уровень 3
-        try {
-            val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
-            val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", "curl/7.68.0")
-            if (conn.responseCode == 200) {
-                conn.inputStream.use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
-                }
-                return dest.length() > 1024
-            }
-        } catch (e: Exception) {}
-
-        return false
-    }
-
+    
     private fun startVpn() {
-        val intent = Intent(this, LaLuneVpnService::class.java)
-        intent.action = "CONNECT"
-        startService(intent)
-        isConnected = true
+        // Запускаем TUN менеджер
+        tunManager.start { success ->
+            if (success) {
+                writeLog("[VPN] Туннель запущен")
+            } else {
+                writeLog("[VPN] Ошибка запуска туннеля")
+            }
+        }
     }
-
+    
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 100 && resultCode == RESULT_OK) {
             startVpn()
         }
     }
-
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        tunManager.stop()
+        termuxManager.stopCore()
+    }
+    
     data class ParsedConfig(val peer: String, val password: String, val hashes: String)
-
+    
     private fun parseCsqttLink(link: String): ParsedConfig {
         var peer = link
         var password = ""
         var hashes = ""
-
+        
         if (link.startsWith("csqtt://")) {
             try {
                 val url = java.net.URI(link)
@@ -424,7 +300,7 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {}
         }
-
+        
         return ParsedConfig(peer, password, hashes)
     }
 }
