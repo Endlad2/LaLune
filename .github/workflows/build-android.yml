@@ -25,6 +25,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
       - name: Подготовка HTML для Android
         run: |
           mkdir -p Mobile/Android/app/src/main/assets
@@ -37,8 +40,7 @@ jobs:
       - name: Сборка APK
         run: |
           cd Mobile/Android
-          chmod +x gradlew
-          ./gradlew assembleRelease
+          gradle assembleRelease
 
       - name: Загрузка APK
         uses: actions/upload-artifact@v4
