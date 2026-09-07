@@ -26,22 +26,59 @@ class ViewController: UIViewController, WKScriptMessageHandler {
         userContentController.add(self, name: "lalune")
         config.userContentController = userContentController
         
+        let zoomScript = WKUserScript(
+            source: """
+            var meta = document.createElement('meta');
+            meta.name = 'viewport';
+            meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no';
+            document.getElementsByTagName('head')[0].appendChild(meta);
+            
+            document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+            document.addEventListener('gesturechange', function(e) { e.preventDefault(); });
+            document.addEventListener('gestureend', function(e) { e.preventDefault(); });
+            
+            document.addEventListener('touchmove', function(e) {
+                if (e.touches.length > 1) { e.preventDefault(); }
+            }, { passive: false });
+            
+            document.body.style.overscrollBehavior = 'none';
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        userContentController.addUserScript(zoomScript)
+        
         webView = WKWebView(frame: view.bounds, configuration: config)
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.scrollView.alwaysBounceHorizontal = false
+        webView.scrollView.alwaysBounceVertical = false
+        webView.scrollView.minimumZoomScale = 1.0
+        webView.scrollView.maximumZoomScale = 1.0
+        webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.panGestureRecognizer.isEnabled = false
+        
+        webView.isOpaque = false
+        webView.backgroundColor = UIColor(red: 0.04, green: 0.05, blue: 0.13, alpha: 1.0)
+        view.backgroundColor = UIColor(red: 0.04, green: 0.05, blue: 0.13, alpha: 1.0)
+        
         view.addSubview(webView)
         
         loadHTML()
     }
     
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        webView.frame = view.bounds
+    }
+    
     func loadHTML() {
-        // Пробуем сначала app-ios.html, потом app.html
         if let htmlPath = Bundle.main.path(forResource: "app", ofType: "html") {
             let url = URL(fileURLWithPath: htmlPath)
             webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-        } else {
-            // Фолбэк — загружаем пустую страницу с сообщением
-            let html = "<html><body style='background:#0a0e2a;color:white;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;'><div>HTML not found</div></body></html>"
-            webView.loadHTMLString(html, baseURL: nil)
         }
     }
     
@@ -264,14 +301,28 @@ class ViewController: UIViewController, WKScriptMessageHandler {
     // ============ Логи ============
     
     func getLogsJson() -> String {
-        let logsPath = (appDir as NSString).appendingPathComponent("logs.txt")
+        // Читаем логи из App Group (tunnel.log)
+        let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+        let tunnelLogURL = (container ?? FileManager.default.temporaryDirectory).appendingPathComponent("tunnel.log")
         
+        var allLines: [String] = []
+        
+        // Читаем tunnel.log
+        if let content = try? String(contentsOf: tunnelLogURL, encoding: .utf8) {
+            let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+            allLines.append(contentsOf: lines)
+        }
+        
+        // Читаем локальный logs.txt
+        let logsPath = (appDir as NSString).appendingPathComponent("logs.txt")
         if let content = try? String(contentsOfFile: logsPath, encoding: .utf8) {
             let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
-            if let data = try? JSONSerialization.data(withJSONObject: lines, options: []),
-               let json = String(data: data, encoding: .utf8) {
-                return json
-            }
+            allLines.append(contentsOf: lines)
+        }
+        
+        if let data = try? JSONSerialization.data(withJSONObject: allLines, options: []),
+           let json = String(data: data, encoding: .utf8) {
+            return json
         }
         return "[]"
     }
@@ -279,6 +330,12 @@ class ViewController: UIViewController, WKScriptMessageHandler {
     func clearLogs() -> Bool {
         let logsPath = (appDir as NSString).appendingPathComponent("logs.txt")
         try? "".write(toFile: logsPath, atomically: true, encoding: .utf8)
+        
+        let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+        if let tunnelLogURL = container?.appendingPathComponent("tunnel.log") {
+            try? "".write(to: tunnelLogURL, atomically: true, encoding: .utf8)
+        }
+        
         return true
     }
     
@@ -318,10 +375,19 @@ class ViewController: UIViewController, WKScriptMessageHandler {
         var success = false
         
         tunnelManager.saveToPreferences { error in
-            if error == nil {
-                try? tunnelManager.connection.startVPNTunnel()
+            if let error = error {
+                NSLog("[VPN] saveToPreferences error: \(error)")
+                semaphore.signal()
+                return
+            }
+            
+            do {
+                try tunnelManager.connection.startVPNTunnel()
+                NSLog("[VPN] VPN started")
                 success = true
                 self.isConnected = true
+            } catch {
+                NSLog("[VPN] startVPNTunnel error: \(error)")
             }
             semaphore.signal()
         }
