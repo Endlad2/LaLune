@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LaLune" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0a0e2a</item>
+        <item name="android:navigationBarColor">#0a0e2a</item>
+        <item name="android:windowBackground">#0a0e2a</item>
+    </style>
+</resources>
