@@ -1,0 +1,48 @@
+name: Android сборка
+
+on:
+  push:
+    branches:
+      - main
+      - release
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Сборка Android
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Подготовка HTML для Android
+        run: |
+          mkdir -p Mobile/Android/app/src/main/assets
+          cp Frontend/app.html Mobile/Android/app/src/main/assets/app.html
+          cp Frontend/android.js Mobile/Android/app/src/main/assets/android.js
+          sed -i 's|<script src="{QTWEBCHANNEL_SCRIPT}"></script>||g' Mobile/Android/app/src/main/assets/app.html
+          sed -i 's|<script src="{API_SCRIPT}"></script>||g' Mobile/Android/app/src/main/assets/app.html
+          sed -i 's|</body>|<script src="android.js"></script></body>|' Mobile/Android/app/src/main/assets/app.html
+
+      - name: Сборка APK
+        run: |
+          cd Mobile/Android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Загрузка APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Android
+          path: Mobile/Android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
