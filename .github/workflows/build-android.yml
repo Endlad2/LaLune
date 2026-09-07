@@ -30,6 +30,20 @@ jobs:
         with:
           gradle-version: '8.5'
 
+      - name: Генерация ключа подписи
+        run: |
+          cd Mobile/Android/app
+          keytool -genkeypair \
+            -v \
+            -keystore release.keystore \
+            -alias lalune \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass lalune123 \
+            -keypass lalune123 \
+            -dname "CN=LaLune, OU=Dev, O=LaLune, L=Unknown, S=Unknown, C=RU"
+
       - name: Подготовка HTML для Android
         run: |
           mkdir -p Mobile/Android/app/src/main/assets
