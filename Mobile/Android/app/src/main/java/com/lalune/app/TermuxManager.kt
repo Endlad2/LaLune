@@ -25,6 +25,12 @@ class TermuxManager(private val context: Context) {
     private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     suspend fun ensureCore(): Boolean = withContext(Dispatchers.IO) {
+        // Создаём директорию для ядра
+        if (!coreDir.exists()) {
+            coreDir.mkdirs()
+            writeLog("[CORE] Создана директория: ${coreDir.absolutePath}")
+        }
+        
         val arch = getArch()
         if (arch == null) {
             writeLog("[ERROR] Не удалось определить архитектуру")
@@ -117,6 +123,9 @@ class TermuxManager(private val context: Context) {
     }
     
     private suspend fun downloadCore(url: String, dest: File): Boolean = withContext(Dispatchers.IO) {
+        // Создаём директорию для файла
+        dest.parentFile?.mkdirs()
+        
         // Уровень 1: прямой
         try {
             val conn = URL(url).openConnection() as HttpURLConnection
@@ -129,7 +138,10 @@ class TermuxManager(private val context: Context) {
                         input.copyTo(output)
                     }
                 }
-                if (dest.length() > 1024) return@withContext true
+                if (dest.length() > 1024) {
+                    writeLog("[DOWNLOAD] Уровень 1 успех (${dest.length()} байт)")
+                    return@withContext true
+                }
             }
         } catch (e: Exception) {
             writeLog("[DOWNLOAD] Уровень 1 ошибка: ${e.message}")
@@ -148,7 +160,10 @@ class TermuxManager(private val context: Context) {
                         input.copyTo(output)
                     }
                 }
-                if (dest.length() > 1024) return@withContext true
+                if (dest.length() > 1024) {
+                    writeLog("[DOWNLOAD] Уровень 2 успех (${dest.length()} байт)")
+                    return@withContext true
+                }
             }
         } catch (e: Exception) {
             writeLog("[DOWNLOAD] Уровень 2 ошибка: ${e.message}")
@@ -167,7 +182,10 @@ class TermuxManager(private val context: Context) {
                         input.copyTo(output)
                     }
                 }
-                if (dest.length() > 1024) return@withContext true
+                if (dest.length() > 1024) {
+                    writeLog("[DOWNLOAD] Уровень 3 успех (${dest.length()} байт)")
+                    return@withContext true
+                }
             }
         } catch (e: Exception) {
             writeLog("[DOWNLOAD] Уровень 3 ошибка: ${e.message}")
@@ -259,7 +277,11 @@ class TermuxManager(private val context: Context) {
         }
         
         val coreFile = File(coreDir, coreName)
-        return if (coreFile.exists()) coreFile.absolutePath else null
+        return if (coreFile.exists() && coreFile.length() > 1024) {
+            coreFile.absolutePath
+        } else {
+            null
+        }
     }
     
     fun getLogs(): String {
