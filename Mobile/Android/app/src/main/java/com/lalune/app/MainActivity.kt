@@ -27,11 +27,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Создаём папку la-lune
         appDir.mkdirs()
         coreDir.mkdirs()
-
-        // Загружаем конфиги
         loadConfigs()
 
         webView = WebView(this)
@@ -40,13 +37,9 @@ class MainActivity : AppCompatActivity() {
         webView.settings.allowFileAccess = true
         webView.webViewClient = WebViewClient()
         webView.webChromeClient = WebChromeClient()
-
-        // Добавляем JS мост
         webView.addJavascriptInterface(AndroidBridge(), "lalune")
 
         setContentView(webView)
-
-        // Загружаем HTML
         webView.loadUrl("file:///android_asset/app.html")
     }
 
@@ -143,7 +136,6 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun connect(configId: Long): Boolean {
-            // Находим конфиг
             var selectedPeer = ""
             var selectedPassword = ""
             var selectedHashes = ""
@@ -159,11 +151,9 @@ class MainActivity : AppCompatActivity() {
 
             if (selectedPeer.isEmpty()) return false
 
-            // Проверяем ядро
             val corePath = ensureCore()
             if (corePath == null) return false
 
-            // Сохраняем параметры для VPN сервиса
             getSharedPreferences("lalune", MODE_PRIVATE).edit().apply {
                 putString("peer", selectedPeer)
                 putString("password", selectedPassword)
@@ -173,8 +163,7 @@ class MainActivity : AppCompatActivity() {
                 apply()
             }
 
-            // Запускаем VPN
-            val intent = VpnService.prepare(this)
+            val intent = VpnService.prepare(this@MainActivity)
             if (intent != null) {
                 startActivityForResult(intent, 100)
             } else {
@@ -215,7 +204,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ensureCore(): String? {
-        // Определяем архитектуру
         val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
         val coreName = when {
             arch.contains("arm64") -> "client-linux-arm64"
@@ -229,7 +217,6 @@ class MainActivity : AppCompatActivity() {
             return coreFile.absolutePath
         }
 
-        // Скачиваем ядро по latest
         val latest = fetchURL("https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST")
         if (latest == null) return null
 
@@ -250,7 +237,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchURL(urlStr: String): String? {
-        // Уровень 1: прямой
         try {
             val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 30000
@@ -261,7 +247,6 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {}
 
-        // Уровень 2: через прокси
         try {
             val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
             val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
@@ -272,7 +257,6 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {}
 
-        // Уровень 3: через прокси с другим UA
         try {
             val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
             val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
@@ -288,7 +272,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun downloadFile(urlStr: String, dest: File): Boolean {
-        // Уровень 1: прямой
         try {
             val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 30000
@@ -302,7 +285,6 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {}
 
-        // Уровень 2: через прокси
         try {
             val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
             val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
@@ -316,7 +298,6 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {}
 
-        // Уровень 3
         try {
             val proxyURL = "http://31.77.148.203:8855/?url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
             val conn = java.net.URL(proxyURL).openConnection() as java.net.HttpURLConnection
