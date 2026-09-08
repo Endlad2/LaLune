@@ -16,7 +16,7 @@ echo -e "${GREEN}    LaLune Installation Script         ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-echo -e "${YELLOW}Step 1: Updating package lists and installing dependencies...${NC}"
+echo -e "${YELLOW}Step 1: Installing dependencies...${NC}"
 
 # Update package lists
 opkg update
@@ -40,14 +40,15 @@ fi
 echo -e "${GREEN}Dependencies installed successfully${NC}"
 echo ""
 
-echo -e "${YELLOW}Step 2: Downloading LaLune-OpenWRT-arm64.zip...${NC}"
+echo -e "${YELLOW}Step 2: Downloading LaLune...${NC}"
 
 # Create installation directory
 INSTALL_DIR="/root/LaLune"
 mkdir -p "$INSTALL_DIR"
 
 # Download the latest release
-cd /tmp
+cd "$INSTALL_DIR"
+echo "Downloading LaLune-OpenWRT-arm64.zip..."
 curl -L -O https://github.com/Endlad2/LaLune/releases/latest/download/LaLune-OpenWRT-arm64.zip
 
 if [ $? -ne 0 ]; then
@@ -58,41 +59,54 @@ fi
 echo -e "${GREEN}Download completed successfully${NC}"
 echo ""
 
-echo -e "${YELLOW}Step 3: Extracting LaLune to $INSTALL_DIR...${NC}"
+echo -e "${YELLOW}Step 3: Extracting LaLune...${NC}"
 
 # Extract the zip file
-unzip -o LaLune-OpenWRT-arm64.zip -d "$INSTALL_DIR"
+unzip -o LaLune-OpenWRT-arm64.zip
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: Failed to extract LaLune${NC}"
     exit 1
 fi
 
-# Clean up temporary zip file
-rm -f /tmp/LaLune-OpenWRT-arm64.zip
+# Clean up zip file
+rm -f LaLune-OpenWRT-arm64.zip
 
 echo -e "${GREEN}Extraction completed successfully${NC}"
 echo ""
 
-# Make the binary executable if it exists
-if [ -f "$INSTALL_DIR/LaLune" ]; then
-    chmod +x "$INSTALL_DIR/LaLune"
-    echo -e "${GREEN}Made LaLune executable${NC}"
-elif [ -f "$INSTALL_DIR/LaLune.bin" ]; then
-    chmod +x "$INSTALL_DIR/LaLune.bin"
-    echo -e "${GREEN}Made LaLune.bin executable${NC}"
-fi
+echo -e "${YELLOW}Step 4: Making csqtt-client-arm64 executable...${NC}"
 
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}    Congratulations!                    ${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}LaLune has been successfully installed!${NC}"
-echo -e "${GREEN}Installation path: $INSTALL_DIR${NC}"
-echo ""
-echo -e "${YELLOW}To run LaLune, execute:${NC}"
-echo -e "  $INSTALL_DIR/LaLune"
-echo ""
-echo -e "${YELLOW}To add to startup (optional):${NC}"
-echo -e "  Add to /etc/rc.local or create an init script"
-echo ""
+# Path to the binary
+BINARY_PATH="/root/LaLune/LaLune-OpenWRT-arm64/csqtt-client-arm64"
+
+# Check if the binary exists
+if [ -f "$BINARY_PATH" ]; then
+    chmod +x "$BINARY_PATH"
+    echo -e "${GREEN}Made executable: $BINARY_PATH${NC}"
+    
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}    Congratulations!                    ${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}LaLune has been successfully installed!${NC}"
+    echo -e "${GREEN}Installation path: /root/LaLune/LaLune-OpenWRT-arm64/${NC}"
+    echo ""
+    echo -e "${YELLOW}To run LaLune, execute:${NC}"
+    echo -e "  $BINARY_PATH"
+    echo ""
+    echo -e "${YELLOW}Or create a symlink for easier access:${NC}"
+    echo -e "  ln -s $BINARY_PATH /usr/bin/lalune"
+    echo -e "  Then run with: lalune"
+    echo ""
+    echo -e "${YELLOW}To add to startup (optional):${NC}"
+    echo -e "  Add to /etc/rc.local"
+else
+    echo -e "${RED}Error: Binary not found at $BINARY_PATH${NC}"
+    echo -e "${YELLOW}Contents of /root/LaLune/:${NC}"
+    ls -la /root/LaLune/
+    echo ""
+    echo -e "${YELLOW}Contents of /root/LaLune/LaLune-OpenWRT-arm64/ (if exists):${NC}"
+    ls -la /root/LaLune/LaLune-OpenWRT-arm64/ 2>/dev/null || echo "Directory not found"
+    exit 1
+fi
