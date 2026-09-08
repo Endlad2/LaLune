@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,6 +16,9 @@ import (
 	"syscall"
 	"time"
 )
+
+//go:embed frontend/*
+var frontend embed.FS
 
 // Config - конфигурация подключения
 type Config struct {
@@ -340,8 +344,9 @@ func (a *App) watchdog() {
 	}
 }
 
-// startAPI - HTTP API
+// startAPI - HTTP API + веб-интерфейс
 func (a *App) startAPI() {
+	// API эндпоинты
 	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		status := map[string]interface{}{
@@ -390,6 +395,34 @@ func (a *App) startAPI() {
 
 		a.saveConfig()
 		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	})
+
+	// Веб-интерфейс
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Читаем HTML из встроенных файлов
+		htmlContent, err := frontend.ReadFile("frontend/openwrt.html")
+		if err != nil {
+			http.Error(w, "HTML not found", http.StatusNotFound)
+			return
+		}
+
+		// Заменяем плейсхолдеры
+		html := string(htmlContent)
+		html = strings.ReplaceAll(html, "{API_BASE_URL}", "")
+		html = strings.ReplaceAll(html, "{API_SCRIPT}", "/openwrt.js")
+
+		// Читаем JS
+		jsContent, err := frontend.ReadFile("frontend/openwrt.js")
+		if err != nil {
+			http.Error(w, "JS not found", http.StatusNotFound)
+			return
+		}
+
+		// Встраиваем JS в HTML
+		html = strings.ReplaceAll(html, "</body>", "<script>"+string(jsContent)+"</script></body>")
+
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(html))
 	})
 
 	log.Println("[API] Запущен на :8080")
