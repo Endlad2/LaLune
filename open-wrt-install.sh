@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# LaLune Installation Script for OpenWRT
-# This script downloads and installs LaLune on OpenWRT devices
+# LaLune Installation Script
+# This script downloads and installs LaLune
 
 set -e
 
@@ -15,12 +15,6 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    LaLune Installation Script         ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-
-# Check if running on OpenWRT
-if ! grep -q "OpenWrt" /etc/openwrt_release 2>/dev/null; then
-    echo -e "${RED}Error: This script is designed for OpenWRT systems only${NC}"
-    exit 1
-fi
 
 echo -e "${YELLOW}Step 1: Updating package lists and installing dependencies...${NC}"
 
