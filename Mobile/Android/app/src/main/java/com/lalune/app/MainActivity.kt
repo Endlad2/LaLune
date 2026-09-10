@@ -20,9 +20,9 @@ class MainActivity : AppCompatActivity() {
     private val configsFile: File by lazy { File(appDir, "configs.json") }
     private val logsFile: File by lazy { File(appDir, "logs.txt") }
     private val settingsFile: File by lazy { File(appDir, "settings.json") }
+    private val coreDir: File by lazy { File(appDir, "core") }
     
-    private lateinit var termuxManager: TermuxManager
-    private lateinit var tunManager: TunManager
+    private lateinit var coreManager: CoreManager
     private var configs = JSONArray()
     private var isConnected = false
     private var isCoreReady = false
@@ -33,13 +33,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         
         appDir.mkdirs()
+        coreDir.mkdirs()
         
-        termuxManager = TermuxManager(this)
-        tunManager = TunManager(object : VpnService() {
-            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                return START_STICKY
-            }
-        })
+        coreManager = CoreManager(this)
         
         loadConfigs()
         
@@ -54,13 +50,13 @@ class MainActivity : AppCompatActivity() {
         setContentView(webView)
         webView.loadUrl("file:///android_asset/app.html")
         
-        // Предзагрузка ядра
+        // Проверяем ядро
         scope.launch {
-            isCoreReady = termuxManager.ensureCore()
+            isCoreReady = coreManager.checkCore()
             if (isCoreReady) {
                 writeLog("[CORE] Ядро готово")
             } else {
-                writeLog("[CORE] Ошибка подготовки ядра")
+                writeLog("[CORE] Ядро не найдено, будет скачано при подключении")
             }
         }
     }
@@ -85,15 +81,11 @@ class MainActivity : AppCompatActivity() {
     
     inner class AndroidBridge {
         @JavascriptInterface
-        fun getConfigs(): String {
-            return configs.toString()
-        }
+        fun getConfigs(): String = configs.toString()
         
         @JavascriptInterface
         fun getSettings(): String {
-            if (settingsFile.exists()) {
-                return settingsFile.readText()
-            }
+            if (settingsFile.exists()) return settingsFile.readText()
             val default = JSONObject().apply {
                 put("workersPerHash", 9)
                 put("obfs", "video")
@@ -108,15 +100,13 @@ class MainActivity : AppCompatActivity() {
         
         @JavascriptInterface
         fun getLogs(): String {
-            val logs = termuxManager.getLogs()
+            val logs = if (logsFile.exists()) logsFile.readText() else ""
             val lines = logs.split("\n").filter { it.isNotEmpty() }
             return JSONArray(lines).toString()
         }
         
         @JavascriptInterface
-        fun getStatus(): String {
-            return "{\"connected\":$isConnected}"
-        }
+        fun getStatus(): String = "{\"connected\":$isConnected}"
         
         @JavascriptInterface
         fun saveConfig(link: String): Boolean {
@@ -139,9 +129,7 @@ class MainActivity : AppCompatActivity() {
             val newConfigs = JSONArray()
             for (i in 0 until configs.length()) {
                 val obj = configs.getJSONObject(i)
-                if (obj.getLong("id") != id) {
-                    newConfigs.put(obj)
-                }
+                if (obj.getLong("id") != id) newConfigs.put(obj)
             }
             configs = newConfigs
             saveConfigs()
@@ -177,98 +165,87 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
             
-            // Запускаем ядро через Termux
-            val settings = if (settingsFile.exists()) {
-                try {
-                    JSONObject(settingsFile.readText())
-                } catch (e: Exception) {
-                    JSONObject()
+            // Запускаем ядро
+            scope.launch {
+                val started = coreManager.startCore(
+                    peer = selectedPeer,
+                    password = selectedPassword,
+                    hashes = selectedHashes
+                )
+                
+                withContext(Dispatchers.Main) {
+                    if (started) {
+                        isConnected = true
+                        writeLog("[VPN] Ядро запущено")
+                        
+                        // Запускаем VPN
+                        val intent = VpnService.prepare(this@MainActivity)
+                        if (intent != null) {
+                            startActivityForResult(intent, 100)
+                        } else {
+                            startVpnService()
+                        }
+                    } else {
+                        writeLog("[VPN] Ошибка запуска ядра")
+                    }
                 }
-            } else {
-                JSONObject()
             }
             
-            val workers = settings.optInt("workersPerHash", 9)
-            
-            val success = termuxManager.runCoreViaTermux(
-                peer = selectedPeer,
-                password = selectedPassword,
-                hashes = selectedHashes,
-                workers = workers
-            )
-            
-            if (!success) {
-                writeLog("[VPN] Ошибка запуска ядра")
-                return false
-            }
-            
-            // Запускаем VPN
-            val intent = VpnService.prepare(this@MainActivity)
-            if (intent != null) {
-                startActivityForResult(intent, 100)
-            } else {
-                startVpn()
-            }
-            
-            isConnected = true
             return true
         }
         
         @JavascriptInterface
         fun disconnect(): Boolean {
-            termuxManager.stopCore()
-            tunManager.stop()
+            coreManager.stopCore()
+            stopVpnService()
             isConnected = false
             return true
         }
         
         @JavascriptInterface
         fun clearLogs(): Boolean {
-            termuxManager.clearLogs()
+            logsFile.writeText("")
             return true
         }
         
         @JavascriptInterface
-        fun checkUpdate(): String {
-            return "{\"update\":false,\"version\":\"\"}"
-        }
+        fun checkUpdate(): String = "{\"update\":false,\"version\":\"\"}"
         
         @JavascriptInterface
         fun updateCore(): Boolean {
             scope.launch {
-                isCoreReady = termuxManager.ensureCore()
+                coreManager.checkCore()
             }
             return true
         }
         
         @JavascriptInterface
-        fun updateCoreAndWait(): Boolean {
-            return true
-        }
+        fun updateCoreAndWait(): Boolean = true
     }
     
-    private fun startVpn() {
-        // Запускаем TUN менеджер
-        tunManager.start { success ->
-            if (success) {
-                writeLog("[VPN] Туннель запущен")
-            } else {
-                writeLog("[VPN] Ошибка запуска туннеля")
-            }
-        }
+    private fun startVpnService() {
+        val intent = Intent(this, LaLuneVpnService::class.java)
+        intent.action = "START"
+        startService(intent)
+    }
+    
+    private fun stopVpnService() {
+        val intent = Intent(this, LaLuneVpnService::class.java)
+        intent.action = "STOP"
+        startService(intent)
     }
     
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 100 && resultCode == RESULT_OK) {
-            startVpn()
+            startVpnService()
         }
     }
     
     override fun onDestroy() {
         super.onDestroy()
-        tunManager.stop()
-        termuxManager.stopCore()
+        coreManager.stopCore()
+        stopVpnService()
     }
     
     data class ParsedConfig(val peer: String, val password: String, val hashes: String)

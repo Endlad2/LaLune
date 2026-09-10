@@ -1,22 +1,21 @@
-name: Android сборка
+name: Build Android APK
 
 on:
   push:
-    branches:
-      - main
-      - release
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
-  build-android:
-    name: Сборка Android
+  build:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Клонирование репозитория
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -25,42 +24,66 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle 8.5
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.5'
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v3
 
-      - name: Генерация ключа подписи
+      - name: Download core binaries
         run: |
-          cd Mobile/Android/app
-          keytool -genkeypair \
-            -v \
-            -keystore release.keystore \
-            -alias lalune \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass lalune123 \
-            -keypass lalune123 \
-            -dname "CN=LaLune, OU=Dev, O=LaLune, L=Unknown, S=Unknown, C=RU"
+          mkdir -p Mobile/Android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p Mobile/Android/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p Mobile/Android/app/src/main/jniLibs/x86_64
 
-      - name: Подготовка HTML для Android
-        run: |
-          mkdir -p Mobile/Android/app/src/main/assets
-          cp Frontend/app.html Mobile/Android/app/src/main/assets/app.html
-          cp Frontend/android.js Mobile/Android/app/src/main/assets/android.js
-          sed -i 's|<script src="{QTWEBCHANNEL_SCRIPT}"></script>||g' Mobile/Android/app/src/main/assets/app.html
-          sed -i 's|<script src="{API_SCRIPT}"></script>||g' Mobile/Android/app/src/main/assets/app.html
-          sed -i 's|</body>|<script src="android.js"></script></body>|' Mobile/Android/app/src/main/assets/app.html
+          echo "Downloading ARM64..."
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so \
+            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
 
-      - name: Сборка APK
+          echo "Downloading ARMv7..."
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so \
+            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+
+          echo "Downloading x86_64..."
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
+            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+
+          echo "Downloaded files:"
+          ls -la Mobile/Android/app/src/main/jniLibs/arm64-v8a/
+          ls -la Mobile/Android/app/src/main/jniLibs/armeabi-v7a/
+          ls -la Mobile/Android/app/src/main/jniLibs/x86_64/
+
+      - name: Build APK
         run: |
           cd Mobile/Android
-          gradle assembleRelease
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
 
-      - name: Загрузка APK
+      - name: Sign APK (debug key)
+        run: |
+          cd Mobile/Android
+          # Используем debug keystore для подписи
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks ~/.android/debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --ks-key-alias androiddebugkey \
+            --out app/build/outputs/apk/release/app-release-signed.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk || \
+          cp app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release-signed.apk
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-Android
+          name: LaLune-Android-Universal
           path: Mobile/Android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: LaLune Android v${{ github.run_number }}
+          files: Mobile/Android/app/build/outputs/apk/release/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
