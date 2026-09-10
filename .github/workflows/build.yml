@@ -58,6 +58,23 @@ jobs:
           cd Mobile/Android
           gradle assembleRelease --no-daemon
 
+      - name: Diagnose APK output
+        run: |
+          cd Mobile/Android
+          echo "=== APK files ==="
+          find app/build/outputs -type f -name "*.apk" -exec ls -la {} \; || echo "No APK found"
+
+      - name: Check secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "Length of KEYSTORE_BASE64: ${#KEYSTORE_BASE64}"
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "WARNING: KEYSTORE_BASE64 is empty!"
+          else
+            echo "OK: KEYSTORE_BASE64 has content"
+          fi
+
       - name: Sign APK
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -66,12 +83,21 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           cd Mobile/Android
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*signed*" | head -n 1)
+          
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" ! -name "*signed*" | head -n 1)
+          
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: No APK found"
+            find app/build -type f -name "*.apk" -exec ls -la {} \;
+            exit 1
+          fi
+          
           echo "Found APK: $APK_PATH"
           
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "Using release keystore from secrets"
             echo "$KEYSTORE_BASE64" | base64 -d > ../../release-key.jks
+            ls -la ../../release-key.jks
             
             $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
               --ks ../../release-key.jks \
@@ -82,8 +108,9 @@ jobs:
               "$APK_PATH"
             
             rm -f ../../release-key.jks
+            echo "Signed with release key"
           else
-            echo "No release key found, using debug key"
+            echo "WARNING: KEYSTORE_BASE64 is empty, using debug key"
             
             if [ ! -f ~/.android/debug.keystore ]; then
               mkdir -p ~/.android
@@ -105,6 +132,7 @@ jobs:
               --ks-key-alias androiddebugkey \
               --out app/build/outputs/apk/release/LaLune-Android.apk \
               "$APK_PATH"
+            echo "Signed with debug key"
           fi
 
       - name: Upload Android APK
@@ -137,18 +165,31 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
         shell: bash
 
+      - name: Find build script
+        run: |
+          echo "=== Repo structure ==="
+          ls -la
+          echo "=== Looking for build_desktop.py ==="
+          find . -name "build_desktop.py" -type f
+        shell: bash
+
       - name: Build Windows Desktop
         run: |
-          cd Desktop/Windows
-          wails build
+          if [ -f "LaLune/build_desktop.py" ]; then
+            cd LaLune
+          fi
+          python build_desktop.py --platform Windows
         shell: bash
 
       - name: Upload Windows Desktop
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-Windows
-          path: Desktop/Windows/build/bin/LaLune.exe
+          path: |
+            Desktop/Windows/build/bin/LaLune.exe
+            LaLune/Desktop/Windows/build/bin/LaLune.exe
           retention-days: 30
+          if-no-files-found: error
 
   # ============================================
   # DESKTOP LINUX
@@ -164,6 +205,11 @@ jobs:
         with:
           go-version: '1.22'
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -174,15 +220,20 @@ jobs:
 
       - name: Build Linux Desktop
         run: |
-          cd Desktop/Linux
-          wails build
+          if [ -f "LaLune/build_desktop.py" ]; then
+            cd LaLune
+          fi
+          python build_desktop.py --platform Linux
 
       - name: Upload Linux Desktop
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-Linux
-          path: Desktop/Linux/build/bin/LaLune
+          path: |
+            Desktop/Linux/build/bin/LaLune
+            LaLune/Desktop/Linux/build/bin/LaLune
           retention-days: 30
+          if-no-files-found: error
 
   # ============================================
   # OPENWRT
@@ -214,15 +265,22 @@ jobs:
           GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: 0
         run: |
-          cd OpenWRT
+          if [ -d "LaLune/OpenWRT" ]; then
+            cd LaLune/OpenWRT
+          else
+            cd OpenWRT
+          fi
           go build -ldflags="-s -w" -o LaLune-OpenWRT-${{ matrix.arch }} main.go
 
       - name: Upload OpenWRT
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-OpenWRT-${{ matrix.arch }}
-          path: OpenWRT/LaLune-OpenWRT-${{ matrix.arch }}
+          path: |
+            OpenWRT/LaLune-OpenWRT-${{ matrix.arch }}
+            LaLune/OpenWRT/LaLune-OpenWRT-${{ matrix.arch }}
           retention-days: 30
+          if-no-files-found: error
 
   # ============================================
   # RELEASE
@@ -245,12 +303,19 @@ jobs:
         run: |
           mkdir -p release
           
-          cp artifacts/LaLune-Android/LaLune-Android.apk release/ 2>/dev/null || true
-          cp artifacts/LaLune-Windows/LaLune.exe release/LaLune-Windows.exe 2>/dev/null || true
-          cp artifacts/LaLune-Linux/LaLune release/LaLune-Linux 2>/dev/null || true
+          # Android
+          find artifacts -name "LaLune-Android.apk" -exec cp {} release/ \; 2>/dev/null || true
+          
+          # Windows
+          find artifacts -name "LaLune.exe" -exec cp {} release/LaLune-Windows.exe \; 2>/dev/null || true
+          
+          # Linux
+          find artifacts -name "LaLune" -not -name "*.exe" -exec cp {} release/LaLune-Linux \; 2>/dev/null || true
           chmod +x release/LaLune-Linux 2>/dev/null || true
-          cp artifacts/LaLune-OpenWRT-arm64/LaLune-OpenWRT-arm64 release/ 2>/dev/null || true
-          cp artifacts/LaLune-OpenWRT-armv7/LaLune-OpenWRT-armv7 release/ 2>/dev/null || true
+          
+          # OpenWRT
+          find artifacts -name "LaLune-OpenWRT-arm64" -exec cp {} release/ \; 2>/dev/null || true
+          find artifacts -name "LaLune-OpenWRT-armv7" -exec cp {} release/ \; 2>/dev/null || true
           
           echo "Release files:"
           ls -la release/
