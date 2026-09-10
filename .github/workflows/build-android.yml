@@ -25,7 +25,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Setup Gradle
-        uses: gradle/gradle-build-action@v3
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.4'
 
       - name: Download core binaries
         run: |
@@ -53,36 +55,51 @@ jobs:
       - name: Build APK
         run: |
           cd Mobile/Android
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          gradle assembleRelease --no-daemon
 
       - name: Sign APK (debug key)
         run: |
           cd Mobile/Android
-          # Используем debug keystore для подписи
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "Found APK: $APK_PATH"
+          
+          # Создаём debug keystore если нет
+          if [ ! -f ~/.android/debug.keystore ]; then
+            mkdir -p ~/.android
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          
+          # Подписываем
           $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
             --ks ~/.android/debug.keystore \
             --ks-pass pass:android \
             --key-pass pass:android \
             --ks-key-alias androiddebugkey \
             --out app/build/outputs/apk/release/app-release-signed.apk \
-            app/build/outputs/apk/release/app-release-unsigned.apk || \
-          cp app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release-signed.apk
+            "$APK_PATH"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-Android-Universal
-          path: Mobile/Android/app/build/outputs/apk/release/*.apk
+          path: Mobile/Android/app/build/outputs/apk/release/app-release-signed.apk
           retention-days: 30
 
       - name: Create Release
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: android-${{ github.run_number }}
           name: LaLune Android v${{ github.run_number }}
-          files: Mobile/Android/app/build/outputs/apk/release/*.apk
+          files: Mobile/Android/app/build/outputs/apk/release/app-release-signed.apk
           draft: false
           prerelease: false
         env:

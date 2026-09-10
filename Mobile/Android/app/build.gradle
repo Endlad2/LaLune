@@ -35,7 +35,6 @@ android {
         jvmTarget = '17'
     }
 
-    // Упаковка .so файлов без сжатия
     packagingOptions {
         jniLibs {
             useLegacyPackaging = false
