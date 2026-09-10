@@ -58,12 +58,7 @@ jobs:
           cd Mobile/Android
           gradle assembleRelease --no-daemon
 
-      - name: Find and Sign APK
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - name: Sign APK with debug key
         run: |
           cd Mobile/Android
           
@@ -79,21 +74,30 @@ jobs:
           
           echo "Found APK: $APK_PATH"
           
-          # Декодируем keystore
-          echo "$KEYSTORE_BASE64" | base64 -d > ../../release-key.jks
-          ls -la ../../release-key.jks
+          # Создаём debug keystore
+          if [ ! -f ~/.android/debug.keystore ]; then
+            mkdir -p ~/.android
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
           
-          # Подписываем
+          # Подписываем debug ключом
           $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-            --ks ../../release-key.jks \
-            --ks-pass pass:"$KEYSTORE_PASSWORD" \
-            --key-pass pass:"$KEY_PASSWORD" \
-            --ks-key-alias "$KEY_ALIAS" \
+            --ks ~/.android/debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --ks-key-alias androiddebugkey \
             --out app/build/outputs/apk/release/LaLune-Android.apk \
             "$APK_PATH"
           
-          rm -f ../../release-key.jks
-          echo "Signed with release key"
+          echo "Signed with debug key"
           ls -la app/build/outputs/apk/release/LaLune-Android.apk
 
       - name: Upload Android APK
@@ -247,10 +251,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Display structure
-        run: |
-          find artifacts -type f -exec ls -la {} \;
 
       - name: Prepare release files
         run: |
