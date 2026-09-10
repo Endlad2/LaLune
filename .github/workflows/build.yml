@@ -24,7 +24,7 @@ jobs:
           java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: actions/setup-android@v3
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -58,58 +58,54 @@ jobs:
           cd Mobile/Android
           gradle assembleRelease --no-daemon
 
-      - name: Decode keystore from secrets
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release-key.jks
-          ls -la release-key.jks
-
-      - name: Sign APK (release key)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+      - name: Sign APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           cd Mobile/Android
           APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*signed*" | head -n 1)
           echo "Found APK: $APK_PATH"
           
-          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-            --ks ../../release-key.jks \
-            --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
-            --key-pass pass:${{ secrets.KEY_PASSWORD }} \
-            --ks-key-alias ${{ secrets.KEY_ALIAS }} \
-            --out app/build/outputs/apk/release/LaLune-Android.apk \
-            "$APK_PATH"
-
-      - name: Sign APK (debug fallback)
-        if: ${{ secrets.KEYSTORE_BASE64 == '' }}
-        run: |
-          cd Mobile/Android
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*signed*" | head -n 1)
-          echo "No release key found, using debug key"
-          
-          if [ ! -f ~/.android/debug.keystore ]; then
-            mkdir -p ~/.android
-            keytool -genkeypair -v \
-              -keystore ~/.android/debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Using release keystore from secrets"
+            echo "$KEYSTORE_BASE64" | base64 -d > ../../release-key.jks
+            
+            $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+              --ks ../../release-key.jks \
+              --ks-pass pass:"$KEYSTORE_PASSWORD" \
+              --key-pass pass:"$KEY_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --out app/build/outputs/apk/release/LaLune-Android.apk \
+              "$APK_PATH"
+            
+            rm -f ../../release-key.jks
+          else
+            echo "No release key found, using debug key"
+            
+            if [ ! -f ~/.android/debug.keystore ]; then
+              mkdir -p ~/.android
+              keytool -genkeypair -v \
+                -keystore ~/.android/debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            
+            $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+              --ks ~/.android/debug.keystore \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --ks-key-alias androiddebugkey \
+              --out app/build/outputs/apk/release/LaLune-Android.apk \
+              "$APK_PATH"
           fi
-          
-          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-            --ks ~/.android/debug.keystore \
-            --ks-pass pass:android \
-            --key-pass pass:android \
-            --ks-key-alias androiddebugkey \
-            --out app/build/outputs/apk/release/LaLune-Android.apk \
-            "$APK_PATH"
-
-      - name: Cleanup keystore
-        if: always()
-        run: rm -f release-key.jks
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
