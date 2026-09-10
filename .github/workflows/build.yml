@@ -58,11 +58,33 @@ jobs:
           cd Mobile/Android
           gradle assembleRelease --no-daemon
 
-      - name: Sign APK
+      - name: Decode keystore from secrets
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release-key.jks
+          ls -la release-key.jks
+
+      - name: Sign APK (release key)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         run: |
           cd Mobile/Android
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*signed*" | head -n 1)
           echo "Found APK: $APK_PATH"
+          
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks ../../release-key.jks \
+            --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
+            --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+            --ks-key-alias ${{ secrets.KEY_ALIAS }} \
+            --out app/build/outputs/apk/release/LaLune-Android.apk \
+            "$APK_PATH"
+
+      - name: Sign APK (debug fallback)
+        if: ${{ secrets.KEYSTORE_BASE64 == '' }}
+        run: |
+          cd Mobile/Android
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*signed*" | head -n 1)
+          echo "No release key found, using debug key"
           
           if [ ! -f ~/.android/debug.keystore ]; then
             mkdir -p ~/.android
@@ -84,6 +106,10 @@ jobs:
             --ks-key-alias androiddebugkey \
             --out app/build/outputs/apk/release/LaLune-Android.apk \
             "$APK_PATH"
+
+      - name: Cleanup keystore
+        if: always()
+        run: rm -f release-key.jks
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
