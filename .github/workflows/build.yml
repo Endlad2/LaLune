@@ -132,7 +132,7 @@ jobs:
   # DESKTOP LINUX
   # ============================================
   build-desktop-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -223,17 +223,10 @@ jobs:
         run: |
           mkdir -p release
           
-          # Android
           cp artifacts/LaLune-Android/LaLune-Android.apk release/ 2>/dev/null || true
-          
-          # Windows
           cp artifacts/LaLune-Windows/LaLune.exe release/LaLune-Windows.exe 2>/dev/null || true
-          
-          # Linux
           cp artifacts/LaLune-Linux/LaLune release/LaLune-Linux 2>/dev/null || true
           chmod +x release/LaLune-Linux 2>/dev/null || true
-          
-          # OpenWRT
           cp artifacts/LaLune-OpenWRT-arm64/LaLune-OpenWRT-arm64 release/ 2>/dev/null || true
           cp artifacts/LaLune-OpenWRT-armv7/LaLune-OpenWRT-armv7 release/ 2>/dev/null || true
           
