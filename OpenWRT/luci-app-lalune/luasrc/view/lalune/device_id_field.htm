@@ -1,0 +1,42 @@
+<%
+-- Читаем текущий deviceId через CLI
+local json = luci.sys.exec("/usr/bin/lalune device-id 2>/dev/null")
+local deviceId = ""
+if json and json ~= "" then
+    local ok, data = pcall(function() return luci.jsonc.parse(json) end)
+    if ok and data and data.deviceId then
+        deviceId = data.deviceId
+    end
+end
+%>
+
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <input type="text" id="lalune-device-id"
+           value="<%=luci.util.pcdata(deviceId)%>"
+           readonly
+           style="flex:1;min-width:200px;padding:6px;font-family:monospace;font-size:12px;" />
+    <button type="button" class="cbi-button cbi-button-action"
+            onclick="laluneRegenerateDeviceId()">
+        Перегенерировать
+    </button>
+</div>
+<div style="font-size:12px;color:#888;margin-top:6px;">
+    Используется ядром CSQTT при handshake. Изменение ID сбросит текущую сессию.
+</div>
+
+<script type="text/javascript">
+//<![CDATA[
+function laluneRegenerateDeviceId() {
+    if (!confirm('Перегенерировать Device ID? Текущая сессия, если она есть, оборвётся.')) return;
+    var url = '<%=url("admin/services/lalune/api/device-id-regenerate")%>';
+    XHR.post(url, {}, function(xhr) {
+        try {
+            var r = JSON.parse(xhr.responseText);
+            if (r.deviceId) {
+                document.getElementById('lalune-device-id').value = r.deviceId;
+            }
+        } catch(e) {}
+    });
+}
+//]]>
+</script>

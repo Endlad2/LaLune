@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Создаём каталоги, если их нет
+mkdir -p /etc/lalune/core
+mkdir -p /var/run/lalune
+
+# Права на конфиг — только root
+chmod 600 /etc/lalune/settings.json 2>/dev/null || true
+chmod 600 /etc/lalune/configs.json 2>/dev/null || true
+
+exit 0

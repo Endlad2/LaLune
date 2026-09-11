@@ -141,64 +141,12 @@ jobs:
           path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  build-openwrt-armv7:
-    name: OpenWRT ARMv7
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Build OpenWRT ARMv7
-        run: |
-          cd OpenWRT
-          GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o csqtt-client-armv7 main.go
-          ls -la csqtt-client-armv7
-
-      - name: Upload ARMv7 Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-OpenWRT-armv7
-          path: OpenWRT/csqtt-client-armv7
-          if-no-files-found: error
-
-  build-openwrt-arm64:
-    name: OpenWRT ARM64
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Build OpenWRT ARM64
-        run: |
-          cd OpenWRT
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o csqtt-client-arm64 main.go
-          ls -la csqtt-client-arm64
-
-      - name: Upload ARM64 Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-OpenWRT-arm64
-          path: OpenWRT/csqtt-client-arm64
-          if-no-files-found: error
-
   create-release:
     name: Create Release
     needs:
       - build-desktop-linux
       - build-desktop-windows
       - build-android
-      - build-openwrt-armv7
-      - build-openwrt-arm64
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -212,8 +160,6 @@ jobs:
           zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
-          zip -r LaLune-OpenWRT-armv7.zip LaLune-OpenWRT-armv7 || true
-          zip -r LaLune-OpenWRT-arm64.zip LaLune-OpenWRT-arm64 || true
 
       - name: Get current date
         id: date

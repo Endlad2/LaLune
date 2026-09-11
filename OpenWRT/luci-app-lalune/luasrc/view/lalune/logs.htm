@@ -1,0 +1,58 @@
+<%+header%>
+
+<style type="text/css">
+.lalune-logs {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 4px;
+    padding: 12px;
+    font-family: monospace;
+    font-size: 12px;
+    height: 60vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.lalune-logs-toolbar { margin-bottom: 8px; }
+</style>
+
+<h2 name="content"><%:LaLune — Логи%></h2>
+
+<div class="lalune-logs-toolbar">
+    <button class="cbi-button cbi-button-action" onclick="laluneLoadLogs()">Обновить</button>
+    <label style="margin-left:12px;">
+        <input type="checkbox" id="lalune-autorefresh" checked />
+        Автообновление (3 сек)
+    </label>
+</div>
+
+<div class="lalune-logs" id="lalune-logs">Загрузка...</div>
+
+<script type="text/javascript">
+//<![CDATA[
+var laluneLogsUrl = '<%=url("admin/services/lalune/api/logs")%>';
+
+function laluneLoadLogs() {
+    XHR.get(laluneLogsUrl, null, function(xhr) {
+        var el = document.getElementById('lalune-logs');
+        if (xhr.status === 200) {
+            el.textContent = xhr.responseText || '(пусто)';
+            el.scrollTop = el.scrollHeight;
+        } else {
+            el.textContent = 'Ошибка загрузки логов';
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    laluneLoadLogs();
+    setInterval(function() {
+        if (document.getElementById('lalune-autorefresh').checked) {
+            laluneLoadLogs();
+        }
+    }, 3000);
+});
+//]]>
+</script>
+
+<%+footer%>
