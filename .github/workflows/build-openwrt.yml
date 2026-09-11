@@ -10,9 +10,6 @@ on:
       - '.github/workflows/build-openwrt.yml'
   workflow_dispatch:
 
-# Только артефакты, никаких релизов.
-# permissions не нужны, кроме дефолтных read для checkout.
-
 jobs:
   build:
     strategy:
@@ -21,7 +18,6 @@ jobs:
         include:
           # ─────────────────────────────────────────────────────────
           # RouteRich — кастомная сборка на базе OpenWRT 24.10.
-          # DISTRIB_ID='RouteRich'
           # DISTRIB_DESCRIPTION='RouteRich 24.10.8 r29233-443ec4032a RR-3.12.1'
           # DISTRIB_TARGET='mediatek/filogic'
           # DISTRIB_ARCH='aarch64_cortex-a53'
@@ -30,7 +26,6 @@ jobs:
             short_name: "RouteRich"
             target: "mediatek/filogic"
             openwrt_version: "24.10.8"
-            sdk_arch: "aarch64_cortex-a53"
 
     name: "Build - ${{ matrix.name }}"
     runs-on: ubuntu-22.04
@@ -39,6 +34,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Sanity check — исходники LaLune на месте
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "--- ls $GITHUB_WORKSPACE ---"
+          ls -la "$GITHUB_WORKSPACE"
+          echo "--- ls $GITHUB_WORKSPACE/OpenWRT ---"
+          ls -la "$GITHUB_WORKSPACE/OpenWRT" || { echo "OpenWRT/ not found!"; exit 1; }
+          echo "--- ls $GITHUB_WORKSPACE/OpenWRT/lalune ---"
+          ls -la "$GITHUB_WORKSPACE/OpenWRT/lalune" || { echo "OpenWRT/lalune/ not found!"; exit 1; }
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -46,29 +51,28 @@ jobs:
             build-essential ccache ecj fastjar file g++ gawk \
             gettext git java-propose-classpath libelf-dev libncurses5-dev \
             libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
-            python3-dev rsync subversion swig time xsltproc zlib1g-dev unzip wget
+            python3-dev rsync subversion swig time xsltproc zlib1g-dev unzip wget zstd
 
       - name: Download OpenWRT SDK
         run: |
           SDK_BASE="https://downloads.openwrt.org/releases/${{ matrix.openwrt_version }}/targets/${{ matrix.target }}"
-          SDK_FILE="openwrt-sdk-${{ matrix.openwrt_version }}-${{ matrix.target }}-*_gcc-*_musl.Linux-x86_64.tar.zst"
           echo "Looking for SDK in ${SDK_BASE}"
 
-          # Скачиваем index страницы и выдёргиваем имя файла SDK
           wget -q -O /tmp/sdk-index.html "${SDK_BASE}/" || {
             echo "Cannot fetch ${SDK_BASE}/"
             exit 1
           }
 
-          SDK_URL=$(grep -oE 'openwrt-sdk-[^"]+Linux-x86_64\.tar\.zst' /tmp/sdk-index.html | head -n 1)
-          if [ -z "$SDK_URL" ]; then
+          SDK_FILE=$(grep -oE 'openwrt-sdk-[^"]+Linux-x86_64\.tar\.zst' /tmp/sdk-index.html | head -n 1)
+          if [ -z "$SDK_FILE" ]; then
             echo "SDK archive not found in ${SDK_BASE}/"
+            echo "Available files:"
             grep -oE 'openwrt-sdk-[^"]+' /tmp/sdk-index.html | head
             exit 1
           fi
 
-          echo "Downloading ${SDK_BASE}/${SDK_URL}"
-          wget -q "${SDK_BASE}/${SDK_URL}" -O /tmp/sdk.tar.zst
+          echo "Downloading ${SDK_BASE}/${SDK_FILE}"
+          wget -q "${SDK_BASE}/${SDK_FILE}" -O /tmp/sdk.tar.zst
 
           mkdir -p /opt/sdk
           tar --use-compress-program=unzstd -xf /tmp/sdk.tar.zst -C /opt/sdk
@@ -78,25 +82,31 @@ jobs:
 
       - name: Place LaLune packages into SDK
         run: |
-          cd "$SDK_DIR"
-
-          mkdir -p package/lalune package/luci-app-lalune
+          SRC="$GITHUB_WORKSPACE/OpenWRT"
+          DST="$SDK_DIR/package"
 
           # ── lalune (Go-демон) ──
-          # Makefile и files/ — в корне пакета, .go — в src/
-          cp OpenWRT/lalune/Makefile            package/lalune/Makefile
-          mkdir -p package/lalune/files
-          cp -r OpenWRT/lalune/files/*          package/lalune/files/
-          mkdir -p package/lalune/src
-          cp OpenWRT/lalune/*.go                package/lalune/src/ 2>/dev/null || true
-          cp OpenWRT/lalune/go.mod              package/lalune/src/ 2>/dev/null || true
+          mkdir -p "$DST/lalune/files"
+          mkdir -p "$DST/lalune/src"
 
-          # Проверим что получилось
+          # Makefile
+          cp "$SRC/lalune/Makefile" "$DST/lalune/Makefile"
+
+          # files/ (init.d, config, defaults)
+          cp -r "$SRC/lalune/files/." "$DST/lalune/files/"
+
+          # Go-исходники (go.mod + *.go)
+          cp "$SRC/lalune/"*.go   "$DST/lalune/src/"
+          cp "$SRC/lalune/go.mod" "$DST/lalune/src/"
+
+          # ── luci-app-lalune ──
+          mkdir -p "$DST/luci-app-lalune"
+          cp -r "$SRC/luci-app-lalune/." "$DST/luci-app-lalune/"
+
           echo "--- package/lalune ---"
-          find package/lalune -type f
+          find "$DST/lalune" -type f | sort
           echo "--- package/luci-app-lalune ---"
-          cp -r OpenWRT/luci-app-lalune/*       package/luci-app-lalune/
-          find package/luci-app-lalune -type f
+          find "$DST/luci-app-lalune" -type f | sort
 
       - name: Update and install feeds
         run: |
@@ -108,16 +118,13 @@ jobs:
         run: |
           cd "$SDK_DIR"
 
-          # Включаем оба пакета
           make defconfig
 
-          # Прописываем пакеты как модули в .config
           echo "CONFIG_PACKAGE_lalune=m" >> .config
           echo "CONFIG_PACKAGE_luci-app-lalune=m" >> .config
 
           make defconfig
 
-          # Проверка, что пакеты видны
           grep -E 'CONFIG_PACKAGE_(lalune|luci-app-lalune)' .config || {
             echo "Packages not found in .config!"
             exit 1
@@ -126,19 +133,26 @@ jobs:
       - name: Build lalune
         run: |
           cd "$SDK_DIR"
-          make package/lalune/compile V=s -j$(nproc) 2>&1 | tail -200
+          make package/lalune/compile V=s -j$(nproc) 2>&1 | tail -300
 
       - name: Build luci-app-lalune
         run: |
           cd "$SDK_DIR"
-          make package/luci-app-lalune/compile V=s -j$(nproc) 2>&1 | tail -200
+          make package/luci-app-lalune/compile V=s -j$(nproc) 2>&1 | tail -300
 
       - name: Collect .ipk files
         run: |
           cd "$SDK_DIR"
           mkdir -p /tmp/out
-          find bin/ -name 'lalune_*.ipk' -exec cp {} /tmp/out/ \;
-          find bin/ -name 'luci-app-lalune_*.ipk' -exec cp {} /tmp/out/ \;
+          find bin/ -name 'lalune_*.ipk' -exec cp {} /tmp/out/ \; || true
+          find bin/ -name 'luci-app-lalune_*.ipk' -exec cp {} /tmp/out/ \; || true
+
+          if [ -z "$(ls -A /tmp/out)" ]; then
+            echo "No .ipk files produced!"
+            echo "--- bin/ contents ---"
+            find bin/ -name '*.ipk' | head -20
+            exit 1
+          fi
           ls -la /tmp/out/
 
       - name: Upload OpenWRT artifacts
