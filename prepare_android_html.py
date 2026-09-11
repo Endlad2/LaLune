@@ -6,10 +6,11 @@ prepare_android_html.py
 
 Что делает:
   1. Читает Frontend/app.html (общий Wails-шаблон).
-  2. Заменяет плейсхолдеры {QTWEBCHANNEL_SCRIPT} и {API_SCRIPT}
-     на единый тег <script src="android.js"></script>.
-  3. Создаёт (если нужно) android.js — JS-мост между WebView и AndroidBridge.
-  4. Копирует оба файла в Mobile/Android/app/src/main/assets/.
+  2. Заменяет ОБА плейсхолдера:
+       {QTWEBCHANNEL_SCRIPT}  -> удаляется
+       {API_SCRIPT}           -> заменяется на <script src="android.js"></script>
+  3. Копирует Frontend/android.js в assets/android.js (как есть).
+  4. Копирует готовый app.html в assets/app.html.
 
 Запускать из корня проекта:
     python prepare_android_html.py
@@ -28,20 +29,31 @@ ANDROID_DIR = ROOT_DIR / "Mobile" / "Android"
 ASSETS_DIR = ANDROID_DIR / "app" / "src" / "main" / "assets"
 
 SRC_HTML = FRONTEND_DIR / "app.html"
+SRC_JS = FRONTEND_DIR / "android.js"
 DST_HTML = ASSETS_DIR / "app.html"
 DST_JS = ASSETS_DIR / "android.js"
 
 # ----------------------------- html -------------------------------------
 
-# Заменяем ОБА тега <script src="{...}"></script> на один <script src="android.js"></script>.
-# Поддерживаем оба возможных варианта записи: подряд и через перевод строки.
-PLACEHOLDER_PATTERN = re.compile(
+ANDROID_SCRIPT_TAG = '<script src="android.js"></script>'
+
+# Плейсхолдеры Wails-сборки. Могут идти подряд, могут — раздельно.
+# Заменяем оба на один <script src="android.js">.
+PAIR_PATTERN = re.compile(
     r'<script\s+src="\{QTWEBCHANNEL_SCRIPT\}"></script>\s*'
     r'<script\s+src="\{API_SCRIPT\}"></script>',
     re.IGNORECASE,
 )
 
-ANDROID_SCRIPT_TAG = '<script src="android.js"></script>'
+SINGLE_QTWEB = re.compile(
+    r'<script\s+src="\{QTWEBCHANNEL_SCRIPT\}"></script>',
+    re.IGNORECASE,
+)
+
+SINGLE_API = re.compile(
+    r'<script\s+src="\{API_SCRIPT\}"></script>',
+    re.IGNORECASE,
+)
 
 def build_android_html(src_path: Path) -> str:
     if not src_path.exists():
@@ -49,131 +61,39 @@ def build_android_html(src_path: Path) -> str:
 
     content = src_path.read_text(encoding="utf-8")
 
-    new_content, count = PLACEHOLDER_PATTERN.subn(ANDROID_SCRIPT_TAG, content)
+    # Сначала пробуем заменить оба подряд — самый частый случай.
+    content, pair_count = PAIR_PATTERN.subn(ANDROID_SCRIPT_TAG, content)
 
-    if count == 0:
-        # Fallback: плейсхолдеры могут быть записаны по отдельности (напр. с другим
-        # порядком атрибутов). Тогда чистим их построчно и вставляем тег перед </body>.
-        content = re.sub(
-            r'<script\s+src="\{QTWEBCHANNEL_SCRIPT\}"></script>',
-            "",
-            content,
-            flags=re.IGNORECASE,
-        )
-        content = re.sub(
-            r'<script\s+src="\{API_SCRIPT\}"></script>',
-            "",
-            content,
-            flags=re.IGNORECASE,
-        )
-        new_content = content.replace("</body>", f"    {ANDROID_SCRIPT_TAG}\n</body>")
-        print("  [WARN] Плейсхолдеры не найдены подряд — вставил тег вручную перед </body>")
-    else:
-        print(f"  [OK] Заменено {count} блок(ов) плейсхолдеров на <script src=\"android.js\">")
+    if pair_count > 0:
+        print(f"  [OK] Заменён блок плейсхолдеров ({pair_count} шт.) на {ANDROID_SCRIPT_TAG}")
+        return content
 
-    return new_content
+    # Fallback: плейсхолдеры могут быть раздельно (или в другом порядке).
+    had_any = False
 
-# ----------------------------- android.js --------------------------------
+    if SINGLE_API.search(content):
+        content = SINGLE_API.sub(ANDROID_SCRIPT_TAG, content, count=1)
+        had_any = True
+        print(f"  [OK] {{API_SCRIPT}} -> {ANDROID_SCRIPT_TAG}")
 
-ANDROID_JS_CONTENT = r"""/*
- * android.js — JS-мост между WebView и Kotlin AndroidBridge.
- *
- * Переопределяет window.api (или создаёт его), чтобы фронтенд
- * (Frontend/app.html) работал одинаково и в Wails, и в Android.
- *
- * Точка входа со стороны Kotlin: window.lalune.<method>().
- * Все методы синхронные, возвращают строку/boolean — как ожидает фронт.
- */
+    if SINGLE_QTWEB.search(content):
+        content = SINGLE_QTWEB.sub("", content)
+        had_any = True
+        print("  [OK] {{QTWEBCHANNEL_SCRIPT}} удалён")
 
-(function () {
-    "use strict";
+    if not had_any:
+        # Плейсхолдеров вообще нет — вставим тег перед </body>,
+        # чтобы фронт всё равно подхватил android.js.
+        if "</body>" in content:
+            content = content.replace(
+                "</body>",
+                f"    {ANDROID_SCRIPT_TAG}\n</body>",
+            )
+            print("  [WARN] Плейсхолдеры не найдены — вставил тег перед </body>")
+        else:
+            print("  [WARN] Плейсхолдеры не найдены и </body> отсутствует — ничего не вставлено")
 
-    if (typeof window.lalune === "undefined") {
-        console.error("[android.js] window.lalune не найден — AndroidBridge не подключён");
-        return;
-    }
-
-    // Универсальная обёртка: ловит исключения, чтобы UI не падал молча.
-    function safe(fn, fallback) {
-        try {
-            return fn();
-        } catch (e) {
-            console.error("[android.js] Ошибка вызова:", e);
-            return fallback;
-        }
-    }
-
-    var api = {
-        // ---- конфиги ----
-        GetConfigsJson: function () {
-            return safe(function () { return window.lalune.getConfigs(); }, "[]");
-        },
-        SaveConfig: function (link) {
-            return safe(function () { return window.lalune.saveConfig(link); }, false);
-        },
-        DeleteConfig: function (id) {
-            return safe(function () { return window.lalune.deleteConfig(Number(id)); }, false);
-        },
-
-        // ---- настройки ----
-        GetSettingsJson: function () {
-            return safe(function () { return window.lalune.getSettings(); }, "{}");
-        },
-        SaveSettings: function (json) {
-            return safe(function () { return window.lalune.saveSettings(json); }, false);
-        },
-
-        // ---- логи ----
-        GetLogsJson: function () {
-            return safe(function () { return window.lalune.getLogs(); }, "[]");
-        },
-        ClearLogs: function () {
-            return safe(function () { return window.lalune.clearLogs(); }, false);
-        },
-
-        // ---- статус ----
-        GetStatusJson: function () {
-            return safe(function () { return window.lalune.getStatus(); }, '{"connected":false}');
-        },
-
-        // ---- подключение ----
-        Connect: function (configId) {
-            return safe(function () { return window.lalune.connect(Number(configId)); }, false);
-        },
-        Disconnect: function () {
-            return safe(function () { return window.lalune.disconnect(); }, false);
-        },
-
-        // ---- обновления ----
-        CheckUpdate: function () {
-            return safe(function () { return window.lalune.checkUpdate(); }, '{"update":false,"version":""}');
-        },
-        UpdateCore: function () {
-            return safe(function () { return window.lalune.updateCore(); }, false);
-        },
-        UpdateCoreAndWait: function () {
-            return safe(function () { return window.lalune.updateCoreAndWait(); }, false);
-        },
-    };
-
-    // Экспортируем в window — фронт обращается к window.api.*
-    window.api = api;
-
-    // На случай, если фронт использует Wails-стайл window.go.main.App.*
-    window.go = {
-        main: {
-            App: api,
-        },
-    };
-
-    console.log("[android.js] Мост инициализирован");
-})();
-"""
-
-def write_android_js(dst_path: Path) -> None:
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    dst_path.write_text(ANDROID_JS_CONTENT, encoding="utf-8")
-    print(f"  [OK] Записан android.js → {dst_path}")
+    return content
 
 # ----------------------------- main --------------------------------------
 
@@ -185,11 +105,16 @@ def main() -> int:
         print(f"[ERROR] Не найдена папка Android: {ANDROID_DIR}")
         return 1
 
+    if not SRC_JS.exists():
+        print(f"[ERROR] Не найден Frontend/android.js: {SRC_JS}")
+        print("        Создай его в Frontend/ — это JS-мост + UI-логика для Android.")
+        return 1
+
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[OK] Папка assets: {ASSETS_DIR}")
 
-    # 1) HTML
-    print("\n[1/3] Обработка Frontend/app.html ...")
+    # 1) HTML — подставляем тег <script src="android.js">
+    print("\n[1/2] Обработка Frontend/app.html ...")
     try:
         html = build_android_html(SRC_HTML)
     except Exception as e:
@@ -199,12 +124,13 @@ def main() -> int:
     DST_HTML.write_text(html, encoding="utf-8")
     print(f"  [OK] Записан app.html → {DST_HTML}")
 
-    # 2) android.js
-    print("\n[2/3] Генерация android.js ...")
-    write_android_js(DST_JS)
+    # 2) JS — просто копируем Frontend/android.js в assets/
+    print("\n[2/2] Копирование Frontend/android.js ...")
+    shutil.copy2(SRC_JS, DST_JS)
+    print(f"  [OK] Записан android.js → {DST_JS}")
 
-    # 3) Проверка
-    print("\n[3/3] Проверка результата:")
+    # Проверка
+    print("\nПроверка результата:")
     for p in (DST_HTML, DST_JS):
         size = p.stat().st_size
         print(f"  {p.relative_to(ROOT_DIR)}  —  {size} байт")
