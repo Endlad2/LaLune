@@ -1,23 +1,108 @@
-name: Build All Platforms
+name: Build LaLune
 
 on:
   push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
+    branches:
+      - main
+      - release
   workflow_dispatch:
 
+# КРИТИЧНО: contents: write нужен для softprops/action-gh-release,
+# иначе он ловит 403 "Resource not accessible by integration".
+permissions:
+  contents: write
+
 jobs:
-  # ============================================
-  # ANDROID BUILD
-  # ============================================
-  build-android:
-    runs-on: ubuntu-latest
+  build-desktop-linux:
+    name: Desktop Linux
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Wails
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            pkg-config \
+            gcc \
+            build-essential
+
+      - name: Build Desktop Linux
+        run: |
+          python3 build_desktop.py --platform Linux
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Linux
+          path: |
+            Desktop/Linux/build/bin/*
+          if-no-files-found: error
+
+  build-desktop-windows:
+    name: Desktop Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Wails
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Desktop Windows
+        run: |
+          python build_desktop.py --platform Windows
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Windows
+          path: |
+            Desktop/Windows/build/bin/*
+          if-no-files-found: error
+
+  build-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -26,188 +111,48 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.4'
-
-      - name: Download core binaries
+      - name: Prepare Android frontend (app.html + android.js)
         run: |
-          mkdir -p Mobile/Android/app/src/main/jniLibs/arm64-v8a
-          mkdir -p Mobile/Android/app/src/main/jniLibs/armeabi-v7a
-          mkdir -p Mobile/Android/app/src/main/jniLibs/x86_64
+          python prepare_android_html.py
 
-          echo "Downloading ARM64..."
-          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so \
-            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
-
-          echo "Downloading ARMv7..."
-          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so \
-            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
-
-          echo "Downloading x86_64..."
-          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
-            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
-
-          ls -la Mobile/Android/app/src/main/jniLibs/arm64-v8a/
-          ls -la Mobile/Android/app/src/main/jniLibs/armeabi-v7a/
-          ls -la Mobile/Android/app/src/main/jniLibs/x86_64/
-
-      - name: Build APK
+      - name: Verify assets
         run: |
-          cd Mobile/Android
-          gradle assembleRelease --no-daemon
+          ls -la Mobile/Android/app/src/main/assets/
 
-      - name: Sign APK with debug key
+      - name: Build Android APK
+        working-directory: Mobile/Android
         run: |
-          cd Mobile/Android
-          
-          echo "=== Searching for APK files ==="
-          find . -type f -name "*.apk" -exec ls -la {} \;
-          
-          APK_PATH=$(find . -type f -name "*.apk" | head -n 1)
-          
-          if [ -z "$APK_PATH" ]; then
-            echo "ERROR: No APK found anywhere in Mobile/Android"
+          chmod +x ./gradlew || true
+          if [ -f ./gradlew ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
+
+      - name: Locate APK
+        id: find_apk
+        run: |
+          APK=$(find Mobile/Android -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "APK not found!"
+            find Mobile/Android -name "build" -type d
             exit 1
           fi
-          
-          echo "Found APK: $APK_PATH"
-          
-          # Создаём debug keystore
-          if [ ! -f ~/.android/debug.keystore ]; then
-            mkdir -p ~/.android
-            keytool -genkeypair -v \
-              -keystore ~/.android/debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
-          
-          # Подписываем debug ключом
-          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-            --ks ~/.android/debug.keystore \
-            --ks-pass pass:android \
-            --key-pass pass:android \
-            --ks-key-alias androiddebugkey \
-            --out app/build/outputs/apk/release/LaLune-Android.apk \
-            "$APK_PATH"
-          
-          echo "Signed with debug key"
-          ls -la app/build/outputs/apk/release/LaLune-Android.apk
+          echo "apk=$APK" >> $GITHUB_OUTPUT
+          echo "Found APK: $APK"
 
-      - name: Upload Android APK
+      - name: Upload Android Artifact
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-Android
-          path: Mobile/Android/app/build/outputs/apk/release/LaLune-Android.apk
-          retention-days: 30
-
-  # ============================================
-  # DESKTOP WINDOWS
-  # ============================================
-  build-desktop-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-        shell: bash
-
-      - name: Build Windows Desktop
-        run: |
-          if [ -f "LaLune/build_desktop.py" ]; then
-            cd LaLune
-          fi
-          python build_desktop.py --platform Windows
-        shell: bash
-
-      - name: Upload Windows Desktop
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-Windows
-          path: |
-            Desktop/Windows/build/bin/LaLune.exe
-            LaLune/Desktop/Windows/build/bin/LaLune.exe
-          retention-days: 30
+          path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  # ============================================
-  # DESKTOP LINUX
-  # ============================================
-  build-desktop-linux:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
-
-      - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Build Linux Desktop
-        run: |
-          if [ -f "LaLune/build_desktop.py" ]; then
-            cd LaLune
-          fi
-          python build_desktop.py --platform Linux
-
-      - name: Upload Linux Desktop
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-Linux
-          path: |
-            Desktop/Linux/build/bin/LaLune
-            LaLune/Desktop/Linux/build/bin/LaLune
-          retention-days: 30
-          if-no-files-found: error
-
-  # ============================================
-  # OPENWRT
-  # ============================================
-  build-openwrt:
+  build-openwrt-armv7:
+    name: OpenWRT ARMv7
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            goarch: arm64
-            goarm: ""
-          - arch: armv7
-            goarch: arm
-            goarm: "7"
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Go
@@ -215,64 +160,85 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build OpenWRT
-        env:
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-          CGO_ENABLED: 0
+      - name: Build OpenWRT ARMv7
         run: |
-          if [ -d "LaLune/OpenWRT" ]; then
-            cd LaLune/OpenWRT
-          else
-            cd OpenWRT
-          fi
-          go build -ldflags="-s -w" -o LaLune-OpenWRT-${{ matrix.arch }} main.go
+          cd OpenWRT
+          GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o csqtt-client-armv7 main.go
+          ls -la csqtt-client-armv7
 
-      - name: Upload OpenWRT
+      - name: Upload ARMv7 Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-OpenWRT-${{ matrix.arch }}
-          path: |
-            OpenWRT/LaLune-OpenWRT-${{ matrix.arch }}
-            LaLune/OpenWRT/LaLune-OpenWRT-${{ matrix.arch }}
-          retention-days: 30
+          name: LaLune-OpenWRT-armv7
+          path: OpenWRT/csqtt-client-armv7
           if-no-files-found: error
 
-  # ============================================
-  # RELEASE
-  # ============================================
-  release:
-    needs: [build-android, build-desktop-windows, build-desktop-linux, build-openwrt]
+  build-openwrt-arm64:
+    name: OpenWRT ARM64
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build OpenWRT ARM64
+        run: |
+          cd OpenWRT
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o csqtt-client-arm64 main.go
+          ls -la csqtt-client-arm64
+
+      - name: Upload ARM64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-OpenWRT-arm64
+          path: OpenWRT/csqtt-client-arm64
+          if-no-files-found: error
+
+  create-release:
+    name: Create Release
+    needs:
+      - build-desktop-linux
+      - build-desktop-windows
+      - build-android
+      - build-openwrt-armv7
+      - build-openwrt-arm64
+    runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: release/
 
-      - name: Prepare release files
+      - name: Show downloaded structure
+        run: find release -type f | head -50
+
+      - name: Create ZIP archives
         run: |
-          mkdir -p release
-          
-          find artifacts -name "LaLune-Android.apk" -exec cp {} release/ \; 2>/dev/null || true
-          find artifacts -name "LaLune.exe" -exec cp {} release/LaLune-Windows.exe \; 2>/dev/null || true
-          find artifacts -name "LaLune" -not -name "*.exe" -exec cp {} release/LaLune-Linux \; 2>/dev/null || true
-          chmod +x release/LaLune-Linux 2>/dev/null || true
-          find artifacts -name "LaLune-OpenWRT-arm64" -exec cp {} release/ \; 2>/dev/null || true
-          find artifacts -name "LaLune-OpenWRT-armv7" -exec cp {} release/ \; 2>/dev/null || true
-          
-          echo "Release files:"
-          ls -la release/
+          cd release
+          zip -r LaLune-Linux.zip LaLune-Linux/ || true
+          zip -r LaLune-Windows.zip LaLune-Windows/ || true
+          zip -r LaLune-Android.zip LaLune-Android/ || true
+          zip -r LaLune-OpenWRT-armv7.zip LaLune-OpenWRT-armv7/ || true
+          zip -r LaLune-OpenWRT-arm64.zip LaLune-OpenWRT-arm64/ || true
+          ls -la
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: LaLune v${{ github.run_number }}
-          files: release/*
+          tag_name: ${{ steps.date.outputs.date }}
+          name: Release ${{ steps.date.outputs.date }}
+          files: |
+            release/*.zip
           draft: false
           prerelease: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
