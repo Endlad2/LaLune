@@ -22,8 +22,8 @@ if (typeof window._lalune_loaded === 'undefined') {
     };
 
     // ============================================================
-    //  Мост: приводит синхронный window.lalune к Promise-виду,
-    //  который ожидает UI (в desktop-api.js был window.go.main.App).
+    //  Мост: оборачивает синхронный window.lalune в Promise-API,
+    //  который ожидает UI-код (в desktop-api.js был window.go.main.App).
     // ============================================================
 
     function bridgeCall(method, ...args) {
@@ -43,8 +43,6 @@ if (typeof window._lalune_loaded === 'undefined') {
         });
     }
 
-    // Обёртка, которая маскируется под window.go.main.App,
-    // чтобы остальной UI-код работал без изменений.
     const AndroidApi = {
         GetConfigsJson:  () => bridgeCall('getConfigs'),
         SaveConfig:      (link) => bridgeCall('saveConfig', link),
@@ -59,6 +57,10 @@ if (typeof window._lalune_loaded === 'undefined') {
         CheckUpdate:     ()     => bridgeCall('checkUpdate'),
         UpdateCore:      ()     => bridgeCall('updateCore'),
         UpdateCoreAndWait: ()   => bridgeCall('updateCoreAndWait'),
+
+        // Device ID
+        GetDeviceId:        () => bridgeCall('getDeviceId'),
+        RegenerateDeviceId: () => bridgeCall('regenerateDeviceId'),
     };
 
     function getApi() {
@@ -69,7 +71,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     }
 
     // ============================================================
-    //  Дальше — UI-логика из desktop-api.js, без изменений.
+    //  UI-логика (из desktop-api.js)
     // ============================================================
 
     document.addEventListener('DOMContentLoaded', function() {
@@ -320,6 +322,11 @@ if (typeof window._lalune_loaded === 'undefined') {
         const api = getApi();
         if (!api) return;
 
+        if (!currentSettings.peer || !currentSettings.password) {
+            showToast('Выберите конфиг');
+            return;
+        }
+
         const settings = {
             peer: currentSettings.peer,
             vkHashes: currentSettings.vkHashes,
@@ -329,15 +336,9 @@ if (typeof window._lalune_loaded === 'undefined') {
             clientIds: document.getElementById('settingClientIds')?.value || '8202606,6287487',
             vkAuthMode: 'vkcalls',
             captchaMode: 'auto',
-            deviceId: '',
             autoConnect: false,
             password: currentSettings.password
         };
-
-        if (!settings.peer || !settings.password) {
-            showToast('Выберите конфиг или заполните настройки');
-            return;
-        }
 
         api.SaveSettings(JSON.stringify(settings)).then(function(saved) {
             if (saved && selectedConfigId !== null) {
@@ -611,6 +612,21 @@ if (typeof window._lalune_loaded === 'undefined') {
                         </div>
                     </div>
                 </div>
+                <div class="settings-group">
+                    <div class="group-title open" onclick="toggleSettingsGroup(this)">
+                        <span>Device ID</span>
+                        <span class="arrow">▼</span>
+                    </div>
+                    <div class="group-body open">
+                        <div class="settings-row">
+                            <label>Device ID</label>
+                            <input type="text" id="settingDeviceId" readonly style="font-size:12px;">
+                        </div>
+                        <button class="btn-secondary" style="width:100%;margin-top:6px;" onclick="regenerateDeviceId()">
+                            Перегенерировать
+                        </button>
+                    </div>
+                </div>
                 <button class="btn-primary" style="width:100%;margin-top:10px;" onclick="saveSettings()">Сохранить настройки</button>
             </div>
         `;
@@ -632,8 +648,28 @@ if (typeof window._lalune_loaded === 'undefined') {
                     currentSettings.workersPerHash = settings.workersPerHash;
                     document.getElementById('settingWorkers').value = settings.workersPerHash;
                 }
+                const devField = document.getElementById('settingDeviceId');
+                if (devField) devField.value = settings.deviceId || '';
             } catch(e) {}
         }).catch(function() {});
+    }
+
+    function regenerateDeviceId() {
+        const api = getApi();
+        if (!api) return;
+
+        api.RegenerateDeviceId().then(function(newId) {
+            if (newId) {
+                const field = document.getElementById('settingDeviceId');
+                if (field) field.value = newId;
+                showToast('Device ID перегенерирован');
+                console.log('[android.js] Новый deviceId:', newId);
+            } else {
+                showToast('Ошибка перегенерации');
+            }
+        }).catch(function() {
+            showToast('Ошибка перегенерации');
+        });
     }
 
     function saveSettings() {
@@ -653,8 +689,9 @@ if (typeof window._lalune_loaded === 'undefined') {
             clientIds: document.getElementById('settingClientIds')?.value || '8202606,6287487',
             vkAuthMode: 'vkcalls',
             captchaMode: 'auto',
-            deviceId: '',
             autoConnect: document.getElementById('settingAutoConnect')?.checked || false
+            // deviceId намеренно не отправляем — нативный код сам подставит
+            // актуальный из SharedPreferences
         };
 
         const api = getApi();
@@ -687,7 +724,7 @@ if (typeof window._lalune_loaded === 'undefined') {
 
             <div class="info-block">
                 <div class="label">Версия ядра</div>
-                <div class="value">2.0.0</div>
+                <div class="value">2.1.9</div>
             </div>
 
             <div class="info-block">
@@ -824,7 +861,7 @@ if (typeof window._lalune_loaded === 'undefined') {
         });
     }
 
-    // Экспорт
+    // Экспорт в window — чтобы inline onclick в HTML работал
     window.loadConfigs = loadConfigs;
     window.renderConfigs = renderConfigs;
     window.selectConfig = selectConfig;
@@ -848,6 +885,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     window.updateCoreFromBanner = updateCoreFromBanner;
     window.toggleConfigDropdown = toggleConfigDropdown;
     window.toggleSettingsGroup = toggleSettingsGroup;
+    window.regenerateDeviceId = regenerateDeviceId;
 
     console.log('[android.js] Мост инициализирован');
 }

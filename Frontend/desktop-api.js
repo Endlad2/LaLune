@@ -2,7 +2,7 @@
 
 if (typeof window._lalune_loaded === 'undefined') {
     window._lalune_loaded = true;
-    
+
     let currentConfigs = [];
     let selectedConfigId = null;
     let isConnected = false;
@@ -78,7 +78,7 @@ if (typeof window._lalune_loaded === 'undefined') {
             setTimeout(loadConfigs, 1000);
             return;
         }
-        
+
         api.GetConfigsJson().then(function(result) {
             try {
                 currentConfigs = JSON.parse(result);
@@ -96,29 +96,29 @@ if (typeof window._lalune_loaded === 'undefined') {
     function renderConfigs() {
         const dropdown = document.getElementById('configDropdown');
         if (!dropdown) return;
-        
+
         dropdown.innerHTML = '';
-        
+
         if (currentConfigs.length === 0) {
             dropdown.innerHTML = '<div class="config-item" style="justify-content:center;color:rgba(255,255,255,0.5);">Нет конфигов. Нажмите + чтобы добавить</div>';
             return;
         }
-        
+
         currentConfigs.forEach(function(config) {
             const item = document.createElement('div');
             item.className = 'config-item';
             if (selectedConfigId === config.id) item.classList.add('selected');
-            
+
             const badge = document.createElement('span');
             badge.className = 'protocol-badge';
             badge.textContent = config.protocol || 'CSQTT';
             item.appendChild(badge);
-            
+
             const nameSpan = document.createElement('span');
             nameSpan.className = 'config-name';
             nameSpan.textContent = config.name || config.peer || 'Config';
             item.appendChild(nameSpan);
-            
+
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'delete-btn';
             deleteBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
@@ -127,14 +127,14 @@ if (typeof window._lalune_loaded === 'undefined') {
                 deleteConfig(config.id);
             };
             item.appendChild(deleteBtn);
-            
+
             item.onclick = function() {
                 selectConfig(config.id);
             };
-            
+
             dropdown.appendChild(item);
         });
-        
+
         updateSelectedConfigName();
     }
 
@@ -159,7 +159,7 @@ if (typeof window._lalune_loaded === 'undefined') {
 
     function selectConfig(id) {
         selectedConfigId = id;
-        
+
         const config = currentConfigs.find(c => c.id === id);
         if (!config) return;
 
@@ -172,11 +172,11 @@ if (typeof window._lalune_loaded === 'undefined') {
         const header = document.querySelector('.config-selector-header');
         if (dropdown) dropdown.classList.remove('open');
         if (header) header.classList.remove('open');
-        
+
         document.querySelectorAll('.config-item').forEach(function(item) {
             item.classList.remove('selected');
         });
-        
+
         const statusText = document.getElementById('statusText');
         if (statusText) statusText.textContent = 'Готов к подключению';
 
@@ -189,7 +189,7 @@ if (typeof window._lalune_loaded === 'undefined') {
         if (!confirm('Удалить этот конфиг?')) return;
         const api = getApi();
         if (!api) return;
-        
+
         api.DeleteConfig(id).then(function(result) {
             if (result) {
                 showToast('Конфиг удален');
@@ -220,7 +220,7 @@ if (typeof window._lalune_loaded === 'undefined') {
         const link = input.value.trim();
         const api = getApi();
         if (!api) return;
-        
+
         api.SaveConfig(link).then(function(result) {
             if (result) {
                 showToast('Конфиг сохранен');
@@ -244,13 +244,13 @@ if (typeof window._lalune_loaded === 'undefined') {
 
     function connectWithUpdateCheck() {
         if (isCheckingUpdate || isUpdating) return;
-        
+
         const api = getApi();
         if (!api) return;
-        
+
         isCheckingUpdate = true;
         showToast('Проверка обновлений...');
-        
+
         api.CheckUpdate().then(function(result) {
             isCheckingUpdate = false;
             try {
@@ -273,7 +273,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     function connect() {
         const api = getApi();
         if (!api) return;
-        
+
         const settings = {
             peer: currentSettings.peer,
             vkHashes: currentSettings.vkHashes,
@@ -317,7 +317,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     function disconnect() {
         const api = getApi();
         if (!api) return;
-        
+
         api.Disconnect().then(function(result) {
             if (result) {
                 showToast('Отключено');
@@ -349,7 +349,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     function loadLogs() {
         const api = getApi();
         if (!api) return;
-        
+
         api.GetLogsJson().then(function(result) {
             try {
                 const logs = JSON.parse(result);
@@ -372,7 +372,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     function clearLogs() {
         const api = getApi();
         if (!api) return;
-        
+
         api.ClearLogs().then(function(result) {
             if (result) {
                 const content = document.getElementById('logsContent');
@@ -390,14 +390,14 @@ if (typeof window._lalune_loaded === 'undefined') {
                 btn.classList.add('active');
             }
         });
-        
+
         const container = document.getElementById('content');
         if (!container) return;
-        
+
         container.innerHTML = '';
         container.style.justifyContent = 'center';
         container.style.overflowY = 'auto';
-        
+
         if (tab === 'connection') {
             renderConnectionTab(container);
         } else if (tab === 'logs') {
@@ -412,7 +412,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     function renderConnectionTab(container) {
         container.style.justifyContent = 'center';
         container.style.overflowY = 'hidden';
-        
+
         const moonContainer = document.createElement('div');
         moonContainer.className = 'moon-container';
         moonContainer.id = 'moonContainer';
@@ -438,13 +438,13 @@ if (typeof window._lalune_loaded === 'undefined') {
             </div>
         `;
         container.appendChild(moonContainer);
-        
+
         const statusText = document.createElement('div');
         statusText.className = 'status-text';
         statusText.id = 'statusText';
         statusText.textContent = isConnected ? 'Подключено' : 'Отключено';
         container.appendChild(statusText);
-        
+
         const configSelector = document.createElement('div');
         configSelector.className = 'config-selector';
         configSelector.innerHTML = `
@@ -457,7 +457,7 @@ if (typeof window._lalune_loaded === 'undefined') {
             <div class="config-dropdown" id="configDropdown"></div>
         `;
         container.appendChild(configSelector);
-        
+
         renderConfigs();
         setConnected(isConnected);
     }
@@ -465,7 +465,7 @@ if (typeof window._lalune_loaded === 'undefined') {
     function renderLogsTab(container) {
         container.style.justifyContent = 'flex-start';
         container.style.overflowY = 'hidden';
-        
+
         const logsContainer = document.createElement('div');
         logsContainer.id = 'logsContainer';
         logsContainer.className = 'logs-container';
@@ -485,14 +485,14 @@ if (typeof window._lalune_loaded === 'undefined') {
             <div id="logsContent">Загрузка логов...</div>
         `;
         container.appendChild(logsContainer);
-        
+
         loadLogs();
     }
 
     function renderSettingsTab(container) {
         container.style.justifyContent = 'flex-start';
         container.style.overflowY = 'auto';
-        
+
         const settingsBlock = document.createElement('div');
         settingsBlock.id = 'settingsBlock';
         settingsBlock.style.width = '100%';
@@ -569,10 +569,10 @@ if (typeof window._lalune_loaded === 'undefined') {
             </div>
         `;
         container.appendChild(settingsBlock);
-        
+
         const api = getApi();
         if (!api) return;
-        
+
         api.GetSettingsJson().then(function(result) {
             try {
                 const settings = JSON.parse(result);
@@ -613,7 +613,7 @@ if (typeof window._lalune_loaded === 'undefined') {
 
         const api = getApi();
         if (!api) return;
-        
+
         api.SaveSettings(JSON.stringify(settings)).then(function(result) {
             if (result) {
                 showToast('Настройки сохранены');
@@ -629,7 +629,7 @@ if (typeof window._lalune_loaded === 'undefined') {
         container.style.justifyContent = 'flex-start';
         container.style.overflowY = 'auto';
         container.style.paddingTop = '20px';
-        
+
         const infoBlock = document.createElement('div');
         infoBlock.id = 'infoBlock';
         infoBlock.style.textAlign = 'center';
@@ -638,12 +638,12 @@ if (typeof window._lalune_loaded === 'undefined') {
         infoBlock.innerHTML = `
             <div class="info-title">🌙 LaLune</div>
             <div class="info-sub">Desktop Client v0.5.0</div>
-            
+
             <div class="info-block">
                 <div class="label">Версия ядра</div>
-                <div class="value">2.0.0</div>
+                <div class="value">2.1.9</div>
             </div>
-            
+
             <div class="info-block">
                 <div class="label">Авторы</div>
                 <div class="value" style="line-height:1.8;">
@@ -651,7 +651,7 @@ if (typeof window._lalune_loaded === 'undefined') {
                     <div>LaLune — <span style="color:#4a6cf7;">@Endlad7373</span></div>
                 </div>
             </div>
-            
+
             <div class="info-block" style="text-align:left;">
                 <div class="label" style="margin-bottom:8px;">Поддержать LaLune</div>
                 <div class="value" style="line-height:1.6;font-size:14px;">
@@ -659,7 +659,7 @@ if (typeof window._lalune_loaded === 'undefined') {
                     <div>🎨 NFT: <span style="color:#4a6cf7;">в Telegram @Endlad7373</span></div>
                 </div>
             </div>
-            
+
             <div class="info-block" style="text-align:left;">
                 <div class="label" style="margin-bottom:8px;">Поддержать CSQTT</div>
                 <div class="value" style="line-height:1.8;font-size:14px;">
@@ -730,15 +730,15 @@ if (typeof window._lalune_loaded === 'undefined') {
     function updateCoreFromBanner() {
         if (isUpdating) return;
         isUpdating = true;
-        
+
         const api = getApi();
         if (!api) {
             isUpdating = false;
             return;
         }
-        
+
         showToast('Обновление...');
-        
+
         api.UpdateCoreAndWait().then(function(result) {
             isUpdating = false;
             if (result) {
@@ -756,15 +756,15 @@ if (typeof window._lalune_loaded === 'undefined') {
     function updateCore() {
         if (isUpdating) return;
         isUpdating = true;
-        
+
         const api = getApi();
         if (!api) {
             isUpdating = false;
             return;
         }
-        
+
         showToast('Обновление...');
-        
+
         api.UpdateCoreAndWait().then(function(result) {
             isUpdating = false;
             if (result) {

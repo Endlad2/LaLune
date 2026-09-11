@@ -18,7 +18,7 @@ class CoreManager(private val context: Context) {
     private val latestFile: File by lazy { File(appDir, "LATEST") }
     private var coreProcess: Process? = null
     private var isRunning = false
-    
+
     private val LATEST_URL = "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
     private val CORE_URL_TEMPLATE = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
     private val PROXY_URL = "http://31.77.148.203:8855/?url="
@@ -33,14 +33,14 @@ class CoreManager(private val context: Context) {
             else -> null
         }
     }
-    
+
     fun getCorePath(): String? {
         val coreName = getCoreName() ?: return null
         val nativeDir = context.applicationInfo.nativeLibraryDir
         val coreFile = File(nativeDir, coreName)
         return if (coreFile.exists()) coreFile.absolutePath else null
     }
-    
+
     suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
         val corePath = getCorePath()
         if (corePath != null) {
@@ -50,39 +50,36 @@ class CoreManager(private val context: Context) {
         writeLog("[CORE] Ядро не найдено, скачиваю...")
         return@withContext downloadCore()
     }
-    
+
     private suspend fun downloadCore(): Boolean = withContext(Dispatchers.IO) {
         val coreName = getCoreName() ?: return@withContext false
-        
-        // Создаём директорию
+
         coreDir.mkdirs()
-        
+
         val version = fetchLatestVersion()
         if (version == null) {
             writeLog("[ERROR] Не удалось получить LATEST")
             return@withContext false
         }
-        
+
         val url = String.format(CORE_URL_TEMPLATE, version, coreName)
         writeLog("[CORE] Скачивание: $url")
-        
+
         val destFile = File(coreDir, coreName)
-        
-        // Трёхуровневая загрузка
+
         if (!downloadFile(url, destFile)) {
             writeLog("[ERROR] Не удалось скачать ядро")
             return@withContext false
         }
-        
+
         latestFile.writeText(version)
         destFile.setExecutable(true, false)
         writeLog("[CORE] Ядро скачано: ${destFile.absolutePath}")
-        
+
         return@withContext true
     }
-    
+
     private suspend fun fetchLatestVersion(): String? = withContext(Dispatchers.IO) {
-        // Уровень 1: прямой
         try {
             val conn = URL(LATEST_URL).openConnection() as HttpURLConnection
             conn.connectTimeout = 30000
@@ -94,8 +91,7 @@ class CoreManager(private val context: Context) {
         } catch (e: Exception) {
             writeLog("[NET] Уровень 1: ${e.message}")
         }
-        
-        // Уровень 2: прокси
+
         try {
             val proxyUrl = PROXY_URL + URLEncoder.encode(LATEST_URL, "UTF-8")
             val conn = URL(proxyUrl).openConnection() as HttpURLConnection
@@ -108,8 +104,7 @@ class CoreManager(private val context: Context) {
         } catch (e: Exception) {
             writeLog("[NET] Уровень 2: ${e.message}")
         }
-        
-        // Уровень 3: прокси + curl UA
+
         try {
             val proxyUrl = PROXY_URL + URLEncoder.encode(LATEST_URL, "UTF-8")
             val conn = URL(proxyUrl).openConnection() as HttpURLConnection
@@ -122,14 +117,13 @@ class CoreManager(private val context: Context) {
         } catch (e: Exception) {
             writeLog("[NET] Уровень 3: ${e.message}")
         }
-        
+
         return@withContext null
     }
-    
+
     private suspend fun downloadFile(url: String, dest: File): Boolean = withContext(Dispatchers.IO) {
         dest.parentFile?.mkdirs()
-        
-        // Уровень 1
+
         try {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 30000
@@ -147,8 +141,7 @@ class CoreManager(private val context: Context) {
         } catch (e: Exception) {
             writeLog("[DOWNLOAD] Уровень 1: ${e.message}")
         }
-        
-        // Уровень 2
+
         try {
             val proxyUrl = PROXY_URL + URLEncoder.encode(url, "UTF-8")
             val conn = URL(proxyUrl).openConnection() as HttpURLConnection
@@ -167,8 +160,7 @@ class CoreManager(private val context: Context) {
         } catch (e: Exception) {
             writeLog("[DOWNLOAD] Уровень 2: ${e.message}")
         }
-        
-        // Уровень 3
+
         try {
             val proxyUrl = PROXY_URL + URLEncoder.encode(url, "UTF-8")
             val conn = URL(proxyUrl).openConnection() as HttpURLConnection
@@ -187,20 +179,20 @@ class CoreManager(private val context: Context) {
         } catch (e: Exception) {
             writeLog("[DOWNLOAD] Уровень 3: ${e.message}")
         }
-        
+
         return@withContext false
     }
-    
+
     suspend fun startCore(peer: String, password: String, hashes: String): Boolean = withContext(Dispatchers.IO) {
-        // Проверяем ядро
         if (getCorePath() == null) {
             if (!checkCore()) {
                 return@withContext false
             }
         }
-        
+
         val corePath = getCorePath() ?: return@withContext false
-        
+
+        // Читаем settings.json
         val settingsFile = File(appDir, "settings.json")
         val settings = if (settingsFile.exists()) {
             try {
@@ -211,15 +203,23 @@ class CoreManager(private val context: Context) {
         } else {
             org.json.JSONObject()
         }
-        
+
         val workers = settings.optInt("workersPerHash", 9)
         val obfs = settings.optString("obfs", "video")
         val fingerprint = settings.optString("fingerprint", "firefox")
         val clientIds = settings.optString("clientIds", "8202606,6287487")
         val vkAuthMode = settings.optString("vkAuthMode", "vkcalls")
         val captchaMode = settings.optString("captchaMode", "auto")
-        val deviceId = settings.optString("deviceId", "")
-        
+
+        // deviceId — ОБЯЗАТЕЛЬНО. Если в settings.json пусто —
+        // берём из SharedPreferences (там он гарантированно есть).
+        var deviceId = settings.optString("deviceId", "")
+        if (deviceId.isBlank()) {
+            deviceId = DeviceId.getOrCreate(context)
+            DeviceId.syncToSettingsFile(context, deviceId)
+            writeLog("[DEVICE] deviceId отсутствовал, восстановлен: $deviceId")
+        }
+
         val args = listOf(
             corePath,
             "-peer", peer,
@@ -234,32 +234,34 @@ class CoreManager(private val context: Context) {
             "-captcha-mode", captchaMode,
             "-device-id", deviceId
         )
-        
+
         try {
-            logsFile.writeText("") // Очищаем логи перед запуском
-            
+            logsFile.writeText("")
+
             val processBuilder = ProcessBuilder(args)
             processBuilder.redirectErrorStream(true)
             processBuilder.directory(coreDir)
-            
+
             coreProcess = processBuilder.start()
             isRunning = true
-            
-            // Читаем логи в фоне
+
             val process = coreProcess
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     process?.inputStream?.bufferedReader()?.use { reader ->
                         var line: String?
                         while (reader.readLine().also { line = it } != null) {
-                            line?.let { logsFile.appendText(it + "\n") }
+                            line?.let {
+                                logsFile.appendText(it + "\n")
+                                Log.d("LaLune-Core", it)
+                            }
                         }
                     }
                 } catch (e: Exception) {
                     // Процесс завершён
                 }
             }
-            
+
             writeLog("[CORE] Процесс запущен: ${args.joinToString(" ")}")
             return@withContext true
         } catch (e: Exception) {
@@ -267,7 +269,7 @@ class CoreManager(private val context: Context) {
             return@withContext false
         }
     }
-    
+
     fun stopCore() {
         isRunning = false
         try {
@@ -278,9 +280,9 @@ class CoreManager(private val context: Context) {
             writeLog("[CORE] Ошибка остановки: ${e.message}")
         }
     }
-    
+
     fun isRunning(): Boolean = isRunning
-    
+
     private fun writeLog(message: String) {
         logsFile.appendText(message + "\n")
         Log.d("LaLune", message)
