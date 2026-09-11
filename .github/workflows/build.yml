@@ -99,12 +99,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # setup-gradle ставит актуальную стабильную Gradle и настраивает кеши.
-      # Заодно выставляет переменную GRADLE_HOME и добавляет bin в PATH.
+      # AGP 8.5.2 требует Gradle >= 8.7
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.5'
+          gradle-version: '8.9'
 
       - name: Prepare Android frontend
         run: python prepare_android_html.py
