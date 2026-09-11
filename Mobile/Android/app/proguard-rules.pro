@@ -1,5 +1,14 @@
-# Keep WebView JS interface
+# LaLune ProGuard rules
+# Пока minifyEnabled=false, файл не используется, но пусть будет заготовкой.
+
+# Сохраняем JS-мост
 -keepclassmembers class com.lalune.app.MainActivity$AndroidBridge {
-    public *;
+    @android.webkit.JavascriptInterface <methods>;
 }
--keep class com.lalune.app.** { *; }
+
+# Kotlin coroutines
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+
+# JSON
+-keep class org.json.** { *; }

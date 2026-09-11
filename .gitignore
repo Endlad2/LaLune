@@ -1,0 +1,48 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+.cxx/
+captures/
+output.json
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Go
+*.test
+*.out
+Desktop/Linux/build/
+Desktop/Windows/build/
+
+# Wails temp
+Desktop/*/frontend/
+Desktop/*/Libs/
+
+# Android generated (оставь только если не хочешь коммитить)
+# Mobile/Android/app/src/main/assets/
+# Mobile/Android/app/src/main/jniLibs/

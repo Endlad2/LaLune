@@ -12,8 +12,9 @@ android {
         minSdk 24
         targetSdk 34
         versionCode 1
-        versionName "0.6.0"
+        versionName "1.0"
 
+        // Оставляем только те ABI, для которых у нас реально есть бинарники ядра.
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
         }
@@ -35,16 +36,29 @@ android {
         jvmTarget = '17'
     }
 
-    packagingOptions {
+    // Ядро подгружается как нативная .so через jniLibs,
+    // поэтому assets/ и jniLibs/ должны попадать в APK без сжатия.
+    packaging {
         jniLibs {
             useLegacyPackaging = false
+        }
+        resources {
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}']
+        }
+    }
+
+    // Явно указываем, что assets лежат в src/main/assets
+    sourceSets {
+        main {
+            assets.srcDirs = ['src/main/assets']
+            jniLibs.srcDirs = ['src/main/jniLibs']
         }
     }
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.activity:activity-ktx:1.8.2'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
-    implementation 'com.google.android.material:material:1.11.0'
 }

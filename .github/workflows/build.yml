@@ -7,7 +7,7 @@ on:
       - release
   workflow_dispatch:
 
-# КРИТИЧНО: contents: write нужен для softprops/action-gh-release,
+# contents: write нужен для softprops/action-gh-release,
 # иначе он ловит 403 "Resource not accessible by integration".
 permissions:
   contents: write
@@ -91,7 +91,7 @@ jobs:
           if-no-files-found: error
 
   build-android:
-    name: Android APK
+    name: Android APK (universal)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -111,31 +111,65 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # Системный Gradle (без wrapper). Форкеры ставят gradle сами —
+      # это описано в Mobile/Android/README.md.
+      - name: Install Gradle (system)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gradle
+          gradle --version
+
+      # 1) Готовим фронтенд: app.html + android.js в assets/
       - name: Prepare Android frontend (app.html + android.js)
         run: |
           python prepare_android_html.py
 
-      - name: Verify assets
+      # 2) Скачиваем бинарники ядра во все три ABI-папки jniLibs/
+      #    Это ДОЛЖНО быть до gradle assembleDebug — gradle пакует jniLibs
+      #    в APK на этапе mergeNativeLibs, и после сборки туда уже не подложишь.
+      - name: Download core binaries (universal: arm64-v8a + armeabi-v7a + x86_64)
         run: |
-          ls -la Mobile/Android/app/src/main/assets/
+          mkdir -p Mobile/Android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p Mobile/Android/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p Mobile/Android/app/src/main/jniLibs/x86_64
 
-      - name: Build Android APK
+          echo "Downloading ARM64..."
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so \
+            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
+
+          echo "Downloading ARMv7..."
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so \
+            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+
+          echo "Downloading x86_64..."
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
+            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+
+          ls -la Mobile/Android/app/src/main/jniLibs/arm64-v8a/
+          ls -la Mobile/Android/app/src/main/jniLibs/armeabi-v7a/
+          ls -la Mobile/Android/app/src/main/jniLibs/x86_64/
+
+      - name: Verify assets + jniLibs
+        run: |
+          echo "--- assets ---"
+          ls -la Mobile/Android/app/src/main/assets/
+          echo "--- jniLibs ---"
+          find Mobile/Android/app/src/main/jniLibs -type f -exec ls -la {} \;
+
+      # 3) Собираем universal APK через системный gradle
+      - name: Build Android APK (universal)
         working-directory: Mobile/Android
         run: |
-          chmod +x ./gradlew || true
-          if [ -f ./gradlew ]; then
-            ./gradlew assembleDebug --stacktrace
-          else
-            gradle assembleDebug --stacktrace
-          fi
+          gradle assembleDebug --stacktrace --no-daemon
 
       - name: Locate APK
         id: find_apk
         run: |
-          APK=$(find Mobile/Android -name "*.apk" -type f | head -n 1)
+          APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
           if [ -z "$APK" ]; then
-            echo "APK not found!"
-            find Mobile/Android -name "build" -type d
+            echo "APK не найден, дерево сборки:"
+            find Mobile/Android/app/build -name "*.apk" -type f 2>/dev/null || true
+            find Mobile/Android/app/build/outputs 2>/dev/null || true
             exit 1
           fi
           echo "apk=$APK" >> $GITHUB_OUTPUT
