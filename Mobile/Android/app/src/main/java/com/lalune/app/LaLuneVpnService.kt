@@ -5,10 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.*
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -25,7 +27,25 @@ class LaLuneVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(1, createNotification())
+        startForegroundCompat()
+    }
+
+    private fun startForegroundCompat() {
+        val notification = createNotification()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // На Android 10+ нужно указывать тип сервиса.
+            // Для API 34+ без FOREGROUND_SERVICE_SPECIAL_USE и явного типа
+            // система бросает SecurityException.
+            ServiceCompat.startForeground(
+                this,
+                1,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(1, notification)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -41,7 +61,6 @@ class LaLuneVpnService : VpnService() {
         isRunning = true
 
         try {
-            // Создаём VPN интерфейс
             val builder = Builder()
                 .setSession("LaLune")
                 .setMtu(1300)
@@ -58,11 +77,9 @@ class LaLuneVpnService : VpnService() {
                 return
             }
 
-            // Подключаем UDP сокет к ядру
             udpSocket = DatagramSocket()
             udpSocket?.connect(InetAddress.getByName("127.0.0.1"), corePort)
 
-            // Запускаем мосты
             scope.launch { tunToUdp() }
             scope.launch { udpToTun() }
 
@@ -115,7 +132,7 @@ class LaLuneVpnService : VpnService() {
         vpnInterface?.close()
         vpnInterface = null
 
-        stopForeground(true)
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
@@ -136,7 +153,10 @@ class LaLuneVpnService : VpnService() {
         }
 
         val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("LaLune")
