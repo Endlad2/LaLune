@@ -16,12 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ─────────────────────────────────────────────────────────
-          # RouteRich — кастомная сборка на базе OpenWRT 24.10.
-          # DISTRIB_DESCRIPTION='RouteRich 24.10.8 r29233-443ec4032a RR-3.12.1'
-          # DISTRIB_TARGET='mediatek/filogic'
-          # DISTRIB_ARCH='aarch64_cortex-a53'
-          # ─────────────────────────────────────────────────────────
           - name: "RouteRich 24.10.8 r29233-443ec4032a RR-3.12.1"
             short_name: "RouteRich"
             target: "mediatek/filogic"
@@ -36,13 +30,17 @@ jobs:
 
       - name: Sanity check — исходники LaLune на месте
         run: |
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "--- ls $GITHUB_WORKSPACE ---"
-          ls -la "$GITHUB_WORKSPACE"
-          echo "--- ls $GITHUB_WORKSPACE/OpenWRT ---"
-          ls -la "$GITHUB_WORKSPACE/OpenWRT" || { echo "OpenWRT/ not found!"; exit 1; }
           echo "--- ls $GITHUB_WORKSPACE/OpenWRT/lalune ---"
-          ls -la "$GITHUB_WORKSPACE/OpenWRT/lalune" || { echo "OpenWRT/lalune/ not found!"; exit 1; }
+          ls -la "$GITHUB_WORKSPACE/OpenWRT/lalune"
+
+          echo "--- go.mod ---"
+          cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.mod" || { echo "go.mod missing!"; exit 1; }
+
+          echo "--- go.sum ---"
+          cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.sum" || {
+            echo "go.sum MISSING in repo! Сгенерируй его командой 'cd OpenWRT/lalune && go mod tidy' и закоммить."
+            exit 1
+          }
 
       - name: Install build dependencies
         run: |
@@ -66,7 +64,6 @@ jobs:
           SDK_FILE=$(grep -oE 'openwrt-sdk-[^"]+Linux-x86_64\.tar\.zst' /tmp/sdk-index.html | head -n 1)
           if [ -z "$SDK_FILE" ]; then
             echo "SDK archive not found in ${SDK_BASE}/"
-            echo "Available files:"
             grep -oE 'openwrt-sdk-[^"]+' /tmp/sdk-index.html | head
             exit 1
           fi
@@ -89,15 +86,13 @@ jobs:
           mkdir -p "$DST/lalune/files"
           mkdir -p "$DST/lalune/src"
 
-          # Makefile
           cp "$SRC/lalune/Makefile" "$DST/lalune/Makefile"
-
-          # files/ (init.d, config, defaults)
           cp -r "$SRC/lalune/files/." "$DST/lalune/files/"
 
-          # Go-исходники (go.mod + *.go)
+          # Go-исходники: go.mod + go.sum + все .go
           cp "$SRC/lalune/"*.go   "$DST/lalune/src/"
           cp "$SRC/lalune/go.mod" "$DST/lalune/src/"
+          cp "$SRC/lalune/go.sum" "$DST/lalune/src/"
 
           # ── luci-app-lalune ──
           mkdir -p "$DST/luci-app-lalune"
@@ -149,8 +144,6 @@ jobs:
 
           if [ -z "$(ls -A /tmp/out)" ]; then
             echo "No .ipk files produced!"
-            echo "--- bin/ contents ---"
-            find bin/ -name '*.ipk' | head -20
             exit 1
           fi
           ls -la /tmp/out/
