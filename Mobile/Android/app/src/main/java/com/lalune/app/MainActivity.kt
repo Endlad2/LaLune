@@ -20,7 +20,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private val appDir: File by lazy { File(filesDir, "la-lune") }
     private val configsFile: File by lazy { File(appDir, "configs.json") }
-    private val logsFile: File by lazy { File(appDir, "logs.txt") }
+    // Единый файл логов — его же читает LaLuneVpnService.
+    private val logsFile: File by lazy { File(appDir, "logs.log") }
     private val settingsFile: File by lazy { File(appDir, "settings.json") }
     private val coreDir: File by lazy { File(appDir, "core") }
 
@@ -43,7 +44,6 @@ class MainActivity : AppCompatActivity() {
 
         val deviceId = DeviceId.getOrCreate(this)
         DeviceId.syncToSettingsFile(this, deviceId)
-        android.util.Log.d("LaLune", "[DEVICE] deviceId = $deviceId")
 
         coreManager = CoreManager(this)
         loadConfigs()
@@ -69,11 +69,6 @@ class MainActivity : AppCompatActivity() {
 
         scope.launch {
             isCoreReady = coreManager.checkCore()
-            if (isCoreReady) {
-                writeLog("[CORE] Ядро готово")
-            } else {
-                writeLog("[CORE] Ядро не найдено, будет скачано при подключении")
-            }
         }
     }
 
@@ -89,11 +84,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun saveConfigs() {
         configsFile.writeText(configs.toString())
-    }
-
-    private fun writeLog(message: String) {
-        logsFile.appendText(message + "\n")
-        android.util.Log.d("LaLune", message)
     }
 
     inner class AndroidBridge {
@@ -129,9 +119,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun regenerateDeviceId(): String {
-            val fresh = DeviceId.regenerate(this@MainActivity)
-            writeLog("[DEVICE] deviceId перегенерирован: $fresh")
-            return fresh
+            return DeviceId.regenerate(this@MainActivity)
         }
 
         @JavascriptInterface
@@ -181,21 +169,10 @@ class MainActivity : AppCompatActivity() {
                 settingsFile.writeText(incoming.toString())
                 true
             } catch (e: Exception) {
-                writeLog("[SETTINGS] Ошибка сохранения: ${e.message}")
                 false
             }
         }
 
-        /**
-         * Порядок:
-         *   1. Достаём выбранный конфиг и синхронизируем в settings.json
-         *      (чтобы LaLuneVpnService увидел те же peer/password/hashes).
-         *   2. Проверяем VpnService.prepare() — если нужно разрешение, запрашиваем.
-         *   3. Запускаем LaLuneVpnService, который сам стартует ядро и поднимет TUN
-         *      когда в логе появится "[СТАТИСТИКА] Активных: N" с N > 0.
-         *
-         * Ядро из Activity больше НЕ запускается — только через сервис.
-         */
         @JavascriptInterface
         fun connect(configId: Long): Boolean {
             var selectedPeer = ""
@@ -214,10 +191,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            if (selectedPeer.isEmpty()) {
-                writeLog("[VPN] Конфиг не найден")
-                return false
-            }
+            if (selectedPeer.isEmpty()) return false
 
             try {
                 val json = if (settingsFile.exists()) {
@@ -231,7 +205,6 @@ class MainActivity : AppCompatActivity() {
                 json.put("deviceId", DeviceId.getOrCreate(this@MainActivity))
                 settingsFile.writeText(json.toString())
             } catch (e: Exception) {
-                writeLog("[VPN] Не удалось сохранить выбранный конфиг: ${e.message}")
                 return false
             }
 
@@ -290,9 +263,7 @@ class MainActivity : AppCompatActivity() {
         intent.action = "STOP"
         try {
             startService(intent)
-        } catch (e: Exception) {
-            android.util.Log.w("LaLune", "stopVpnService: ${e.message}")
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -303,7 +274,6 @@ class MainActivity : AppCompatActivity() {
                 isConnected = true
             } else {
                 isConnected = false
-                writeLog("[VPN] Пользователь отклонил запрос разрешения")
             }
         }
     }

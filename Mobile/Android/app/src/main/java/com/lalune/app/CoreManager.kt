@@ -14,7 +14,8 @@ import java.io.InputStreamReader
 class CoreManager(private val context: Context) {
     private val appDir: File by lazy { File(context.filesDir, "la-lune") }
     private val coreDir: File by lazy { File(appDir, "core") }
-    private val logsFile: File by lazy { File(appDir, "logs.txt") }
+    // Логи ядра — единый файл, который читает и UI, и LaLuneVpnService.
+    private val logsFile: File by lazy { File(appDir, "logs.log") }
     private val latestFile: File by lazy { File(appDir, "LATEST") }
     private var coreProcess: Process? = null
     private var isRunning = false
@@ -41,6 +42,8 @@ class CoreManager(private val context: Context) {
         return if (coreFile.exists()) coreFile.absolutePath else null
     }
 
+    fun getLogsFile(): File = logsFile
+
     suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
         val corePath = getCorePath()
         if (corePath != null) {
@@ -53,7 +56,6 @@ class CoreManager(private val context: Context) {
 
     private suspend fun downloadCore(): Boolean = withContext(Dispatchers.IO) {
         val coreName = getCoreName() ?: return@withContext false
-
         coreDir.mkdirs()
 
         val version = fetchLatestVersion()
@@ -66,7 +68,6 @@ class CoreManager(private val context: Context) {
         writeLog("[CORE] Скачивание: $url")
 
         val destFile = File(coreDir, coreName)
-
         if (!downloadFile(url, destFile)) {
             writeLog("[ERROR] Не удалось скачать ядро")
             return@withContext false
@@ -75,7 +76,6 @@ class CoreManager(private val context: Context) {
         latestFile.writeText(version)
         destFile.setExecutable(true, false)
         writeLog("[CORE] Ядро скачано: ${destFile.absolutePath}")
-
         return@withContext true
     }
 
@@ -192,7 +192,6 @@ class CoreManager(private val context: Context) {
 
         val corePath = getCorePath() ?: return@withContext false
 
-        // Читаем settings.json
         val settingsFile = File(appDir, "settings.json")
         val settings = if (settingsFile.exists()) {
             try {
@@ -211,8 +210,6 @@ class CoreManager(private val context: Context) {
         val vkAuthMode = settings.optString("vkAuthMode", "vkcalls")
         val captchaMode = settings.optString("captchaMode", "auto")
 
-        // deviceId — ОБЯЗАТЕЛЬНО. Если в settings.json пусто —
-        // берём из SharedPreferences (там он гарантированно есть).
         var deviceId = settings.optString("deviceId", "")
         if (deviceId.isBlank()) {
             deviceId = DeviceId.getOrCreate(context)
@@ -220,12 +217,18 @@ class CoreManager(private val context: Context) {
             writeLog("[DEVICE] deviceId отсутствовал, восстановлен: $deviceId")
         }
 
+        // Считаем total workers = workersPerHash * hashesCount (как на Desktop)
+        val hashesList = hashes.split(",").filter { it.trim().isNotEmpty() }
+        val hashesCount = if (hashesList.isEmpty()) 1 else minOf(hashesList.size, 6)
+        val workersPerHash = if (workers < 9) 9 else workers
+        val totalWorkers = workersPerHash * hashesCount
+
         val args = listOf(
             corePath,
             "-peer", peer,
             "-password", password,
             "-vk", hashes,
-            "-n", workers.toString(),
+            "-n", totalWorkers.toString(),
             "-listen", "127.0.0.1:52230",
             "-obfs", obfs,
             "-fingerprint", fingerprint,
@@ -236,6 +239,7 @@ class CoreManager(private val context: Context) {
         )
 
         try {
+            // Очищаем лог ядра перед новым запуском.
             logsFile.writeText("")
 
             val processBuilder = ProcessBuilder(args)
@@ -252,8 +256,10 @@ class CoreManager(private val context: Context) {
                         var line: String?
                         while (reader.readLine().also { line = it } != null) {
                             line?.let {
-                                logsFile.appendText(it + "\n")
-                                Log.d("LaLune-Core", it)
+                                // Пишем в файл logs.log — его читают и UI, и LaLuneVpnService.
+                                synchronized(this@CoreManager) {
+                                    logsFile.appendText(it + "\n")
+                                }
                             }
                         }
                     }
@@ -284,7 +290,8 @@ class CoreManager(private val context: Context) {
     fun isRunning(): Boolean = isRunning
 
     private fun writeLog(message: String) {
-        logsFile.appendText(message + "\n")
-        Log.d("LaLune", message)
+        synchronized(this) {
+            logsFile.appendText(message + "\n")
+        }
     }
 }

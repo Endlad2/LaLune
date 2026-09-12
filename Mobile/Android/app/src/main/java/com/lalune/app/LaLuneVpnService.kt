@@ -25,14 +25,15 @@ import java.util.regex.Pattern
  * VPN-сервис LaLune.
  *
  * Логика:
- *   1. При START запускает ядро (CoreManager.startCore) — оно слушает UDP на 127.0.0.1:52230.
- *   2. Параллельно читает лог ядра (files/la-lune/logs.txt) и ждёт строку
- *      "[СТАТИСТИКА] Активных: N | Траффик: M" с N > 0 — это значит, что ядро
- *      установило хотя бы одну TURN-сессию и реально может гонять трафик.
+ *   1. При START запускает ядро (CoreManager.startCore) — оно слушает UDP на 127.0.0.1:52230
+ *      и пишет свой вывод в files/la-lune/logs.log.
+ *   2. Сервис читает ЭТОТ ЖЕ файл logs.log и ждёт строку
+ *      "[СТАТИСТИКА] Активных: N | Траффик: M" с N > 0 — значит ядро установило
+ *      хотя бы одну TURN-сессию и может гонять трафик.
  *   3. Как только N > 0 впервые — поднимает VPN-интерфейс через Builder.establish()
  *      и запускает мост: TUN → UDP(127.0.0.1:52230) → ядро → TURN → интернет, и обратно.
- *   4. IP/DNS берутся из строки "TUNCONF:IP:DNS" в логе ядра, если она есть.
- *      Если ядро её не пишет — fallback 10.66.67.12 / 8.8.8.8,8.8.4.4.
+ *   4. IP/DNS берутся из строки "Tunnel IP: ... DNS: ..." или "TUNCONF:IP:DNS".
+ *      Если ядро их не пишет — fallback 10.66.67.12 / 8.8.8.8,8.8.4.4.
  */
 class LaLuneVpnService : VpnService() {
 
@@ -46,10 +47,13 @@ class LaLuneVpnService : VpnService() {
         private const val DEFAULT_DNS_2 = "8.8.4.4"
         private const val MTU = 1300
 
+        // [СТАТИСТИКА] Активных: 9 | Траффик: 0.00 МБ
         private val STAT_RE = Pattern.compile(
-            "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Траффик:\\s*(\\d+)"
+            "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Траффик:\\s*([\\d.]+)"
         )
+        // TUNCONF:10.66.67.12:8.8.8.8
         private val TUNCONF_RE = Pattern.compile("TUNCONF:([\\d.]+):([\\d.,]+)")
+        // Tunnel IP: 10.66.67.12 | DNS: 8.8.8.8,8.8.4.4
         private val TUNCONF_ALT_RE = Pattern.compile(
             "Tunnel IP:\\s*([\\d.]+).*?DNS:\\s*([\\d.,]+)"
         )
@@ -87,8 +91,7 @@ class LaLuneVpnService : VpnService() {
     }
 
     private fun startFlow() {
-        Log.d(TAG, "startFlow: запускаем ядро и ждём N > 0")
-
+        Log.d(TAG, "startFlow")
         scope.launch {
             val started = coreManager.startCore(
                 peer = currentSetting("peer"),
@@ -96,7 +99,7 @@ class LaLuneVpnService : VpnService() {
                 hashes = currentSetting("vkHashes")
             )
             if (!started) {
-                Log.e(TAG, "ядро не запустилось, стоп")
+                Log.e(TAG, "core start failed")
                 withContext(Dispatchers.Main) { stopFlow() }
                 return@launch
             }
@@ -105,14 +108,15 @@ class LaLuneVpnService : VpnService() {
     }
 
     /**
-     * Читает files/la-lune/logs.txt в цикле, ищет [СТАТИСТИКА] с N > 0,
-     * попутно выцепляет TUNCONF. Как только N > 0 впервые — establish().
+     * Читает files/la-lune/logs.log, ищет [СТАТИСТИКА] с N > 0 и Tunnel IP.
      */
     private suspend fun waitForActiveSessionsAndEstablish() = withContext(Dispatchers.IO) {
-        val logsFile = File(filesDir, "la-lune/logs.txt")
+        val logsFile = File(filesDir, "la-lune/logs.log")
         var lastOffset = 0L
         var waited = 0L
         val timeoutMs = 90_000L
+
+        Log.d(TAG, "watching ${logsFile.absolutePath}")
 
         while (isRunning && waited < timeoutMs && !tunEstablished) {
             if (logsFile.exists()) {
@@ -129,14 +133,12 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     detectedTunIP = m.group(1)
                                     detectedDNS = m.group(2)
-                                    Log.d(TAG, "TUNCONF: IP=${detectedTunIP} DNS=${detectedDNS}")
                                 }
                             }
                             TUNCONF_ALT_RE.matcher(line).let { m ->
                                 if (m.find()) {
                                     detectedTunIP = m.group(1)
                                     detectedDNS = m.group(2)
-                                    Log.d(TAG, "TUNCONF(alt): IP=${detectedTunIP} DNS=${detectedDNS}")
                                 }
                             }
 
@@ -144,10 +146,9 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     val n = m.group(1)?.toIntOrNull() ?: 0
                                     activeSessions = n
-                                    Log.d(TAG, "[СТАТИСТИКА] Активных=$n")
 
                                     if (n > 0 && !tunEstablished) {
-                                        Log.i(TAG, "N > 0 — поднимаем TUN")
+                                        Log.i(TAG, "N > 0, establishing TUN")
                                         withContext(Dispatchers.Main) {
                                             establishTun()
                                         }
@@ -157,7 +158,7 @@ class LaLuneVpnService : VpnService() {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "чтение лога: ${e.message}")
+                    Log.e(TAG, "read log: ${e.message}")
                 }
             }
             delay(500)
@@ -165,12 +166,13 @@ class LaLuneVpnService : VpnService() {
         }
 
         if (!tunEstablished) {
-            Log.w(TAG, "таймаут ожидания N > 0 (${timeoutMs}ms). TUN не поднят.")
+            Log.w(TAG, "timeout waiting for N > 0")
         }
     }
 
     private fun establishTun() {
         if (tunEstablished) return
+        Log.d(TAG, "establishTun start")
 
         try {
             val builder = Builder()
@@ -191,7 +193,6 @@ class LaLuneVpnService : VpnService() {
                 dnsList.forEach { builder.addDnsServer(it) }
             }
 
-            // Чтобы приложение не заворачивало в VPN само себя (иначе петля)
             try {
                 builder.addDisallowedApplication(packageName)
             } catch (e: Exception) {
@@ -202,18 +203,19 @@ class LaLuneVpnService : VpnService() {
 
             val iface = builder.establish()
             if (iface == null) {
-                Log.e(TAG, "establish() вернул null")
+                Log.e(TAG, "establish() null — no VPN permission?")
                 return
             }
 
             vpnInterface = iface
+            Log.d(TAG, "establish() ok, fd=${iface.fd}")
 
             val socket = DatagramSocket()
             socket.connect(InetAddress.getByName("127.0.0.1"), CORE_PORT)
             udpSocket = socket
 
             tunEstablished = true
-            Log.i(TAG, "TUN поднят: IP=${detectedTunIP ?: DEFAULT_TUN_IP}")
+            Log.i(TAG, "TUN up: IP=${detectedTunIP ?: DEFAULT_TUN_IP}")
 
             scope.launch { tunToUdp(iface, socket) }
             scope.launch { udpToTun(iface, socket) }
@@ -232,8 +234,7 @@ class LaLuneVpnService : VpnService() {
                 try {
                     val n = input.read(buffer)
                     if (n > 0) {
-                        val packet = DatagramPacket(buffer.copyOf(n), n)
-                        socket.send(packet)
+                        socket.send(DatagramPacket(buffer.copyOf(n), n))
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "tunToUdp: ${e.message}")
