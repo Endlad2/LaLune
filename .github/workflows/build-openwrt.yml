@@ -28,19 +28,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sanity check — исходники LaLune на месте
+      - name: Sanity check
         run: |
           echo "--- ls $GITHUB_WORKSPACE/OpenWRT/lalune ---"
           ls -la "$GITHUB_WORKSPACE/OpenWRT/lalune"
-
           echo "--- go.mod ---"
           cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.mod" || { echo "go.mod missing!"; exit 1; }
+          echo "--- go.sum (может быть пусто) ---"
+          cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.sum" 2>/dev/null || echo "(go.sum отсутствует — будет сгенерирован)"
 
-          echo "--- go.sum ---"
-          cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.sum" || {
-            echo "go.sum MISSING in repo! Сгенерируй его командой 'cd OpenWRT/lalune && go mod tidy' и закоммить."
-            exit 1
-          }
+      - name: Setup Go (для генерации go.sum)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Ensure go.sum (generate if missing)
+        run: |
+          cd "$GITHUB_WORKSPACE/OpenWRT/lalune"
+
+          need_generate=0
+          if [ ! -f go.sum ]; then
+            echo "go.sum не найден — будем генерировать"
+            need_generate=1
+          elif [ ! -s go.sum ]; then
+            echo "go.sum пустой — будем генерировать"
+            need_generate=1
+          elif ! grep -q "songgao/water" go.sum; then
+            echo "go.sum не содержит songgao/water — будем генерировать заново"
+            need_generate=1
+          else
+            echo "go.sum уже есть и содержит нужные зависимости:"
+            grep "songgao/water" go.sum
+          fi
+
+          if [ "$need_generate" = "1" ]; then
+            rm -f go.sum
+            # GOFLAGS=-mod=mod разрешает Go обновить go.mod/go.sum
+            GOFLAGS=-mod=mod go mod tidy
+            echo "=== Сгенерированный go.sum ==="
+            cat go.sum
+          fi
 
       - name: Install build dependencies
         run: |
@@ -89,7 +116,7 @@ jobs:
           cp "$SRC/lalune/Makefile" "$DST/lalune/Makefile"
           cp -r "$SRC/lalune/files/." "$DST/lalune/files/"
 
-          # Go-исходники: go.mod + go.sum + все .go
+          # Go-исходники: *.go + go.mod + go.sum (гарантированно есть после предыдущего шага)
           cp "$SRC/lalune/"*.go   "$DST/lalune/src/"
           cp "$SRC/lalune/go.mod" "$DST/lalune/src/"
           cp "$SRC/lalune/go.sum" "$DST/lalune/src/"
@@ -144,6 +171,8 @@ jobs:
 
           if [ -z "$(ls -A /tmp/out)" ]; then
             echo "No .ipk files produced!"
+            echo "--- bin/ contents ---"
+            find bin/ -name '*.ipk' | head -20
             exit 1
           fi
           ls -la /tmp/out/
