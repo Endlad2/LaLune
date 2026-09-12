@@ -1,7 +1,6 @@
 package com.lalune.app
 
 import android.content.Context
-import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -14,8 +13,11 @@ import java.io.InputStreamReader
 class CoreManager(private val context: Context) {
     private val appDir: File by lazy { File(context.filesDir, "la-lune") }
     private val coreDir: File by lazy { File(appDir, "core") }
+
     // Логи ядра — единый файл, который читает и UI, и LaLuneVpnService.
-    private val logsFile: File by lazy { File(appDir, "logs.log") }
+    // (Публичное поле val автоматически даёт геттер getLogsFile() — ручной не нужен.)
+    val logsFile: File by lazy { File(appDir, "logs.log") }
+
     private val latestFile: File by lazy { File(appDir, "LATEST") }
     private var coreProcess: Process? = null
     private var isRunning = false
@@ -41,8 +43,6 @@ class CoreManager(private val context: Context) {
         val coreFile = File(nativeDir, coreName)
         return if (coreFile.exists()) coreFile.absolutePath else null
     }
-
-    fun getLogsFile(): File = logsFile
 
     suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
         val corePath = getCorePath()
@@ -217,7 +217,7 @@ class CoreManager(private val context: Context) {
             writeLog("[DEVICE] deviceId отсутствовал, восстановлен: $deviceId")
         }
 
-        // Считаем total workers = workersPerHash * hashesCount (как на Desktop)
+        // total workers = workersPerHash * hashesCount (как на Desktop)
         val hashesList = hashes.split(",").filter { it.trim().isNotEmpty() }
         val hashesCount = if (hashesList.isEmpty()) 1 else minOf(hashesList.size, 6)
         val workersPerHash = if (workers < 9) 9 else workers
@@ -256,7 +256,6 @@ class CoreManager(private val context: Context) {
                         var line: String?
                         while (reader.readLine().also { line = it } != null) {
                             line?.let {
-                                // Пишем в файл logs.log — его читают и UI, и LaLuneVpnService.
                                 synchronized(this@CoreManager) {
                                     logsFile.appendText(it + "\n")
                                 }
