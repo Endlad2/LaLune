@@ -21,39 +21,24 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.regex.Pattern
 
-/**
- * VPN-сервис LaLune.
- *
- * Последовательность:
- *  1. START — запускаем ядро через CoreManager. Ядро пишет в files/la-lune/logs.log.
- *  2. Читаем logs.log, ждём "[СТАТИСТИКА] Активных: N" с N > 0.
- *  3. Парсим "Tunnel IP: ... | DNS: ...".
- *  4. establish(): создаём TUN, БЕЗ трафика самого приложения (addDisallowedApplication).
- *  5. Запускаем UDP-мост TUN↔127.0.0.1:52230 (в IO-корутинах, не на main).
- *
- * Трафик самого приложения LaLune ИСКЛЮЧЁН из VPN — иначе будет петля:
- * приложение → tun0 → UDP 52230 → tun0 → ...
- */
 class LaLuneVpnService : VpnService() {
 
     companion object {
         private const val TAG = "LaLune-VPN"
         private const val CHANNEL_ID = "lalune_vpn"
         private const val NOTIFICATION_ID = 1
+        private const val ACTION_STOP = "com.lalune.app.STOP_FROM_NOTIFICATION"
         private const val CORE_PORT = 52230
         private const val DEFAULT_TUN_IP = "10.66.67.12"
         private const val DEFAULT_DNS_1 = "8.8.8.8"
         private const val DEFAULT_DNS_2 = "8.8.4.4"
         private const val MTU = 1300
 
-        // "[СТАТИСТИКА] Активных: N | Трафик: M"
-        // Ядро пишет "Трафик" с одной "ф". Регекс допускает оба варианта.
+        // "[СТАТИСТИКА] Активных: N | Трафик: M" — ядро пишет "Трафик" с одной "ф"
         private val STAT_RE = Pattern.compile(
             "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Трафи[кф]+:\\s*([\\d.]+)"
         )
-        // TUNCONF:10.66.67.12:8.8.8.8
         private val TUNCONF_RE = Pattern.compile("TUNCONF:([\\d.]+):([\\d.,]+)")
-        // Tunnel IP: 10.66.67.11/32 | DNS: 77.88.8.8,77.88.8.1
         private val TUNCONF_ALT_RE = Pattern.compile(
             "Tunnel IP:\\s*([\\d.]+)(?:/\\d+)?\\s*\\|\\s*DNS:\\s*([\\d.,]+)"
         )
@@ -62,6 +47,7 @@ class LaLuneVpnService : VpnService() {
     @Volatile private var detectedTunIP: String? = null
     @Volatile private var detectedDNS: String? = null
     @Volatile private var activeSessions: Int = 0
+    @Volatile private var trafficMB: String = "0.00"
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var udpSocket: DatagramSocket? = null
@@ -86,7 +72,7 @@ class LaLuneVpnService : VpnService() {
                     startFlow()
                 }
             }
-            "STOP" -> stopFlow()
+            "STOP", ACTION_STOP -> stopFlow()
         }
         return START_STICKY
     }
@@ -131,14 +117,12 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     detectedTunIP = m.group(1)
                                     detectedDNS = m.group(2)
-                                    Log.d(TAG, "TUNCONF: IP=${detectedTunIP} DNS=${detectedDNS}")
                                 }
                             }
                             TUNCONF_ALT_RE.matcher(line).let { m ->
                                 if (m.find()) {
                                     detectedTunIP = m.group(1)
                                     detectedDNS = m.group(2)
-                                    Log.d(TAG, "TunnelIP: IP=${detectedTunIP} DNS=${detectedDNS}")
                                 }
                             }
 
@@ -146,6 +130,10 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     val n = m.group(1)?.toIntOrNull() ?: 0
                                     activeSessions = n
+                                    m.group(2)?.let { trafficMB = it }
+
+                                    // Обновляем уведомление при каждом тике статистики
+                                    updateNotification()
 
                                     if (n > 0 && !tunEstablished && !establishing) {
                                         establishing = true
@@ -172,15 +160,10 @@ class LaLuneVpnService : VpnService() {
         }
     }
 
-    /**
-     * Только Builder.establish() на main-потоке.
-     * Всё остальное — в IO-корутине (DatagramSocket.connect() на main запрещён).
-     */
     private fun establishTun() {
         if (tunEstablished) return
         Log.d(TAG, "establishTun start")
 
-        // Закрываем висящий интерфейс от прошлых попыток, если был.
         try { vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null
 
@@ -197,10 +180,8 @@ class LaLuneVpnService : VpnService() {
                 .setSession("LaLune")
                 .setMtu(MTU)
                 .addAddress(tunIP, 32)
-                // route для всех IPv4
                 .addRoute("0.0.0.0", 0)
 
-            // DNS от ядра
             if (dnsList.isEmpty()) {
                 builder.addDnsServer(DEFAULT_DNS_1)
                 builder.addDnsServer(DEFAULT_DNS_2)
@@ -208,8 +189,6 @@ class LaLuneVpnService : VpnService() {
                 dnsList.forEach { builder.addDnsServer(it) }
             }
 
-            // КРИТИЧНО: исключаем трафик нашего приложения из VPN.
-            // Иначе получим петлю: приложение → tun0 → UDP 52230 → tun0 → ...
             try {
                 builder.addDisallowedApplication(packageName)
                 Log.i(TAG, "addDisallowedApplication OK: $packageName")
@@ -226,13 +205,10 @@ class LaLuneVpnService : VpnService() {
             }
 
             vpnInterface = iface
-            // Флаг сразу, чтобы парсер не вызвал establishTun повторно
             tunEstablished = true
             Log.d(TAG, "establish() ok, fd=${iface.fd}")
 
-            // Всё, что связано с сокетом и мостами — в IO
             scope.launch { setupSocketAndBridges(iface, tunIP) }
-
         } catch (e: Exception) {
             Log.e(TAG, "establishTun: ${e.message}", e)
             tunEstablished = false
@@ -247,6 +223,7 @@ class LaLuneVpnService : VpnService() {
                 udpSocket = socket
 
                 Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$CORE_PORT")
+                updateNotification()
 
                 launch { tunToUdp(iface, socket) }
                 launch { udpToTun(iface, socket) }
@@ -265,9 +242,7 @@ class LaLuneVpnService : VpnService() {
         while (isRunning && tunEstablished) {
             try {
                 val n = input.read(buffer)
-                if (n > 0) {
-                    socket.send(DatagramPacket(buffer.copyOf(n), n))
-                }
+                if (n > 0) socket.send(DatagramPacket(buffer.copyOf(n), n))
             } catch (e: Exception) {
                 Log.w(TAG, "tunToUdp: ${e.message}")
                 break
@@ -305,11 +280,11 @@ class LaLuneVpnService : VpnService() {
 
         try { udpSocket?.close() } catch (_: Exception) {}
         udpSocket = null
-
         try { vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null
 
         activeSessions = 0
+        trafficMB = "0.00"
 
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -329,8 +304,76 @@ class LaLuneVpnService : VpnService() {
         } catch (e: Exception) { "" }
     }
 
+    // ============ Уведомление ============
+
+    private fun buildNotification(): Notification {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val mgr = getSystemService(NotificationManager::class.java)
+            if (mgr.getNotificationChannel(CHANNEL_ID) == null) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "LaLune VPN",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                channel.setShowBadge(false)
+                channel.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                mgr.createNotificationChannel(channel)
+            }
+        }
+
+        // Тап по уведомлению — открыть приложение
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val openPending = PendingIntent.getActivity(
+            this, 0, openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Кнопка "Отключить" — посылает STOP в сервис
+        val stopIntent = Intent(this, LaLuneVpnService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPending = PendingIntent.getService(
+            this, 1, stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val text = if (tunEstablished) {
+            "Активных: $activeSessions | Трафик: $trafficMB МБ"
+        } else {
+            "Подключение..."
+        }
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("LaLune")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(openPending)
+            .setOngoing(true)           // нельзя свернуть
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Отключить",
+                stopPending
+            )
+            .build()
+    }
+
+    private fun updateNotification() {
+        try {
+            val mgr = getSystemService(NotificationManager::class.java)
+            mgr.notify(NOTIFICATION_ID, buildNotification())
+        } catch (e: Exception) {
+            Log.w(TAG, "updateNotification: ${e.message}")
+        }
+    }
+
     private fun startForegroundCompat() {
-        val notification = createNotification()
+        val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceCompat.startForeground(
                 this, NOTIFICATION_ID, notification,
@@ -339,27 +382,5 @@ class LaLuneVpnService : VpnService() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
-    }
-
-    private fun createNotification(): Notification {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID, "LaLune VPN", NotificationManager.IMPORTANCE_LOW
-            )
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
-
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("LaLune")
-            .setContentText("VPN активен")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentIntent(pendingIntent)
-            .build()
     }
 }
