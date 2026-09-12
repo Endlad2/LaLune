@@ -11,9 +11,6 @@ permissions:
   contents: write
 
 jobs:
-  # ══════════════════════════════════════════════════════════════
-  #  Desktop Linux
-  # ══════════════════════════════════════════════════════════════
   build-desktop-linux:
     name: Desktop Linux
     runs-on: ubuntu-22.04
@@ -38,18 +35,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Flutter: enable web
+      - name: Flutter enable web
         run: flutter config --enable-web
 
       - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
-            pkg-config \
-            gcc \
-            build-essential
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config gcc build-essential
 
       - name: Setup Wails
         run: |
@@ -69,9 +59,6 @@ jobs:
           path: Desktop/Linux/build/bin/*
           if-no-files-found: error
 
-  # ══════════════════════════════════════════════════════════════
-  #  Desktop Windows
-  # ══════════════════════════════════════════════════════════════
   build-desktop-windows:
     name: Desktop Windows
     runs-on: windows-latest
@@ -96,7 +83,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Flutter: enable web
+      - name: Flutter enable web
         run: flutter config --enable-web
 
       - name: Setup Wails
@@ -115,9 +102,6 @@ jobs:
           path: Desktop/Windows/build/bin/*
           if-no-files-found: error
 
-  # ══════════════════════════════════════════════════════════════
-  #  Android (universal APK: arm64-v8a + armeabi-v7a + x86_64)
-  # ══════════════════════════════════════════════════════════════
   build-android:
     name: Android APK (universal)
     runs-on: ubuntu-latest
@@ -137,7 +121,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Flutter: enable web
+      - name: Flutter enable web
         run: flutter config --enable-web
 
       - name: Setup JDK 17
@@ -154,11 +138,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      # 1) Собираем Dart → Frontend/output/ с api.js из Api/android.js
       - name: Build Dart frontend for Android
         run: python build_frontend.py --platform Android
 
-      # 2) Копируем собранный фронт в Android assets
       - name: Copy frontend to Android assets
         run: |
           ASSETS_DIR="Mobile/Android/app/src/main/assets"
@@ -167,49 +149,36 @@ jobs:
           cp -r Frontend/output/. "$ASSETS_DIR/"
           echo "=== assets ==="
           ls -la "$ASSETS_DIR"
-          echo "=== assets/assets (images) ==="
+          echo "=== assets/assets ==="
           ls -la "$ASSETS_DIR/assets" || true
-          echo "=== assets/assets/assets (Flutter) ==="
+          echo "=== assets/assets/assets ==="
           ls -la "$ASSETS_DIR/assets/assets" || true
 
-      # 3) Скачиваем .so ядра во все три ABI
-      - name: Download core binaries (universal)
+      - name: Download core binaries
         run: |
           mkdir -p Mobile/Android/app/src/main/jniLibs/arm64-v8a
           mkdir -p Mobile/Android/app/src/main/jniLibs/armeabi-v7a
           mkdir -p Mobile/Android/app/src/main/jniLibs/x86_64
-
-          curl -L --fail --retry 3 --retry-delay 2 -o \
-            Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so \
-            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
-          curl -L --fail --retry 3 --retry-delay 2 -o \
-            Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so \
-            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
-          curl -L --fail --retry 3 --retry-delay 2 -o \
-            Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
-            https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
-
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
           find Mobile/Android/app/src/main/jniLibs -type f -exec ls -la {} \;
 
-      # 4) Сборка APK
       - name: Build Android APK
         working-directory: Mobile/Android
         run: gradle assembleDebug --stacktrace --no-daemon
 
-      # 5) Находим .apk
       - name: Locate APK
         id: find_apk
         run: |
           APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
           if [ -z "$APK" ]; then
-            echo "APK not found. Tree:"
-            find Mobile/Android/app/build -name "*.apk" -type f 2>/dev/null || true
+            echo "APK not found"
+            find Mobile/Android/app/build -name "*.apk" -type f || true
             exit 1
           fi
           echo "apk=$APK" >> $GITHUB_OUTPUT
-          echo "Found: $APK"
 
-      # 6) Загрузка артефакта
       - name: Upload Android Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -217,9 +186,6 @@ jobs:
           path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  # ══════════════════════════════════════════════════════════════
-  #  OpenWRT (RouteRich, arm64)
-  # ══════════════════════════════════════════════════════════════
   build-openwrt:
     name: OpenWRT RouteRich (arm64)
     runs-on: ubuntu-22.04
@@ -241,7 +207,7 @@ jobs:
           cross build --release --target aarch64-unknown-linux-musl
           ls -la target/aarch64-unknown-linux-musl/release/
 
-      - name: Prepare release package
+      - name: Prepare OpenWRT package
         working-directory: OpenWRT
         run: |
           BIN="target/aarch64-unknown-linux-musl/release/owrt-client"
@@ -249,10 +215,7 @@ jobs:
           mkdir -p "$OUT"
           cp "$BIN" "$OUT/owrt-client"
           cp README.md "$OUT/README.md"
-          printf '%s\n' \
-            '# Скопируй в файл `config` (без .example) рядом с бинарником.' \
-            'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' \
-            > "$OUT/config.example"
+          printf '%s\n' '# Скопируй в файл config (без .example) рядом с бинарником.' 'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' > "$OUT/config.example"
           ls -la "$OUT"
 
       - name: Upload OpenWRT Artifact
@@ -262,9 +225,6 @@ jobs:
           path: /tmp/owrt-client/
           if-no-files-found: error
 
-  # ══════════════════════════════════════════════════════════════
-  #  Release
-  # ══════════════════════════════════════════════════════════════
   create-release:
     name: Create Release
     needs:
@@ -285,10 +245,10 @@ jobs:
       - name: Create ZIP archives
         run: |
           cd release
-          zip -r LaLune-Linux.zip        LaLune-Linux        || true
-          zip -r LaLune-Windows.zip      LaLune-Windows      || true
-          zip -r LaLune-Android.zip      LaLune-Android      || true
-          zip -r LaLune-OpenWRT.zip      LaLune-OpenWRT-RouteRich || true
+          zip -r LaLune-Linux.zip LaLune-Linux || true
+          zip -r LaLune-Windows.zip LaLune-Windows || true
+          zip -r LaLune-Android.zip LaLune-Android || true
+          zip -r LaLune-OpenWRT.zip LaLune-OpenWRT-RouteRich || true
 
       - name: Get current date
         id: date
