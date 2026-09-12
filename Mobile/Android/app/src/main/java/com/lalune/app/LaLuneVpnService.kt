@@ -25,15 +25,13 @@ import java.util.regex.Pattern
  * VPN-сервис LaLune.
  *
  * Логика:
- *   1. При START запускает ядро (CoreManager.startCore) — оно слушает UDP на 127.0.0.1:52230
- *      и пишет свой вывод в files/la-lune/logs.log.
- *   2. Сервис читает ЭТОТ ЖЕ файл logs.log и ждёт строку
- *      "[СТАТИСТИКА] Активных: N | Траффик: M" с N > 0 — значит ядро установило
- *      хотя бы одну TURN-сессию и может гонять трафик.
- *   3. Как только N > 0 впервые — поднимает VPN-интерфейс через Builder.establish()
- *      и запускает мост: TUN → UDP(127.0.0.1:52230) → ядро → TURN → интернет, и обратно.
- *   4. IP/DNS берутся из строки "Tunnel IP: ... DNS: ..." или "TUNCONF:IP:DNS".
- *      Если ядро их не пишет — fallback 10.66.67.12 / 8.8.8.8,8.8.4.4.
+ *   1. START запускает ядро через CoreManager — оно слушает UDP на 127.0.0.1:52230
+ *      и пишет свой stdout в files/la-lune/logs.log.
+ *   2. Сервис читает ЭТОТ ЖЕ файл и ждёт строку
+ *      "[СТАТИСТИКА] Активных: N | Трафик: M" с N > 0.
+ *   3. Как только N > 0 впервые — establish() TUN и запуск UDP-моста.
+ *   4. IP/DNS берутся из строки "Tunnel IP: ... DNS: ..." (или "TUNCONF:...").
+ *      Fallback: 10.66.67.12 / 8.8.8.8,8.8.4.4.
  */
 class LaLuneVpnService : VpnService() {
 
@@ -47,15 +45,21 @@ class LaLuneVpnService : VpnService() {
         private const val DEFAULT_DNS_2 = "8.8.4.4"
         private const val MTU = 1300
 
-        // [СТАТИСТИКА] Активных: 9 | Траффик: 0.00 МБ
+        // "[СТАТИСТИКА] Активных: N | Трафик: M"
+        // ВАЖНО: ядро пишет "Трафик" с ОДНОЙ "ф". Регекс допускает оба варианта
+        // (Трафи[кф]+) на случай смены формата ядра. M может быть 0.00 (с точкой).
         private val STAT_RE = Pattern.compile(
-            "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Траффик:\\s*([\\d.]+)"
+            "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Трафи[кф]+:\\s*([\\d.]+)",
+            Pattern.UNICODE_CASE
         )
+
         // TUNCONF:10.66.67.12:8.8.8.8
         private val TUNCONF_RE = Pattern.compile("TUNCONF:([\\d.]+):([\\d.,]+)")
-        // Tunnel IP: 10.66.67.12 | DNS: 8.8.8.8,8.8.4.4
+
+        // Tunnel IP: 10.66.67.10/32 | DNS: 77.88.8.8,77.88.8.1
+        // IP может идти с маской /32, поэтому отдельно чистим маску.
         private val TUNCONF_ALT_RE = Pattern.compile(
-            "Tunnel IP:\\s*([\\d.]+).*?DNS:\\s*([\\d.,]+)"
+            "Tunnel IP:\\s*([\\d.]+)(?:/\\d+)?\\s*\\|\\s*DNS:\\s*([\\d.,]+)"
         )
     }
 
@@ -133,12 +137,14 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     detectedTunIP = m.group(1)
                                     detectedDNS = m.group(2)
+                                    Log.d(TAG, "TUNCONF: IP=${detectedTunIP} DNS=${detectedDNS}")
                                 }
                             }
                             TUNCONF_ALT_RE.matcher(line).let { m ->
                                 if (m.find()) {
                                     detectedTunIP = m.group(1)
                                     detectedDNS = m.group(2)
+                                    Log.d(TAG, "TunnelIP: IP=${detectedTunIP} DNS=${detectedDNS}")
                                 }
                             }
 
@@ -146,6 +152,7 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     val n = m.group(1)?.toIntOrNull() ?: 0
                                     activeSessions = n
+                                    Log.d(TAG, "STAT: N=$n (established=$tunEstablished)")
 
                                     if (n > 0 && !tunEstablished) {
                                         Log.i(TAG, "N > 0, establishing TUN")
@@ -175,16 +182,19 @@ class LaLuneVpnService : VpnService() {
         Log.d(TAG, "establishTun start")
 
         try {
-            val builder = Builder()
-                .setSession("LaLune")
-                .setMtu(MTU)
-                .addAddress(detectedTunIP ?: DEFAULT_TUN_IP, 32)
-                .addRoute("0.0.0.0", 0)
-
+            val tunIP = detectedTunIP ?: DEFAULT_TUN_IP
             val dnsList = (detectedDNS ?: "$DEFAULT_DNS_1,$DEFAULT_DNS_2")
                 .split(",")
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
+
+            Log.d(TAG, "TUN params: IP=$tunIP DNS=$dnsList")
+
+            val builder = Builder()
+                .setSession("LaLune")
+                .setMtu(MTU)
+                .addAddress(tunIP, 32)
+                .addRoute("0.0.0.0", 0)
 
             if (dnsList.isEmpty()) {
                 builder.addDnsServer(DEFAULT_DNS_1)
@@ -215,7 +225,7 @@ class LaLuneVpnService : VpnService() {
             udpSocket = socket
 
             tunEstablished = true
-            Log.i(TAG, "TUN up: IP=${detectedTunIP ?: DEFAULT_TUN_IP}")
+            Log.i(TAG, "TUN up: IP=$tunIP")
 
             scope.launch { tunToUdp(iface, socket) }
             scope.launch { udpToTun(iface, socket) }
