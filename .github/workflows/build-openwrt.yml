@@ -18,8 +18,7 @@ jobs:
         include:
           - name: "RouteRich 24.10.8 r29233-443ec4032a RR-3.12.1"
             short_name: "RouteRich"
-            target: "mediatek/filogic"
-            openwrt_version: "24.10.8"
+            rust_target: "aarch64-unknown-linux-musl"
 
     name: "Build - ${{ matrix.name }}"
     runs-on: ubuntu-22.04
@@ -30,156 +29,60 @@ jobs:
 
       - name: Sanity check
         run: |
-          echo "--- ls $GITHUB_WORKSPACE/OpenWRT/lalune ---"
-          ls -la "$GITHUB_WORKSPACE/OpenWRT/lalune"
-          echo "--- go.mod ---"
-          cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.mod" || { echo "go.mod missing!"; exit 1; }
-          echo "--- go.sum (может быть пусто) ---"
-          cat "$GITHUB_WORKSPACE/OpenWRT/lalune/go.sum" 2>/dev/null || echo "(go.sum отсутствует — будет сгенерирован)"
+          echo "--- OpenWRT ---"
+          ls -la "$GITHUB_WORKSPACE/OpenWRT"
+          echo "--- src ---"
+          ls -la "$GITHUB_WORKSPACE/OpenWRT/src"
+          echo "--- Cargo.toml ---"
+          cat "$GITHUB_WORKSPACE/OpenWRT/Cargo.toml"
 
-      - name: Setup Go (для генерации go.sum)
-        uses: actions/setup-go@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: '1.22'
+          targets: ${{ matrix.rust_target }}
 
-      - name: Ensure go.sum (generate if missing)
+      - name: Install cross
         run: |
-          cd "$GITHUB_WORKSPACE/OpenWRT/lalune"
+          cargo install cross --git https://github.com/cross-rs/cross
 
-          need_generate=0
-          if [ ! -f go.sum ]; then
-            echo "go.sum не найден — будем генерировать"
-            need_generate=1
-          elif [ ! -s go.sum ]; then
-            echo "go.sum пустой — будем генерировать"
-            need_generate=1
-          elif ! grep -q "songgao/water" go.sum; then
-            echo "go.sum не содержит songgao/water — будем генерировать заново"
-            need_generate=1
-          else
-            echo "go.sum уже есть и содержит нужные зависимости:"
-            grep "songgao/water" go.sum
-          fi
-
-          if [ "$need_generate" = "1" ]; then
-            rm -f go.sum
-            # GOFLAGS=-mod=mod разрешает Go обновить go.mod/go.sum
-            GOFLAGS=-mod=mod go mod tidy
-            echo "=== Сгенерированный go.sum ==="
-            cat go.sum
-          fi
-
-      - name: Install build dependencies
+      - name: Build owrt-client
+        working-directory: OpenWRT
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential ccache ecj fastjar file g++ gawk \
-            gettext git java-propose-classpath libelf-dev libncurses5-dev \
-            libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
-            python3-dev rsync subversion swig time xsltproc zlib1g-dev unzip wget zstd
+          cross build --release --target ${{ matrix.rust_target }}
+          ls -la target/${{ matrix.rust_target }}/release/
 
-      - name: Download OpenWRT SDK
+      - name: Verify binary
+        working-directory: OpenWRT
         run: |
-          SDK_BASE="https://downloads.openwrt.org/releases/${{ matrix.openwrt_version }}/targets/${{ matrix.target }}"
-          echo "Looking for SDK in ${SDK_BASE}"
-
-          wget -q -O /tmp/sdk-index.html "${SDK_BASE}/" || {
-            echo "Cannot fetch ${SDK_BASE}/"
+          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
+          file "$BIN"
+          ls -la "$BIN"
+          # Проверяем, что это статический ELF под ARM64
+          file "$BIN" | grep -q "ARM aarch64" || {
+            echo "Binary is not ARM64!"
             exit 1
           }
 
-          SDK_FILE=$(grep -oE 'openwrt-sdk-[^"]+Linux-x86_64\.tar\.zst' /tmp/sdk-index.html | head -n 1)
-          if [ -z "$SDK_FILE" ]; then
-            echo "SDK archive not found in ${SDK_BASE}/"
-            grep -oE 'openwrt-sdk-[^"]+' /tmp/sdk-index.html | head
-            exit 1
-          fi
-
-          echo "Downloading ${SDK_BASE}/${SDK_FILE}"
-          wget -q "${SDK_BASE}/${SDK_FILE}" -O /tmp/sdk.tar.zst
-
-          mkdir -p /opt/sdk
-          tar --use-compress-program=unzstd -xf /tmp/sdk.tar.zst -C /opt/sdk
-          SDK_DIR=$(find /opt/sdk -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n 1)
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-          echo "SDK extracted to $SDK_DIR"
-
-      - name: Place LaLune packages into SDK
+      - name: Prepare release package
+        working-directory: OpenWRT
         run: |
-          SRC="$GITHUB_WORKSPACE/OpenWRT"
-          DST="$SDK_DIR/package"
+          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
+          OUT="/tmp/owrt-client-${{ matrix.short_name }}"
+          mkdir -p "$OUT"
+          cp "$BIN" "$OUT/owrt-client"
+          cp README.md "$OUT/README.md"
 
-          # ── lalune (Go-демон) ──
-          mkdir -p "$DST/lalune/files"
-          mkdir -p "$DST/lalune/src"
+          cat > "$OUT/config.example" <<'EOF'
+# Скопируй в `config` (без .example) рядом с бинарником.
+# Замени на свою csqtt:// ссылку.
+csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3
+EOF
 
-          cp "$SRC/lalune/Makefile" "$DST/lalune/Makefile"
-          cp -r "$SRC/lalune/files/." "$DST/lalune/files/"
+          ls -la "$OUT"
 
-          # Go-исходники: *.go + go.mod + go.sum (гарантированно есть после предыдущего шага)
-          cp "$SRC/lalune/"*.go   "$DST/lalune/src/"
-          cp "$SRC/lalune/go.mod" "$DST/lalune/src/"
-          cp "$SRC/lalune/go.sum" "$DST/lalune/src/"
-
-          # ── luci-app-lalune ──
-          mkdir -p "$DST/luci-app-lalune"
-          cp -r "$SRC/luci-app-lalune/." "$DST/luci-app-lalune/"
-
-          echo "--- package/lalune ---"
-          find "$DST/lalune" -type f | sort
-          echo "--- package/luci-app-lalune ---"
-          find "$DST/luci-app-lalune" -type f | sort
-
-      - name: Update and install feeds
-        run: |
-          cd "$SDK_DIR"
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Configure build
-        run: |
-          cd "$SDK_DIR"
-
-          make defconfig
-
-          echo "CONFIG_PACKAGE_lalune=m" >> .config
-          echo "CONFIG_PACKAGE_luci-app-lalune=m" >> .config
-
-          make defconfig
-
-          grep -E 'CONFIG_PACKAGE_(lalune|luci-app-lalune)' .config || {
-            echo "Packages not found in .config!"
-            exit 1
-          }
-
-      - name: Build lalune
-        run: |
-          cd "$SDK_DIR"
-          make package/lalune/compile V=s -j$(nproc) 2>&1 | tail -300
-
-      - name: Build luci-app-lalune
-        run: |
-          cd "$SDK_DIR"
-          make package/luci-app-lalune/compile V=s -j$(nproc) 2>&1 | tail -300
-
-      - name: Collect .ipk files
-        run: |
-          cd "$SDK_DIR"
-          mkdir -p /tmp/out
-          find bin/ -name 'lalune_*.ipk' -exec cp {} /tmp/out/ \; || true
-          find bin/ -name 'luci-app-lalune_*.ipk' -exec cp {} /tmp/out/ \; || true
-
-          if [ -z "$(ls -A /tmp/out)" ]; then
-            echo "No .ipk files produced!"
-            echo "--- bin/ contents ---"
-            find bin/ -name '*.ipk' | head -20
-            exit 1
-          fi
-          ls -la /tmp/out/
-
-      - name: Upload OpenWRT artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-OpenWRT-${{ matrix.short_name }}
-          path: /tmp/out/*.ipk
+          path: /tmp/owrt-client-${{ matrix.short_name }}/
           if-no-files-found: error
