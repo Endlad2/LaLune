@@ -186,52 +186,12 @@ jobs:
           path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  build-openwrt:
-    name: OpenWRT RouteRich (arm64)
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build owrt-client
-        working-directory: OpenWRT
-        run: |
-          cross build --release --target aarch64-unknown-linux-musl
-          ls -la target/aarch64-unknown-linux-musl/release/
-
-      - name: Prepare OpenWRT package
-        working-directory: OpenWRT
-        run: |
-          BIN="target/aarch64-unknown-linux-musl/release/owrt-client"
-          OUT="/tmp/owrt-client"
-          mkdir -p "$OUT"
-          cp "$BIN" "$OUT/owrt-client"
-          cp README.md "$OUT/README.md"
-          printf '%s\n' '# Скопируй в файл config (без .example) рядом с бинарником.' 'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' > "$OUT/config.example"
-          ls -la "$OUT"
-
-      - name: Upload OpenWRT Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-OpenWRT-RouteRich
-          path: /tmp/owrt-client/
-          if-no-files-found: error
-
   create-release:
     name: Create Release
     needs:
       - build-desktop-linux
       - build-desktop-windows
       - build-android
-      - build-openwrt
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -248,7 +208,6 @@ jobs:
           zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
-          zip -r LaLune-OpenWRT.zip LaLune-OpenWRT-RouteRich || true
 
       - name: Get current date
         id: date

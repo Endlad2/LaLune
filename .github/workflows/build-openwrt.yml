@@ -16,25 +16,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "RouteRich 24.10.8 r29233-443ec4032a RR-3.12.1"
+          - name: "RouteRich 24.10.8"
             short_name: "RouteRich"
             rust_target: "aarch64-unknown-linux-musl"
 
-    name: "Build - ${{ matrix.name }}"
+    name: "OpenWRT - ${{ matrix.name }}"
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Sanity check
-        run: |
-          echo "--- OpenWRT ---"
-          ls -la "$GITHUB_WORKSPACE/OpenWRT"
-          echo "--- src ---"
-          ls -la "$GITHUB_WORKSPACE/OpenWRT/src"
-          echo "--- Cargo.toml ---"
-          cat "$GITHUB_WORKSPACE/OpenWRT/Cargo.toml"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,10 +46,9 @@ jobs:
         run: |
           BIN="target/${{ matrix.rust_target }}/release/owrt-client"
           file "$BIN"
-          ls -la "$BIN"
-          file "$BIN" | grep -q "ARM aarch64" || { echo "Binary is not ARM64!"; exit 1; }
+          file "$BIN" | grep -q "ARM aarch64" || { echo "Not ARM64!"; exit 1; }
 
-      - name: Prepare release package
+      - name: Prepare package
         working-directory: OpenWRT
         run: |
           BIN="target/${{ matrix.rust_target }}/release/owrt-client"
@@ -66,14 +56,10 @@ jobs:
           mkdir -p "$OUT"
           cp "$BIN" "$OUT/owrt-client"
           cp README.md "$OUT/README.md"
-          printf '%s\n' \
-            '# Скопируй в файл `config` (без .example) рядом с бинарником.' \
-            '# Замени на свою csqtt:// ссылку.' \
-            'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' \
-            > "$OUT/config.example"
+          printf '%s\n' '# Скопируй в файл config (без .example) рядом с бинарником.' 'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' > "$OUT/config.example"
           ls -la "$OUT"
 
-      - name: Upload artifact
+      - name: Upload OpenWRT Artifact
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-OpenWRT-${{ matrix.short_name }}
