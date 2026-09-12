@@ -24,14 +24,15 @@ import java.util.regex.Pattern
 /**
  * VPN-сервис LaLune.
  *
- * Логика:
- *   1. START запускает ядро через CoreManager — оно слушает UDP на 127.0.0.1:52230
- *      и пишет свой stdout в files/la-lune/logs.log.
- *   2. Сервис читает ЭТОТ ЖЕ файл и ждёт строку
- *      "[СТАТИСТИКА] Активных: N | Трафик: M" с N > 0.
- *   3. Как только N > 0 впервые — establish() TUN и запуск UDP-моста.
- *   4. IP/DNS берутся из строки "Tunnel IP: ... DNS: ..." (или "TUNCONF:...").
- *      Fallback: 10.66.67.12 / 8.8.8.8,8.8.4.4.
+ * Последовательность:
+ *  1. START — запускаем ядро через CoreManager. Ядро пишет в files/la-lune/logs.log.
+ *  2. Читаем logs.log, ждём "[СТАТИСТИКА] Активных: N" с N > 0.
+ *  3. Парсим "Tunnel IP: ... | DNS: ...".
+ *  4. establish(): создаём TUN, БЕЗ трафика самого приложения (addDisallowedApplication).
+ *  5. Запускаем UDP-мост TUN↔127.0.0.1:52230 (в IO-корутинах, не на main).
+ *
+ * Трафик самого приложения LaLune ИСКЛЮЧЁН из VPN — иначе будет петля:
+ * приложение → tun0 → UDP 52230 → tun0 → ...
  */
 class LaLuneVpnService : VpnService() {
 
@@ -46,18 +47,13 @@ class LaLuneVpnService : VpnService() {
         private const val MTU = 1300
 
         // "[СТАТИСТИКА] Активных: N | Трафик: M"
-        // ВАЖНО: ядро пишет "Трафик" с ОДНОЙ "ф". Регекс допускает оба варианта
-        // (Трафи[кф]+) на случай смены формата ядра. M может быть 0.00 (с точкой).
+        // Ядро пишет "Трафик" с одной "ф". Регекс допускает оба варианта.
         private val STAT_RE = Pattern.compile(
-            "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Трафи[кф]+:\\s*([\\d.]+)",
-            Pattern.UNICODE_CASE
+            "\\[СТАТИСТИКА\\]\\s*Активных:\\s*(\\d+)\\s*\\|\\s*Трафи[кф]+:\\s*([\\d.]+)"
         )
-
         // TUNCONF:10.66.67.12:8.8.8.8
         private val TUNCONF_RE = Pattern.compile("TUNCONF:([\\d.]+):([\\d.,]+)")
-
-        // Tunnel IP: 10.66.67.10/32 | DNS: 77.88.8.8,77.88.8.1
-        // IP может идти с маской /32, поэтому отдельно чистим маску.
+        // Tunnel IP: 10.66.67.11/32 | DNS: 77.88.8.8,77.88.8.1
         private val TUNCONF_ALT_RE = Pattern.compile(
             "Tunnel IP:\\s*([\\d.]+)(?:/\\d+)?\\s*\\|\\s*DNS:\\s*([\\d.,]+)"
         )
@@ -70,7 +66,8 @@ class LaLuneVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var udpSocket: DatagramSocket? = null
     private var isRunning = false
-    private var tunEstablished = false
+    @Volatile private var tunEstablished = false
+    @Volatile private var establishing = false
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var coreManager: CoreManager
@@ -111,9 +108,6 @@ class LaLuneVpnService : VpnService() {
         }
     }
 
-    /**
-     * Читает files/la-lune/logs.log, ищет [СТАТИСТИКА] с N > 0 и Tunnel IP.
-     */
     private suspend fun waitForActiveSessionsAndEstablish() = withContext(Dispatchers.IO) {
         val logsFile = File(filesDir, "la-lune/logs.log")
         var lastOffset = 0L
@@ -152,13 +146,14 @@ class LaLuneVpnService : VpnService() {
                                 if (m.find()) {
                                     val n = m.group(1)?.toIntOrNull() ?: 0
                                     activeSessions = n
-                                    Log.d(TAG, "STAT: N=$n (established=$tunEstablished)")
 
-                                    if (n > 0 && !tunEstablished) {
-                                        Log.i(TAG, "N > 0, establishing TUN")
+                                    if (n > 0 && !tunEstablished && !establishing) {
+                                        establishing = true
+                                        Log.i(TAG, "N=$n, establishing TUN")
                                         withContext(Dispatchers.Main) {
                                             establishTun()
                                         }
+                                        establishing = false
                                     }
                                 }
                             }
@@ -177,9 +172,17 @@ class LaLuneVpnService : VpnService() {
         }
     }
 
+    /**
+     * Только Builder.establish() на main-потоке.
+     * Всё остальное — в IO-корутине (DatagramSocket.connect() на main запрещён).
+     */
     private fun establishTun() {
         if (tunEstablished) return
         Log.d(TAG, "establishTun start")
+
+        // Закрываем висящий интерфейс от прошлых попыток, если был.
+        try { vpnInterface?.close() } catch (_: Exception) {}
+        vpnInterface = null
 
         try {
             val tunIP = detectedTunIP ?: DEFAULT_TUN_IP
@@ -194,8 +197,10 @@ class LaLuneVpnService : VpnService() {
                 .setSession("LaLune")
                 .setMtu(MTU)
                 .addAddress(tunIP, 32)
+                // route для всех IPv4
                 .addRoute("0.0.0.0", 0)
 
+            // DNS от ядра
             if (dnsList.isEmpty()) {
                 builder.addDnsServer(DEFAULT_DNS_1)
                 builder.addDnsServer(DEFAULT_DNS_2)
@@ -203,10 +208,13 @@ class LaLuneVpnService : VpnService() {
                 dnsList.forEach { builder.addDnsServer(it) }
             }
 
+            // КРИТИЧНО: исключаем трафик нашего приложения из VPN.
+            // Иначе получим петлю: приложение → tun0 → UDP 52230 → tun0 → ...
             try {
                 builder.addDisallowedApplication(packageName)
+                Log.i(TAG, "addDisallowedApplication OK: $packageName")
             } catch (e: Exception) {
-                Log.w(TAG, "addDisallowedApplication: ${e.message}")
+                Log.w(TAG, "addDisallowedApplication failed: ${e.message}")
             }
 
             builder.setBlocking(true)
@@ -218,61 +226,76 @@ class LaLuneVpnService : VpnService() {
             }
 
             vpnInterface = iface
+            // Флаг сразу, чтобы парсер не вызвал establishTun повторно
+            tunEstablished = true
             Log.d(TAG, "establish() ok, fd=${iface.fd}")
 
-            val socket = DatagramSocket()
-            socket.connect(InetAddress.getByName("127.0.0.1"), CORE_PORT)
-            udpSocket = socket
-
-            tunEstablished = true
-            Log.i(TAG, "TUN up: IP=$tunIP")
-
-            scope.launch { tunToUdp(iface, socket) }
-            scope.launch { udpToTun(iface, socket) }
+            // Всё, что связано с сокетом и мостами — в IO
+            scope.launch { setupSocketAndBridges(iface, tunIP) }
 
         } catch (e: Exception) {
             Log.e(TAG, "establishTun: ${e.message}", e)
+            tunEstablished = false
         }
     }
 
-    private suspend fun tunToUdp(iface: ParcelFileDescriptor, socket: DatagramSocket) =
+    private suspend fun setupSocketAndBridges(iface: ParcelFileDescriptor, tunIP: String) =
         withContext(Dispatchers.IO) {
-            val input = FileInputStream(iface.fileDescriptor)
-            val buffer = ByteArray(65535)
+            try {
+                val socket = DatagramSocket()
+                socket.connect(InetAddress.getByName("127.0.0.1"), CORE_PORT)
+                udpSocket = socket
 
-            while (isRunning && tunEstablished) {
-                try {
-                    val n = input.read(buffer)
-                    if (n > 0) {
-                        socket.send(DatagramPacket(buffer.copyOf(n), n))
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "tunToUdp: ${e.message}")
-                    break
-                }
+                Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$CORE_PORT")
+
+                launch { tunToUdp(iface, socket) }
+                launch { udpToTun(iface, socket) }
+            } catch (e: Exception) {
+                Log.e(TAG, "setupSocket: ${e.message}", e)
+                tunEstablished = false
+                try { iface.close() } catch (_: Exception) {}
+                vpnInterface = null
             }
         }
 
-    private suspend fun udpToTun(iface: ParcelFileDescriptor, socket: DatagramSocket) =
-        withContext(Dispatchers.IO) {
-            val output = FileOutputStream(iface.fileDescriptor)
-            val buffer = ByteArray(65535)
+    private suspend fun tunToUdp(iface: ParcelFileDescriptor, socket: DatagramSocket) {
+        val input = FileInputStream(iface.fileDescriptor)
+        val buffer = ByteArray(65535)
 
-            while (isRunning && tunEstablished) {
-                try {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
-                    output.write(packet.data, 0, packet.length)
-                } catch (e: Exception) {
-                    Log.w(TAG, "udpToTun: ${e.message}")
-                    break
+        while (isRunning && tunEstablished) {
+            try {
+                val n = input.read(buffer)
+                if (n > 0) {
+                    socket.send(DatagramPacket(buffer.copyOf(n), n))
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "tunToUdp: ${e.message}")
+                break
             }
         }
+    }
+
+    private suspend fun udpToTun(iface: ParcelFileDescriptor, socket: DatagramSocket) {
+        val output = FileOutputStream(iface.fileDescriptor)
+        val buffer = ByteArray(65535)
+
+        while (isRunning && tunEstablished) {
+            try {
+                val packet = DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                output.write(packet.data, 0, packet.length)
+            } catch (e: Exception) {
+                Log.w(TAG, "udpToTun: ${e.message}")
+                break
+            }
+        }
+    }
 
     private fun stopFlow() {
         Log.d(TAG, "stopFlow")
         isRunning = false
+        tunEstablished = false
+        establishing = false
 
         scope.launch {
             try { coreManager.stopCore() } catch (e: Exception) {
@@ -280,13 +303,12 @@ class LaLuneVpnService : VpnService() {
             }
         }
 
-        udpSocket?.close()
+        try { udpSocket?.close() } catch (_: Exception) {}
         udpSocket = null
 
-        vpnInterface?.close()
+        try { vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null
 
-        tunEstablished = false
         activeSessions = 0
 
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
