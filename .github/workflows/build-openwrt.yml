@@ -42,8 +42,7 @@ jobs:
           targets: ${{ matrix.rust_target }}
 
       - name: Install cross
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build owrt-client
         working-directory: OpenWRT
@@ -57,11 +56,7 @@ jobs:
           BIN="target/${{ matrix.rust_target }}/release/owrt-client"
           file "$BIN"
           ls -la "$BIN"
-          # Проверяем, что это статический ELF под ARM64
-          file "$BIN" | grep -q "ARM aarch64" || {
-            echo "Binary is not ARM64!"
-            exit 1
-          }
+          file "$BIN" | grep -q "ARM aarch64" || { echo "Binary is not ARM64!"; exit 1; }
 
       - name: Prepare release package
         working-directory: OpenWRT
@@ -71,13 +66,11 @@ jobs:
           mkdir -p "$OUT"
           cp "$BIN" "$OUT/owrt-client"
           cp README.md "$OUT/README.md"
-
-          cat > "$OUT/config.example" <<'EOF'
-# Скопируй в `config` (без .example) рядом с бинарником.
-# Замени на свою csqtt:// ссылку.
-csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3
-EOF
-
+          printf '%s\n' \
+            '# Скопируй в файл `config` (без .example) рядом с бинарником.' \
+            '# Замени на свою csqtt:// ссылку.' \
+            'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' \
+            > "$OUT/config.example"
           ls -la "$OUT"
 
       - name: Upload artifact
