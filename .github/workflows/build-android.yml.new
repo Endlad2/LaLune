@@ -1,0 +1,71 @@
+# Это заменит текущую Android-часть в build.yml.
+# Оставляю здесь как отдельный файл, чтобы ты мог сравнить перед вставкой.
+
+  build-android:
+    name: Android APK (universal)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build Dart frontend → assets/
+        run: python build_frontend.py --platform Android
+
+      - name: Copy built frontend to Android assets
+        run: |
+          mkdir -p Mobile/Android/app/src/main/assets
+          rm -rf Mobile/Android/app/src/main/assets/*
+          cp -r Frontend/output/* Mobile/Android/app/src/main/assets/
+          ls -la Mobile/Android/app/src/main/assets/
+
+      - name: Download core binaries
+        run: |
+          mkdir -p Mobile/Android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p Mobile/Android/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p Mobile/Android/app/src/main/jniLibs/x86_64
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+          curl -L --fail --retry 3 --retry-delay 2 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+
+      - name: Build APK
+        working-directory: Mobile/Android
+        run: gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Locate APK
+        id: find_apk
+        run: |
+          APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
+          [ -z "$APK" ] && exit 1
+          echo "apk=$APK" >> $GITHUB_OUTPUT
+
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Android
+          path: ${{ steps.find_apk.outputs.apk }}
+          if-no-files-found: error

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>LaLune</title>
+    <link href="https://fonts.googleapis.com/css2?family=Overpass+Mono:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            background: radial-gradient(ellipse at 20% 30%, #1a2a6c, #0a0e2a 60%, #04060f);
+            font-family: 'Overpass Mono', monospace;
+        }
+        #loading {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(255,255,255,0.6);
+            font-size: 14px;
+            z-index: 9999;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Загрузка...</div>
+    {{flutter_bootstrap_js}}
+</body>
+</html>

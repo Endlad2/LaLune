@@ -1,0 +1,21 @@
+name: lalune_core
+description: LaLune frontend (Dart/Flutter Web)
+version: 0.5.0
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web: ^1.0.0
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
