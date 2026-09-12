@@ -37,19 +37,15 @@ class MainActivity : AppCompatActivity() {
         appDir.mkdirs()
         coreDir.mkdirs()
 
-        // Включаем remote debugging для chrome://inspect (только debug-сборки)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             WebView.setWebContentsDebuggingEnabled(true)
         }
 
-        // Гарантируем, что deviceId существует ещё до старта UI.
-        // Если его не было — сгенерируется и уедет в settings.json.
         val deviceId = DeviceId.getOrCreate(this)
         DeviceId.syncToSettingsFile(this, deviceId)
         android.util.Log.d("LaLune", "[DEVICE] deviceId = $deviceId")
 
         coreManager = CoreManager(this)
-
         loadConfigs()
 
         webView = WebView(this)
@@ -106,7 +102,6 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun getSettings(): String {
-            // Читаем файл, если есть
             val json = if (settingsFile.exists()) {
                 try {
                     JSONObject(settingsFile.readText())
@@ -117,7 +112,6 @@ class MainActivity : AppCompatActivity() {
                 JSONObject()
             }
 
-            // Гарантируем, что все нужные поля есть
             if (!json.has("workersPerHash")) json.put("workersPerHash", 9)
             if (!json.has("obfs")) json.put("obfs", "video")
             if (!json.has("fingerprint")) json.put("fingerprint", "firefox")
@@ -126,17 +120,12 @@ class MainActivity : AppCompatActivity() {
             if (!json.has("captchaMode")) json.put("captchaMode", "auto")
             if (!json.has("autoConnect")) json.put("autoConnect", false)
 
-            // deviceId — всегда актуальный, из SharedPreferences
-            val deviceId = DeviceId.getOrCreate(this@MainActivity)
-            json.put("deviceId", deviceId)
-
+            json.put("deviceId", DeviceId.getOrCreate(this@MainActivity))
             return json.toString()
         }
 
         @JavascriptInterface
-        fun getDeviceId(): String {
-            return DeviceId.getOrCreate(this@MainActivity)
-        }
+        fun getDeviceId(): String = DeviceId.getOrCreate(this@MainActivity)
 
         @JavascriptInterface
         fun regenerateDeviceId(): String {
@@ -187,13 +176,8 @@ class MainActivity : AppCompatActivity() {
         fun saveSettings(settingsJson: String): Boolean {
             return try {
                 val incoming = JSONObject(settingsJson)
-
-                // deviceId всегда берём из SharedPreferences, что бы ни прислал фронт.
-                // Это защищает от ситуации, когда UI прислал пустой deviceId
-                // и затёр бы сохранённый.
                 val currentDeviceId = DeviceId.getOrCreate(this@MainActivity)
                 incoming.put("deviceId", currentDeviceId)
-
                 settingsFile.writeText(incoming.toString())
                 true
             } catch (e: Exception) {
@@ -202,6 +186,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        /**
+         * Порядок:
+         *   1. Достаём выбранный конфиг и синхронизируем в settings.json
+         *      (чтобы LaLuneVpnService увидел те же peer/password/hashes).
+         *   2. Проверяем VpnService.prepare() — если нужно разрешение, запрашиваем.
+         *   3. Запускаем LaLuneVpnService, который сам стартует ядро и поднимет TUN
+         *      когда в логе появится "[СТАТИСТИКА] Активных: N" с N > 0.
+         *
+         * Ядро из Activity больше НЕ запускается — только через сервис.
+         */
         @JavascriptInterface
         fun connect(configId: Long): Boolean {
             var selectedPeer = ""
@@ -225,27 +219,30 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
-            scope.launch {
-                val started = coreManager.startCore(
-                    peer = selectedPeer,
-                    password = selectedPassword,
-                    hashes = selectedHashes
-                )
+            try {
+                val json = if (settingsFile.exists()) {
+                    JSONObject(settingsFile.readText())
+                } else {
+                    JSONObject()
+                }
+                json.put("peer", selectedPeer)
+                json.put("password", selectedPassword)
+                json.put("vkHashes", selectedHashes)
+                json.put("deviceId", DeviceId.getOrCreate(this@MainActivity))
+                settingsFile.writeText(json.toString())
+            } catch (e: Exception) {
+                writeLog("[VPN] Не удалось сохранить выбранный конфиг: ${e.message}")
+                return false
+            }
 
-                withContext(Dispatchers.Main) {
-                    if (started) {
-                        isConnected = true
-                        writeLog("[VPN] Ядро запущено")
-
-                        val intent = VpnService.prepare(this@MainActivity)
-                        if (intent != null) {
-                            startActivityForResult(intent, 100)
-                        } else {
-                            startVpnService()
-                        }
-                    } else {
-                        writeLog("[VPN] Ошибка запуска ядра")
-                    }
+            runOnUiThread {
+                val intent = VpnService.prepare(this@MainActivity)
+                if (intent != null) {
+                    isConnected = true
+                    startActivityForResult(intent, 100)
+                } else {
+                    startVpnService()
+                    isConnected = true
                 }
             }
 
@@ -254,7 +251,6 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun disconnect(): Boolean {
-            coreManager.stopCore()
             stopVpnService()
             isConnected = false
             return true
@@ -271,9 +267,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun updateCore(): Boolean {
-            scope.launch {
-                coreManager.checkCore()
-            }
+            scope.launch { coreManager.checkCore() }
             return true
         }
 
@@ -284,26 +278,39 @@ class MainActivity : AppCompatActivity() {
     private fun startVpnService() {
         val intent = Intent(this, LaLuneVpnService::class.java)
         intent.action = "START"
-        startService(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 
     private fun stopVpnService() {
         val intent = Intent(this, LaLuneVpnService::class.java)
         intent.action = "STOP"
-        startService(intent)
+        try {
+            startService(intent)
+        } catch (e: Exception) {
+            android.util.Log.w("LaLune", "stopVpnService: ${e.message}")
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 100 && resultCode == RESULT_OK) {
-            startVpnService()
+        if (requestCode == 100) {
+            if (resultCode == RESULT_OK) {
+                startVpnService()
+                isConnected = true
+            } else {
+                isConnected = false
+                writeLog("[VPN] Пользователь отклонил запрос разрешения")
+            }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        coreManager.stopCore()
-        stopVpnService()
+        scope.cancel()
     }
 
     data class ParsedConfig(val peer: String, val password: String, val hashes: String)
