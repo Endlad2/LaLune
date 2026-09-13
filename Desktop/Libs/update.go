@@ -1,12 +1,14 @@
 package libs
 
 import (
+	"archive/zip"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -242,6 +244,147 @@ func (a *AppCore) downloadFile(rawURL string, destination string) bool {
 	return false
 }
 
+// DownloadFile — публичная обёртка над downloadFile.
+// Используется из других пакетов (например, для скачивания wintun.zip).
+func DownloadFile(urlStr string, destination string) bool {
+	urlStr = strings.TrimSpace(urlStr)
+
+	urls := []string{
+		urlStr,
+		PROXY_URL + url.QueryEscape(urlStr),
+		PROXY_URL + url.QueryEscape(urlStr),
+	}
+
+	for i, attemptURL := range urls {
+		level := i + 1
+		fmt.Printf("[DOWNLOAD][LEVEL %d] Пробую: %s\n", level, truncateURL(attemptURL, 100))
+
+		client := &http.Client{Timeout: HTTP_TIMEOUT}
+		req, err := http.NewRequest("GET", attemptURL, nil)
+		if err != nil {
+			fmt.Printf("[DOWNLOAD][LEVEL %d] Ошибка запроса: %v\n", level, err)
+			continue
+		}
+
+		if level == 3 {
+			req.Header.Set("User-Agent", "curl/7.68.0")
+		} else {
+			req.Header.Set("User-Agent", USER_AGENT)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Printf("[DOWNLOAD][LEVEL %d] Ошибка: %v\n", level, err)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			fmt.Printf("[DOWNLOAD][LEVEL %d] HTTP %d\n", level, resp.StatusCode)
+			continue
+		}
+
+		file, err := os.Create(destination)
+		if err != nil {
+			resp.Body.Close()
+			continue
+		}
+
+		_, err = io.Copy(file, resp.Body)
+		file.Close()
+		resp.Body.Close()
+
+		if err != nil {
+			os.Remove(destination)
+			continue
+		}
+
+		info, err := os.Stat(destination)
+		if err != nil || info.Size() < 1024 {
+			os.Remove(destination)
+			fmt.Printf("[DOWNLOAD][LEVEL %d] Файл слишком маленький\n", level)
+			continue
+		}
+
+		fmt.Printf("[DOWNLOAD][LEVEL %d] УСПЕХ (%d байт)\n", level, info.Size())
+		return true
+	}
+
+	return false
+}
+
+// DownloadAndExtractWintun — скачивает wintun.zip и распаковывает wintun.dll
+// в указанную папку. Если файл уже есть — возвращает путь без скачивания.
+func DownloadAndExtractWintun(appDir string) (string, error) {
+	zipPath := filepath.Join(appDir, "wintun.zip")
+	dllPath := filepath.Join(appDir, "wintun.dll")
+
+	if _, err := os.Stat(dllPath); err == nil {
+		return dllPath, nil
+	}
+
+	fmt.Println("[WINTUN] Скачивание wintun.zip...")
+
+	success := DownloadFile(WINTUN_URL, zipPath)
+	if !success {
+		fmt.Println("[WINTUN] Прямая загрузка не удалась, пробую через прокси...")
+		success = DownloadFile(WINTUN_FALLBACK_URL, zipPath)
+	}
+
+	if !success {
+		return "", fmt.Errorf("не удалось скачать wintun.dll")
+	}
+
+	fmt.Println("[WINTUN] Распаковка...")
+
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		os.Remove(zipPath)
+		return "", fmt.Errorf("ошибка открытия zip: %v", err)
+	}
+	defer reader.Close()
+
+	var found bool
+	for _, file := range reader.File {
+		if strings.HasSuffix(file.Name, "wintun.dll") {
+			dst, err := os.Create(dllPath)
+			if err != nil {
+				continue
+			}
+			defer dst.Close()
+
+			src, err := file.Open()
+			if err != nil {
+				dst.Close()
+				continue
+			}
+			defer src.Close()
+
+			_, err = io.Copy(dst, src)
+			if err != nil {
+				dst.Close()
+				continue
+			}
+
+			found = true
+			fmt.Println("[WINTUN] wintun.dll успешно извлечен")
+			break
+		}
+	}
+
+	os.Remove(zipPath)
+
+	if !found {
+		return "", fmt.Errorf("wintun.dll не найден в архиве")
+	}
+
+	if _, err := os.Stat(dllPath); err != nil {
+		return "", fmt.Errorf("wintun.dll не создан: %v", err)
+	}
+
+	return dllPath, nil
+}
+
 // UpdateCore — публичный метод для UI.
 func (a *AppCore) UpdateCore() bool {
 	if a.IsConnected() {
@@ -263,7 +406,6 @@ const LaLuneReleasesURL = "https://github.com/Endlad2/LaLune/releases/latest"
 const LaLuneAPILatest = "https://api.github.com/repos/Endlad2/LaLune/releases/latest"
 
 // LaLuneUpdateResult — результат проверки обновлений LaLune.
-// Экспортированные поля, потому что Wails сериализует их в JSON для JS.
 type LaLuneUpdateResult struct {
 	RemoteTag string `json:"remoteTag"`
 	HasUpdate bool   `json:"hasUpdate"`
@@ -271,7 +413,6 @@ type LaLuneUpdateResult struct {
 }
 
 // CheckLaLuneUpdate — проверяет актуальную версию LaLune через GitHub API.
-// Возвращает структуру, которая автоматически упаковывается Wails в JSON.
 func (a *AppCore) CheckLaLuneUpdate() LaLuneUpdateResult {
 	remoteTag, err := a.fetchLaLuneLatestTag()
 	if err != nil {
@@ -292,7 +433,7 @@ func (a *AppCore) CheckLaLuneUpdate() LaLuneUpdateResult {
 	}
 }
 
-// fetchLaLuneLatestTag — запрашивает GitHub API, парсит JSON, вытаскивает tag_name.
+// fetchLaLuneLatestTag — запрашивает GitHub API и вытаскивает tag_name.
 func (a *AppCore) fetchLaLuneLatestTag() (string, error) {
 	urls := []string{
 		LaLuneAPILatest,
@@ -307,7 +448,6 @@ func (a *AppCore) fetchLaLuneLatestTag() (string, error) {
 		client := &http.Client{Timeout: HTTP_TIMEOUT}
 		req, err := http.NewRequest("GET", attemptURL, nil)
 		if err != nil {
-			fmt.Printf("[LALUNE][LEVEL %d] Ошибка запроса: %v\n", level, err)
 			continue
 		}
 
@@ -320,14 +460,12 @@ func (a *AppCore) fetchLaLuneLatestTag() (string, error) {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			fmt.Printf("[LALUNE][LEVEL %d] Ошибка: %v\n", level, err)
 			continue
 		}
 
 		data, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			fmt.Printf("[LALUNE][LEVEL %d] Ошибка чтения: %v\n", level, err)
 			continue
 		}
 
