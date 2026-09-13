@@ -151,12 +151,13 @@ jobs:
           rm -rf "$ASSETS_DIR"
           mkdir -p "$ASSETS_DIR"
           cp -r Frontend/output/. "$ASSETS_DIR/"
-          echo "=== assets ==="
+          echo "=== assets top-level ==="
           ls -la "$ASSETS_DIR"
-          echo "=== assets/assets ==="
-          ls -la "$ASSETS_DIR/assets" || true
-          echo "=== assets/assets/assets ==="
-          ls -la "$ASSETS_DIR/assets/assets" || true
+          echo "=== check app.html + index.html ==="
+          test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/index.html" || { echo "index.html MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
+          echo "OK: app.html, index.html, api.js are present"
 
       - name: Download core binaries
         run: |

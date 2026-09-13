@@ -80,28 +80,30 @@ class _NavButtonState extends State<_NavButton> {
   @override
   Widget build(BuildContext context) {
     final active = widget.selected;
+    final scale = _hover ? 0.92 : 1.0;
+
+    // Иконка НЕ перекрашивается — показываем PNG как есть.
+    // Подсветка идёт через подложку-капсулу под иконкой + label.
+    final chipColor = active
+        ? const Color(0xFFF7E84E).withOpacity(0.18)
+        : (_hover
+            ? Colors.white.withOpacity(0.10)
+            : Colors.transparent);
+
+    final chipBorder = active
+        ? const Color(0xFFF7E84E).withOpacity(0.75)
+        : (_hover
+            ? Colors.white.withOpacity(0.22)
+            : Colors.transparent);
+
     final labelColor = active
         ? const Color(0xFFF7E84E)
         : Colors.white.withOpacity(_hover ? 0.95 : 0.55);
 
-    // Подложка-капсула под иконкой. Не перекрашивает саму PNG —
-    // иконка остаётся белой, а подсветка идёт через фон.
-    final chipColor = active
-        ? const Color(0xFFF7E84E).withOpacity(0.16)
-        : (_hover
-            ? Colors.white.withOpacity(0.08)
-            : Colors.transparent);
-
-    final chipBorder = active
-        ? const Color(0xFFF7E84E).withOpacity(0.55)
-        : (_hover
-            ? Colors.white.withOpacity(0.18)
-            : Colors.transparent);
-
-    final iconColor =
-        active ? const Color(0xFFF7E84E) : Colors.white.withOpacity(0.85);
-
-    final scale = _hover ? 0.92 : 1.0;
+    // Активная — чуть ярче, hover — с лёгким усилением.
+    final iconOpacity = active
+        ? 1.0
+        : (_hover ? 1.0 : 0.85);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
@@ -133,41 +135,43 @@ class _NavButtonState extends State<_NavButton> {
                         ? [
                             BoxShadow(
                               color: const Color(0xFFF7E84E)
-                                  .withOpacity(0.30),
-                              blurRadius: 14,
+                                  .withOpacity(0.35),
+                              blurRadius: 16,
                               spreadRadius: 1,
                             ),
                           ]
                         : null,
                   ),
-                  child: ColorFiltered(
-                    // srcIn заменяет ВСЕ непрозрачные пиксели на iconColor,
-                    // с сохранением альфы. Работает только если PNG
-                    // имеет настоящую прозрачность — иначе получится
-                    // сплошной квадрат.
-                    colorFilter:
-                        ColorFilter.mode(iconColor, BlendMode.srcIn),
+                  child: AnimatedOpacity(
+                    opacity: iconOpacity,
+                    duration: const Duration(milliseconds: 180),
+                    // Оригинальный цветной PNG, без всяких фильтров.
                     child: Image.asset(
                       widget.item.icon,
-                      width: 20,
-                      height: 20,
+                      width: 26,
+                      height: 26,
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.high,
                       errorBuilder: (_, __, ___) => Icon(
                         Icons.circle_outlined,
-                        size: 20,
-                        color: iconColor,
+                        size: 26,
+                        color: active
+                            ? const Color(0xFFF7E84E)
+                            : Colors.white.withOpacity(0.7),
                       ),
                     ),
                   ),
                 ),
               ),
               const SizedBox(height: 3),
-              Text(
-                widget.item.label,
+              AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 200),
                 style: TextStyle(
                   fontSize: 10.5,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: active ? FontWeight.w700 : FontWeight.w600,
                   color: labelColor,
                 ),
+                child: Text(widget.item.label),
               ),
             ],
           ),

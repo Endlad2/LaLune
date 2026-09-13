@@ -9,6 +9,8 @@ build_frontend.py — сборка Dart-фронтенда LaLune в готов�
   4. Копирует Frontend/Core/build/web/* → Frontend/output/
   5. Копирует Api/<platform>.js → Frontend/output/api.js
   6. Перезаписывает output/index.html своим шаблоном
+  7. Если платформа == Android, дополнительно копирует index.html в app.html
+     (MainActivity.kt загружает file:///android_asset/app.html)
 
 Использование:
     python build_frontend.py --platform Android
@@ -329,6 +331,27 @@ def write_index_html() -> None:
     log(f"Wrote index.html ({len(INDEX_HTML_TEMPLATE)} bytes)")
 
 # ============================================================
+#  Шаг 5 (Android): index.html -> app.html
+# ============================================================
+
+def make_android_app_html() -> None:
+    """
+    MainActivity.kt у нас грузит file:///android_asset/app.html.
+    Flutter собирает index.html. Просто копируем index.html → app.html
+    в output/. Дальше любая копия output/* в assets/ захватит оба файла.
+    Оба ссылаются на один и тот же api.js / flutter_bootstrap.js —
+    всё лежит рядом, конфликта нет.
+    """
+    index = OUTPUT / "index.html"
+    app_html = OUTPUT / "app.html"
+
+    if not index.exists():
+        die(f"index.html not found after build: {index}")
+
+    shutil.copy2(index, app_html)
+    log(f"Wrote app.html (copy of index.html) for Android assets")
+
+# ============================================================
 #  main
 # ============================================================
 
@@ -352,6 +375,10 @@ def main() -> int:
     build_dart(flutter)
     copy_api(args.platform)
     write_index_html()
+
+    # Android-специфика: MainActivity загружает app.html
+    if args.platform == "Android":
+        make_android_app_html()
 
     log(f"Done. Result: {OUTPUT}")
     return 0
