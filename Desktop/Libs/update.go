@@ -1,17 +1,14 @@
 package libs
 
 import (
-	"archive/zip"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 )
 
 // ============================================================
@@ -260,39 +257,42 @@ func (a *AppCore) UpdateCore() bool {
 // ============================================================
 
 // LaLuneReleasesURL — страница со всеми релизами LaLune.
-// UI открывает её в браузере, когда пользователь согласен обновиться.
 const LaLuneReleasesURL = "https://github.com/Endlad2/LaLune/releases/latest"
 
 // LaLuneAPILatest — URL GitHub API для получения последнего релиза.
-// Используем API, а не парсинг HTML, потому что API отдаёт чистый JSON.
 const LaLuneAPILatest = "https://api.github.com/repos/Endlad2/LaLune/releases/latest"
 
+// LaLuneUpdateResult — результат проверки обновлений LaLune.
+// Экспортированные поля, потому что Wails сериализует их в JSON для JS.
+type LaLuneUpdateResult struct {
+	RemoteTag string `json:"remoteTag"`
+	HasUpdate bool   `json:"hasUpdate"`
+	Error     string `json:"error,omitempty"`
+}
+
 // CheckLaLuneUpdate — проверяет актуальную версию LaLune через GitHub API.
-// Возвращает:
-//   - remoteTag:    тег последнего релиза (например "v0.5.0")
-//   - hasUpdate:    true, если локальная версия отличается
-//   - err:          ошибка сети/парсинга
-//
-// Трёхуровневый fallback — тот же, что и у ядра:
-//   1. Прямой запрос к api.github.com
-//   2. Через прокси
-//   3. Через прокси с curl UA
-func (a *AppCore) CheckLaLuneUpdate() (remoteTag string, hasUpdate bool, err error) {
-	remoteTag, err = a.fetchLaLuneLatestTag()
+// Возвращает структуру, которая автоматически упаковывается Wails в JSON.
+func (a *AppCore) CheckLaLuneUpdate() LaLuneUpdateResult {
+	remoteTag, err := a.fetchLaLuneLatestTag()
 	if err != nil {
-		return "", false, err
+		return LaLuneUpdateResult{
+			RemoteTag: "",
+			HasUpdate: false,
+			Error:     err.Error(),
+		}
 	}
 
 	localVersion := LaLuneVersion
-	if remoteTag != localVersion && remoteTag != "" {
-		return remoteTag, true, nil
-	}
+	hasUpdate := remoteTag != "" && remoteTag != localVersion
 
-	return remoteTag, false, nil
+	return LaLuneUpdateResult{
+		RemoteTag: remoteTag,
+		HasUpdate: hasUpdate,
+		Error:     "",
+	}
 }
 
 // fetchLaLuneLatestTag — запрашивает GitHub API, парсит JSON, вытаскивает tag_name.
-// Использует те же три уровня fallback, что и FetchLatestVersion.
 func (a *AppCore) fetchLaLuneLatestTag() (string, error) {
 	urls := []string{
 		LaLuneAPILatest,
@@ -336,8 +336,6 @@ func (a *AppCore) fetchLaLuneLatestTag() (string, error) {
 			continue
 		}
 
-		// Парсим tag_name из JSON-ответа GitHub API.
-		// Простой ручной парсер, чтобы не тянуть encoding/json ради одного поля.
 		tag := extractTagName(string(data))
 		if tag == "" {
 			fmt.Printf("[LALUNE][LEVEL %d] tag_name не найден\n", level)
@@ -351,8 +349,7 @@ func (a *AppCore) fetchLaLuneLatestTag() (string, error) {
 	return "", fmt.Errorf("не удалось проверить обновление LaLune")
 }
 
-// extractTagName — грубый парсер "tag_name":"v1.2.3" из JSON-ответа GitHub.
-// Специально не используем json.Unmarshal, чтобы не тянуть зависимости.
+// extractTagName — грубый парсер "tag_name":"v1.2.3" из JSON.
 func extractTagName(jsonStr string) string {
 	const key = `"tag_name"`
 	idx := strings.Index(jsonStr, key)
@@ -365,7 +362,6 @@ func extractTagName(jsonStr string) string {
 		return ""
 	}
 	rest = rest[colon+1:]
-	// пропускаем пробелы и кавычки
 	rest = strings.TrimLeft(rest, " \t\r\n")
 	if len(rest) == 0 || rest[0] != '"' {
 		return ""
@@ -379,7 +375,6 @@ func extractTagName(jsonStr string) string {
 }
 
 // OpenLaLuneReleasesURL — возвращает URL страницы релизов.
-// UI откроет его в системном браузере, когда пользователь согласится.
 func (a *AppCore) OpenLaLuneReleasesURL() string {
 	return LaLuneReleasesURL
 }
