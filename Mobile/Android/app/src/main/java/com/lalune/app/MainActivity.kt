@@ -13,11 +13,14 @@ import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewClientCompat
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -29,11 +32,20 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "LaLune"
         private const val REQ_NOTIFICATIONS = 100
         private const val REQ_VPN = 101
+        private const val REQ_BATTERY = 200
         private const val PREFS = "lalune_prefs"
         private const val PREF_ONBOARDING_DONE = "onboarding_done"
+
+        // Виртуальный https-origin, через который WebView читает assets/.
+        // Fetch API, Service Worker, XHR — всё работает как на настоящем https.
+        // Это официальный способ Android 5+ (androidx.webkit.WebViewAssetLoader).
+        private const val ASSET_HOST = "appassets.androidplatform.net"
+        private const val ASSET_URL = "https://$ASSET_HOST/assets/app.html"
     }
 
     private lateinit var webView: WebView
+    private lateinit var assetLoader: WebViewAssetLoader
+
     private val appDir: File by lazy { File(filesDir, "la-lune") }
     private val configsFile: File by lazy { File(appDir, "configs.json") }
     private val logsFile: File by lazy { File(appDir, "logs.log") }
@@ -59,19 +71,29 @@ class MainActivity : AppCompatActivity() {
 
         val deviceId = DeviceId.getOrCreate(this)
         DeviceId.syncToSettingsFile(this, deviceId)
+        Log.d(TAG, "[DEVICE] deviceId = $deviceId")
 
         coreManager = CoreManager(this)
         loadConfigs()
+
+        // ── AssetLoader: отдаём assets/ как https://appassets.androidplatform.net/assets/ ──
+        assetLoader = WebViewAssetLoader.Builder()
+            .setDomain(ASSET_HOST)
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+
         setupWebView()
 
         setContentView(webView)
-        webView.loadUrl("file:///android_asset/app.html")
+
+        // Загружаем app.html через виртуальный https-origin.
+        // Тогда Fetch API, Service Worker, FontManifest.json — всё работает.
+        webView.loadUrl(ASSET_URL)
 
         scope.launch {
             isCoreReady = coreManager.checkCore()
         }
 
-        // Онбординг: разрешение на уведомления → battery optimization
         runOnUiThread { startOnboarding() }
     }
 
@@ -81,13 +103,28 @@ class MainActivity : AppCompatActivity() {
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
-        webView.webViewClient = WebViewClient()
+        // Разрешаем WebView читать https://appassets.androidplatform.net/ через assetLoader.
+        webView.settings.allowContentAccess = true
+        // Не блокируем mixed content — у нас один origin.
+        webView.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+
+        // WebViewClientCompat (не обычный WebViewClient) — нужен для shouldInterceptRequest с WebResourceRequest.
+        webView.webViewClient = object : WebViewClientCompat() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                return assetLoader.shouldInterceptRequest(request.url)
+            }
+        }
+
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
                 Log.d("LaLune-JS", "${msg.message()} @ ${msg.sourceId()}:${msg.lineNumber()}")
                 return true
             }
         }
+
         webView.addJavascriptInterface(AndroidBridge(), "lalune")
     }
 
@@ -96,14 +133,16 @@ class MainActivity : AppCompatActivity() {
     private fun startOnboarding() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val done = prefs.getBoolean(PREF_ONBOARDING_DONE, false)
+        Log.d(TAG, "startOnboarding: done=$done, sdk=${Build.VERSION.SDK_INT}")
 
-        // Шаг 1: разрешение на уведомления (Android 13+)
+        if (done) return
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 this, android.Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
 
-            if (!granted && !done) {
+            if (!granted) {
                 ActivityCompat.requestPermissions(
                     this,
                     arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
@@ -113,53 +152,51 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Шаг 2: battery optimization (если ещё не спрашивали)
-        if (!done) {
-            openBatteryOptimizationSettings()
-        }
+        openBatteryOptimizationSettings()
     }
 
-    /**
-     * Открывает системный экран Battery Optimization для нашего пакета.
-     * Если такой экран недоступен (некоторые кастомные прошивки) — открываем общий список.
-     */
     private fun openBatteryOptimizationSettings() {
+        val pkg = packageName
+
         try {
-            val pm = getSystemService(POWER_SERVICE) as PowerManager
-            val packageName = packageName
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val isIgnoring = pm.isIgnoringBatteryOptimizations(packageName)
-                Log.d(TAG, "isIgnoringBatteryOptimizations=$isIgnoring")
-
-                if (!isIgnoring) {
-                    // Прямой запрос на исключение из оптимизации (открывает диалог)
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    try {
-                        startActivityForResult(intent, 200)
-                    } catch (e: Exception) {
-                        // Некоторые прошивки не поддерживают прямой запрос — открываем список
-                        Log.w(TAG, "REQUEST_IGNORE not available: ${e.message}")
-                        openBatteryOptimizationList()
-                    }
-                    return
-                }
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$pkg")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "openBatteryOptimization: ${e.message}")
-            openBatteryOptimizationList()
-        }
-    }
+            if (intent.resolveActivity(packageManager) != null) {
+                startActivityForResult(intent, REQ_BATTERY)
+                return
+            }
+        } catch (_: Exception) {}
 
-    private fun openBatteryOptimizationList() {
         try {
             val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-            startActivity(intent)
-        } catch (e: Exception) {
-            Log.w(TAG, "Battery optimization settings not available: ${e.message}")
-            // Совсем не получилось — просто помечаем онбординг пройденным
+            if (intent.resolveActivity(packageManager) != null) {
+                startActivityForResult(intent, REQ_BATTERY)
+                return
+            }
+        } catch (_: Exception) {}
+
+        try {
+            val intent = Intent().apply {
+                setClassName(
+                    "com.miui.powerkeeper",
+                    "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"
+                )
+                putExtra("package_name", pkg)
+                putExtra("package_label", "LaLune")
+            }
+            if (intent.resolveActivity(packageManager) != null) {
+                startActivityForResult(intent, REQ_BATTERY)
+                return
+            }
+        } catch (_: Exception) {}
+
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$pkg")
+            }
+            startActivityForResult(intent, REQ_BATTERY)
+        } catch (_: Exception) {
             markOnboardingDone()
         }
     }
@@ -177,10 +214,7 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
         if (requestCode == REQ_NOTIFICATIONS) {
-            // Не важно, выдал ли пользователь разрешение — двигаемся к battery optimization.
-            // Если откажет — уведомление просто не покажется, но VPN будет работать.
             openBatteryOptimizationSettings()
         }
     }
@@ -198,8 +232,7 @@ class MainActivity : AppCompatActivity() {
                     writeLog("[VPN] Пользователь отклонил запрос разрешения")
                 }
             }
-            200 -> {
-                // Вернулись с экрана battery optimization — считаем онбординг пройденным.
+            REQ_BATTERY -> {
                 markOnboardingDone()
             }
         }
@@ -386,6 +419,28 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun updateCoreAndWait(): Boolean = true
+
+        // ====== обновление ядра (унифицированные имена для JS-моста) ======
+        @JavascriptInterface
+        fun checkCoreUpdate(): String = "{\"update\":false,\"version\":\"\"}"
+
+        // ====== обновление LaLune ======
+        @JavascriptInterface
+        fun checkLaLuneUpdate(): String = "{\"update\":false,\"version\":\"0.5.0\"}"
+
+        @JavascriptInterface
+        fun openLaLuneReleases(): Boolean {
+            return try {
+                val intent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/Endlad2/LaLune/releases/latest")
+                )
+                startActivity(intent)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
     }
 
     private fun startVpnService() {
@@ -403,7 +458,7 @@ class MainActivity : AppCompatActivity() {
         intent.action = "STOP"
         try {
             startService(intent)
-        } catch (e: Exception) { }
+        } catch (_: Exception) { }
     }
 
     override fun onDestroy() {
@@ -440,7 +495,7 @@ class MainActivity : AppCompatActivity() {
                     password = url.userInfo ?: ""
                     peer = "$host:$port"
                 }
-            } catch (e: Exception) {}
+            } catch (_: Exception) {}
         }
 
         return ParsedConfig(peer, password, hashes)

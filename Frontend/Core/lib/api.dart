@@ -1,13 +1,10 @@
 // Тонкий мост Dart → JS.
 //
-// Все функции window.api возвращают либо строку, либо bool (см. Frontend/Api/*.js).
+// Все функции window.api возвращают либо строку, либо bool.
 // Здесь просто обёртки для типобезопасности и единообразия.
 
 import 'dart:convert';
 import 'dart:js_interop';
-
-@JS('window.api')
-external JSObject? get _apiObj;
 
 // ---- Raw JS-функции --------------------------------------------------------
 
@@ -41,14 +38,20 @@ external bool _connect(num configId);
 @JS('window.api.Disconnect')
 external bool _disconnect();
 
-@JS('window.api.CheckUpdate')
-external String _checkUpdate();
+@JS('window.api.CheckCoreUpdate')
+external String _checkCoreUpdate();
 
 @JS('window.api.UpdateCore')
 external bool _updateCore();
 
 @JS('window.api.UpdateCoreAndWait')
 external bool _updateCoreAndWait();
+
+@JS('window.api.CheckLaLuneUpdate')
+external String _checkLaLuneUpdate();
+
+@JS('window.api.OpenLaLuneReleases')
+external bool _openLaLuneReleases();
 
 @JS('window.api.GetDeviceId')
 external String _getDeviceId();
@@ -129,11 +132,33 @@ class Settings {
       };
 }
 
+/// Результат проверки обновлений (ядра или LaLune).
+class UpdateInfo {
+  final bool hasUpdate;
+  final String version;
+
+  const UpdateInfo({required this.hasUpdate, required this.version});
+
+  static const empty = UpdateInfo(hasUpdate: false, version: '');
+
+  factory UpdateInfo.fromJsonString(String raw) {
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      return UpdateInfo(
+        hasUpdate: (j['update'] ?? false) as bool,
+        version: (j['version'] ?? '') as String,
+      );
+    } catch (_) {
+      return empty;
+    }
+  }
+}
+
 // ---- Обёртки ---------------------------------------------------------------
 
 class Api {
   static void init() {
-    // Ничего не делаем, но точка входа для будущего
+    // Точка входа для будущих init-хендшейков
   }
 
   static List<ConfigItem> getConfigs() {
@@ -205,8 +230,14 @@ class Api {
     try { return _disconnect(); } catch (_) { return false; }
   }
 
-  static String checkUpdate() {
-    try { return _checkUpdate(); } catch (_) { return '{}'; }
+  // ====== обновление ядра CSQTT ======
+
+  /// Синхронный "запрос" — возвращает кэш. Реальная проверка
+  /// запускается в фоне внутри JS-моста, кэш обновляется
+  /// через несколько секунд. UI должен дёргать повторно.
+  static UpdateInfo checkCoreUpdate() {
+    try { return UpdateInfo.fromJsonString(_checkCoreUpdate()); }
+    catch (_) { return UpdateInfo.empty; }
   }
 
   static bool updateCore() {
@@ -215,6 +246,21 @@ class Api {
 
   static bool updateCoreAndWait() {
     try { return _updateCoreAndWait(); } catch (_) { return false; }
+  }
+
+  // ====== обновление LaLune ======
+
+  /// Проверка обновления LaLune через GitHub API.
+  /// Синхронный доступ — читает кэш, обновляется в фоне.
+  static UpdateInfo checkLaLuneUpdate() {
+    try { return UpdateInfo.fromJsonString(_checkLaLuneUpdate()); }
+    catch (_) { return UpdateInfo.empty; }
+  }
+
+  /// Открывает https://github.com/Endlad2/LaLune/releases/latest
+  /// в системном браузере.
+  static bool openLaLuneReleases() {
+    try { return _openLaLuneReleases(); } catch (_) { return false; }
   }
 
   static String getDeviceId() {

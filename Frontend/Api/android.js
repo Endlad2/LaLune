@@ -2,7 +2,11 @@
  * Frontend/Api/android.js
  *
  * Мост Dart → Kotlin AndroidBridge (window.lalune.*).
- * Имена функций совпадают с desktop.js / openwrt.js.
+ * Имена функций совпадают с desktop.js / ios.js / openwrt.js.
+ *
+ * Работает через https://appassets.androidplatform.net/assets/app.html —
+ * то есть Fetch API, XHR, Service Worker и FontManifest.json грузятся
+ * нормально (Kotlin использует WebViewAssetLoader).
  */
 (function () {
     'use strict';
@@ -53,9 +57,19 @@
             const l = lalune(); if (!l) return false;
             try { return l.disconnect(); } catch (_) { return false; }
         },
-        CheckUpdate: () => {
+
+        // ====== проверка обновлений ядра CSQTT ======
+        CheckCoreUpdate: () => {
             const l = lalune(); if (!l) return '{"update":false,"version":""}';
-            try { return l.checkUpdate(); } catch (_) { return '{"update":false,"version":""}'; }
+            try {
+                if (typeof l.checkCoreUpdate === 'function') {
+                    return l.checkCoreUpdate();
+                }
+                if (typeof l.checkUpdate === 'function') {
+                    return l.checkUpdate();
+                }
+            } catch (_) {}
+            return '{"update":false,"version":""}';
         },
         UpdateCore: () => {
             const l = lalune(); if (!l) return false;
@@ -65,6 +79,34 @@
             const l = lalune(); if (!l) return false;
             try { return l.updateCoreAndWait(); } catch (_) { return false; }
         },
+
+        // ====== проверка обновлений LaLune ======
+        CheckLaLuneUpdate: () => {
+            const l = lalune(); if (!l) return '{"update":false,"version":"0.5.0"}';
+            try {
+                if (typeof l.checkLaLuneUpdate === 'function') {
+                    return l.checkLaLuneUpdate();
+                }
+            } catch (_) {}
+            return '{"update":false,"version":"0.5.0"}';
+        },
+        OpenLaLuneReleases: () => {
+            const l = lalune(); if (!l) {
+                // Fallback через window.open
+                try {
+                    window.open('https://github.com/Endlad2/LaLune/releases/latest', '_blank');
+                    return true;
+                } catch (_) { return false; }
+            }
+            try {
+                if (typeof l.openLaLuneReleases === 'function') {
+                    return l.openLaLuneReleases();
+                }
+            } catch (_) {}
+            return false;
+        },
+
+        // ====== Device ID ======
         GetDeviceId: () => {
             const l = lalune(); if (!l) return '';
             try { return l.getDeviceId(); } catch (_) { return ''; }
@@ -75,5 +117,5 @@
         },
     };
 
-    console.log('[api/android] AndroidBridge ready');
+    console.log('[api/android] AndroidBridge ready (https origin)');
 })();

@@ -18,13 +18,18 @@ import (
 )
 
 const (
-	LATEST_URL           = "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
-	CORE_URL_TEMPLATE    = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
-	WINTUN_URL           = "https://www.wintun.net/builds/wintun-0.14.1.zip"
-	WINTUN_FALLBACK_URL  = "http://31.77.148.203:8855/?url=https://www.wintun.net/builds/wintun-0.14.1.zip"
-	PROXY_URL            = "http://31.77.148.203:8855/?url="
-	USER_AGENT           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	HTTP_TIMEOUT         = 30 * time.Second
+	LATEST_URL          = "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
+	CORE_URL_TEMPLATE   = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
+	WINTUN_URL          = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+	WINTUN_FALLBACK_URL = "http://31.77.148.203:8855/?url=https://www.wintun.net/builds/wintun-0.14.1.zip"
+	PROXY_URL           = "http://31.77.148.203:8855/?url="
+	USER_AGENT          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	HTTP_TIMEOUT        = 30 * time.Second
+
+	// LaLuneVersion — текущая версия клиента.
+	// Меняется при релизе. UI показывает её на вкладке "Информация",
+	// и сравнивает с версией из GitHub API при проверке обновлений.
+	LaLuneVersion = "0.5.0"
 )
 
 type Config struct {
@@ -51,7 +56,7 @@ type Settings struct {
 	AutoConnect    bool   `json:"autoConnect"`
 }
 
-// AppCore - общая логика приложения (не зависит от платформы)
+// AppCore - общая логика приложения
 type AppCore struct {
 	ctx             context.Context
 	db              *sql.DB
@@ -81,7 +86,6 @@ func (a *AppCore) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.appDir = a.GetAppDataDir()
 
-	// Создаем папку если её нет
 	if err := os.MkdirAll(a.appDir, 0755); err != nil {
 		a.AddLog(fmt.Sprintf("[ERROR] Не удалось создать папку %s: %v", a.appDir, err))
 	}
@@ -125,20 +129,18 @@ func (a *AppCore) GetCoreFilename() string {
 func (a *AppCore) InitDB() {
 	dbPath := filepath.Join(a.appDir, "configs.db")
 	a.AddLog(fmt.Sprintf("[DB] Инициализация БД: %s", dbPath))
-	
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		a.AddLog(fmt.Sprintf("[DB] Ошибка открытия: %v", err))
 		return
 	}
 
-	// Проверяем подключение
 	if err := db.Ping(); err != nil {
 		a.AddLog(fmt.Sprintf("[DB] Ошибка ping: %v", err))
 		return
 	}
 
-	// Создаем таблицу
 	createTableSQL := `CREATE TABLE IF NOT EXISTS configs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		protocol TEXT NOT NULL DEFAULT 'CSQTT',
@@ -149,14 +151,13 @@ func (a *AppCore) InitDB() {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`
-	
+
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
 		a.AddLog(fmt.Sprintf("[DB] Ошибка создания таблицы: %v", err))
 		return
 	}
 
-	// Проверяем, есть ли данные
 	var count int
 	err = db.QueryRow("SELECT COUNT(*) FROM configs").Scan(&count)
 	if err != nil {
@@ -212,7 +213,7 @@ func (a *AppCore) LoadConfigs() {
 	}
 
 	a.AddLog("[CONFIGS] Загрузка конфигов из БД...")
-	
+
 	rows, err := a.db.Query("SELECT id, protocol, peer, password, hashes, name FROM configs ORDER BY id DESC")
 	if err != nil {
 		a.AddLog(fmt.Sprintf("[CONFIGS] Ошибка запроса: %v", err))
@@ -301,13 +302,13 @@ func (a *AppCore) SaveConfig(link string) bool {
 
 func (a *AppCore) DeleteConfig(id int64) bool {
 	a.AddLog(fmt.Sprintf("[API] Удаление конфига ID: %d", id))
-	
+
 	_, err := a.db.Exec("DELETE FROM configs WHERE id = ?", id)
 	if err != nil {
 		a.AddLog(fmt.Sprintf("[API] Ошибка удаления: %v", err))
 		return false
 	}
-	
+
 	a.AddLog(fmt.Sprintf("[API] Конфиг %d удален", id))
 	a.LoadConfigs()
 	return true
@@ -315,7 +316,7 @@ func (a *AppCore) DeleteConfig(id int64) bool {
 
 func (a *AppCore) SaveSettings(settingsJson string) bool {
 	a.AddLog("[API] Сохранение настроек")
-	
+
 	var newSettings Settings
 	if err := json.Unmarshal([]byte(settingsJson), &newSettings); err != nil {
 		a.AddLog(fmt.Sprintf("[API] Ошибка парсинга настроек: %v", err))

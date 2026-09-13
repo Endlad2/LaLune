@@ -14,19 +14,14 @@
         return null;
     }
 
-    // Wails возвращает Promise — оборачиваем в синхронный вид через
-    // простую эвристику: возвращаем сразу результат, если он не Promise.
-    // Dart-сторона работает как с синхронным API, но это допустимо,
-    // потому что мы конвертируем Promise → блокирующий ответ нельзя.
-    // Поэтому Dart должен получать уже готовые значения через кэш.
-    //
-    // В desktop.js мы делаем проще: держим кэш и перезагружаем его
-    // по таймеру в фоне. Dart читает актуальное значение из кэша.
-
+    // Wails возвращает Promise. Держим кэш, чтобы Dart мог читать
+    // значения синхронно (он ожидает string/bool, а не Promise).
     let cachedConfigs = '[]';
     let cachedSettings = '{}';
     let cachedLogs = '[]';
     let cachedStatus = '{"connected":false}';
+    let cachedCoreUpdate = '{"update":false,"version":""}';
+    let cachedLaLuneUpdate = '{"update":false,"version":""}';
 
     async function refresh() {
         const api = go();
@@ -47,7 +42,7 @@
         GetLogsJson: () => cachedLogs,
         GetStatusJson: () => cachedStatus,
 
-        // ====== действия (async → синхронный return через void) ======
+        // ====== действия ======
         SaveConfig: (link) => {
             const api = go(); if (!api) return false;
             api.SaveConfig(link).then(() => refresh());
@@ -78,7 +73,22 @@
             api.Disconnect().then(() => refresh());
             return true;
         },
-        CheckUpdate: () => '{"update":false,"version":"—"}',
+
+        // ====== обновление ядра CSQTT ======
+        // Возвращает кэшированный JSON: {"update":bool,"version":"..."}.
+        // Dart синхронно читает. После вызова CheckCoreUpdate в фоне
+        // обновляется кэш, и следующий тик polling видит актуальное значение.
+        CheckCoreUpdate: () => {
+            const api = go();
+            if (api && api.CheckUpdate) {
+                api.CheckUpdate().then((raw) => {
+                    try {
+                        cachedCoreUpdate = typeof raw === 'string' ? raw : JSON.stringify(raw);
+                    } catch (_) {}
+                }).catch(() => {});
+            }
+            return cachedCoreUpdate;
+        },
         UpdateCore: () => {
             const api = go(); if (!api) return false;
             api.UpdateCore().then(() => refresh());
@@ -90,6 +100,47 @@
             return true;
         },
 
+        // ====== обновление LaLune ======
+        // Возвращает кэшированный JSON: {"update":bool,"version":"..."}.
+        CheckLaLuneUpdate: () => {
+            const api = go();
+            if (api && api.CheckLaLuneUpdate) {
+                api.CheckLaLuneUpdate().then((raw) => {
+                    try {
+                        const v = typeof raw === 'string' ? raw : JSON.stringify(raw);
+                        // Wails обернёт Go-структуру в JSON автоматически.
+                        // Мы ожидаем поля remoteTag/hasUpdate/err,
+                        // но во фронт отдаём унифицированный формат.
+                        let tag = '';
+                        let has = false;
+                        try {
+                            const j = JSON.parse(v);
+                            tag = j.remoteTag || j.RemoteTag || '';
+                            has = !!(j.hasUpdate || j.HasUpdate);
+                        } catch (_) {}
+                        cachedLaLuneUpdate = JSON.stringify({ update: has, version: tag });
+                    } catch (_) {}
+                }).catch(() => {});
+            }
+            return cachedLaLuneUpdate;
+        },
+        OpenLaLuneReleases: () => {
+            const api = go();
+            if (api && api.OpenLaLuneReleasesURL) {
+                api.OpenLaLuneReleasesURL().then((url) => {
+                    try { window.open(url, '_blank'); } catch (_) {}
+                }).catch(() => {});
+                return true;
+            }
+            // Fallback — открываем напрямую
+            try {
+                window.open('https://github.com/Endlad2/LaLune/releases/latest', '_blank');
+                return true;
+            } catch (_) {
+                return false;
+            }
+        },
+
         // ====== Device ID ======
         GetDeviceId: () => {
             try {
@@ -97,7 +148,7 @@
                 return s.deviceId || '';
             } catch (_) { return ''; }
         },
-        RegenerateDeviceId: () => '', // Wails сам не умеет — управляется через SaveSettings
+        RegenerateDeviceId: () => '',
     };
 
     console.log('[api/desktop] Wails bridge ready');
