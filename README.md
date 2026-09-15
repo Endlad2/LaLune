@@ -13,8 +13,8 @@ LaLune — клиент для обхода блокировок на базе �
 
 | Платформа | Статус | Технология |
 |---|---|---|
-| Windows | Готово | Wails v2 + Wintun |
-| Linux | Готово | Wails v2 + TUN |
+| Windows | Готово | Wails v2 + Flutter +Wintun |
+| Linux | Готово | Wails v2 + Flutter + TUN |
 | OpenWRT | Готово | Go daemon |
 | iOS | Готово | Swift + Network Extension |
 
