@@ -134,8 +134,31 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # Не используем android-actions/setup-android@v3 — она падает на
+      # `sdkmanager tools`, потому что пакет tools удалён из SDK-репы.
+      # На ubuntu-latest SDK уже предустановлен, просто выставляем env.
+      - name: Use preinstalled Android SDK
+        run: |
+          if [ -z "$ANDROID_HOME" ]; then
+            echo "ANDROID_HOME is not set, trying common paths"
+            if [ -d "$HOME/Android/Sdk" ]; then
+              echo "ANDROID_HOME=$HOME/Android/Sdk" >> $GITHUB_ENV
+              echo "ANDROID_SDK_ROOT=$HOME/Android/Sdk" >> $GITHUB_ENV
+            elif [ -d "/usr/local/lib/android/sdk" ]; then
+              echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+              echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+            fi
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_HOME" || true
+          ls -la "$ANDROID_HOME/platforms" || true
+          ls -la "$ANDROID_HOME/build-tools" || true
+
+      - name: Accept Android licenses (best-effort)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          yes | "$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -153,7 +176,6 @@ jobs:
           cp -r Frontend/output/. "$ASSETS_DIR/"
           echo "=== assets top-level ==="
           ls -la "$ASSETS_DIR"
-          echo "=== check app.html + index.html ==="
           test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
           test -f "$ASSETS_DIR/index.html" || { echo "index.html MISSING"; exit 1; }
           test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
