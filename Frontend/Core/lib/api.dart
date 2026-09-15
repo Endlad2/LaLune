@@ -230,11 +230,6 @@ class Api {
     try { return _disconnect(); } catch (_) { return false; }
   }
 
-  // ====== обновление ядра CSQTT ======
-
-  /// Синхронный "запрос" — возвращает кэш. Реальная проверка
-  /// запускается в фоне внутри JS-моста, кэш обновляется
-  /// через несколько секунд. UI должен дёргать повторно.
   static UpdateInfo checkCoreUpdate() {
     try { return UpdateInfo.fromJsonString(_checkCoreUpdate()); }
     catch (_) { return UpdateInfo.empty; }
@@ -248,17 +243,11 @@ class Api {
     try { return _updateCoreAndWait(); } catch (_) { return false; }
   }
 
-  // ====== обновление LaLune ======
-
-  /// Проверка обновления LaLune через GitHub API.
-  /// Синхронный доступ — читает кэш, обновляется в фоне.
   static UpdateInfo checkLaLuneUpdate() {
     try { return UpdateInfo.fromJsonString(_checkLaLuneUpdate()); }
     catch (_) { return UpdateInfo.empty; }
   }
 
-  /// Открывает https://github.com/Endlad2/LaLune/releases/latest
-  /// в системном браузере.
   static bool openLaLuneReleases() {
     try { return _openLaLuneReleases(); } catch (_) { return false; }
   }
