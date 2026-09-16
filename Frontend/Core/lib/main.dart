@@ -42,10 +42,13 @@ class RootShell extends StatefulWidget {
 
 class _RootShellState extends State<RootShell> {
   int _currentPage = 0;
-  // Инкрементируется при запросе перезагрузки «Подключения».
-  // Используется как ValueKey, чтобы Flutter полностью пересоздал
-  // ConnectionPage (initState, reload, polling).
+
+  // Каждый раз, когда переключаемся на вкладку, инкрементим версию —
+  // это пересоздаёт страницу (initState → свежие данные из Api).
+  // Так «Настройки» гарантированно подтягивают актуальный глобальный
+  // конфиг и settings после выбора конфига во вкладке «Подключение».
   int _connectionVersion = 0;
+  int _settingsVersion = 0;
 
   @override
   void initState() {
@@ -57,6 +60,18 @@ class _RootShellState extends State<RootShell> {
     setState(() => _connectionVersion++);
   }
 
+  void _onNavSelect(int i) {
+    if (i == _currentPage) return;
+    setState(() {
+      _currentPage = i;
+      // Настройки пересоздаём при каждом заходе — блок «Основные настройки»
+      // должен подтянуть глобальный конфиг, выбранный во вкладке «Подключение».
+      if (i == 1) {
+        _settingsVersion++;
+      }
+    });
+  }
+
   Widget _buildPage() {
     switch (_currentPage) {
       case 0:
@@ -65,7 +80,9 @@ class _RootShellState extends State<RootShell> {
           onReload: _reloadConnection,
         );
       case 1:
-        return const SettingsPage();
+        return SettingsPage(
+          key: ValueKey('settings_$_settingsVersion'),
+        );
       case 2:
         return const InfoPage();
       case 3:
@@ -113,7 +130,7 @@ class _RootShellState extends State<RootShell> {
               ),
               NavBar(
                 currentIndex: _currentPage,
-                onSelect: (i) => setState(() => _currentPage = i),
+                onSelect: _onNavSelect,
               ),
             ],
           ),

@@ -71,17 +71,6 @@ func (a *AppCore) ReadVKToken() (string, error) {
 	return strings.TrimSpace(j.Token), nil
 }
 
-func (a *AppCore) GetVKTokenState() VkTokenState {
-	state := VkTokenState{
-		FetcherOK: a.IsFetcherInstalled(),
-		HasToken:  a.HasVKToken(),
-	}
-	if state.HasToken {
-		state.Message = "Токен ВК получен"
-	}
-	return state
-}
-
 func (a *AppCore) IsFetcherInstalled() bool {
 	exe := a.vkFetcherExePath()
 	_, err := os.Stat(exe)
@@ -265,6 +254,19 @@ func (a *AppCore) DeleteVKToken() bool {
 	a.mu.Unlock()
 	a.AddLog("[VK] Токен удалён")
 	return true
+}
+
+// ValidateVKToken — JS-биндинг. Проверяет наличие валидного токена
+// и возвращает состояние в формате VkTokenState.
+func (a *AppCore) ValidateVKToken() VkTokenState {
+	hasToken := a.HasValidVKToken()
+	return VkTokenState{
+		HasToken:  hasToken,
+		FetcherOK: a.IsFetcherInstalled(),
+		Fetching:  false,
+		Message:   "",
+		Progress:  0,
+	}
 }
 
 func unzipInto(zipPath, destDir string) error {

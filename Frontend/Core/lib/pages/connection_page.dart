@@ -18,6 +18,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
   List<ConfigItem> _configs = [];
   int? _selectedId;
   bool _connected = false;
+  bool _wasDownloading = false;
 
   @override
   void initState() {
@@ -30,13 +31,35 @@ class _ConnectionPageState extends State<ConnectionPage> {
     final cfgs = Api.getConfigs();
     setState(() {
       _configs = cfgs;
-      if (cfgs.isNotEmpty &&
-          (_selectedId == null ||
-              !cfgs.any((c) => c.id == _selectedId))) {
+
+      // Приоритет — глобально выбранный конфиг, если он ещё существует.
+      final global = SelectedConfig.current;
+      if (global != null && cfgs.any((c) => c.id == global.id)) {
+        _selectedId = global.id;
+      } else if (cfgs.isNotEmpty &&
+          (_selectedId == null || !cfgs.any((c) => c.id == _selectedId))) {
         _selectedId = cfgs.first.id;
+        // Сразу зафиксируем в глобале, чтобы Настройки видели тот же конфиг.
+        SelectedConfig.set(cfgs.first);
       }
+
       _connected = Api.isConnected();
     });
+
+    // Если конфиг был выбран ранее, но список только что загрузился —
+    // найдём объект и положим в глобал.
+    if (_selectedId != null) {
+      final match = cfgs.where((c) => c.id == _selectedId).toList();
+      if (match.isNotEmpty) {
+        SelectedConfig.set(match.first);
+      }
+    }
+  }
+
+  void _selectConfig(ConfigItem cfg) {
+    setState(() => _selectedId = cfg.id);
+    // Сохраняем весь объект в глобальную переменную.
+    SelectedConfig.set(cfg);
   }
 
   void _startPolling() {
@@ -49,6 +72,27 @@ class _ConnectionPageState extends State<ConnectionPage> {
     });
   }
 
+  void _startCoreDownloadWatcher() {
+    Future.doWhile(() async {
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (!mounted) return false;
+
+      final downloading = Api.isCoreDownloading();
+      if (downloading && !_wasDownloading) {
+        _wasDownloading = true;
+        _toast(
+          'Подождите, скачивается ядро. VPN запустится через 10 сек',
+          long: true,
+        );
+      }
+      if (!downloading && _wasDownloading) {
+        _wasDownloading = false;
+        return false; // прекращаем поллинг
+      }
+      return downloading;
+    });
+  }
+
   void _toggle() {
     if (_connected) {
       Api.disconnect();
@@ -58,18 +102,26 @@ class _ConnectionPageState extends State<ConnectionPage> {
         _toast('Выберите конфиг');
         return;
       }
+      // Перед подключением — убедимся, что глобал актуален.
+      final cfg = _configs.where((c) => c.id == _selectedId).toList();
+      if (cfg.isNotEmpty) SelectedConfig.set(cfg.first);
+
       final ok = Api.connect(_selectedId!);
-      if (ok) setState(() => _connected = true);
+      if (ok) {
+        setState(() => _connected = true);
+        // Следим за флагом «ядро скачивается» — покажем тост, если нужно.
+        _startCoreDownloadWatcher();
+      }
     }
   }
 
-  void _toast(String msg) {
+  void _toast(String msg, {bool long = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
         behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-        backgroundColor: Colors.black.withOpacity(0.8),
+        duration: Duration(seconds: long ? 12 : 2),
+        backgroundColor: Colors.black.withOpacity(0.85),
       ),
     );
   }
@@ -124,10 +176,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final saved = Api.saveConfig(link);
       if (saved) {
         _toast('Конфиг сохранён');
-        // Локально обновим список, а затем попросим родителя
-        // пересоздать всю страницу — так UI гарантированно
-        // показывает актуальные данные, включая состояние
-        // выбранного конфига и флаг подключения.
         _reload();
         widget.onReload?.call();
       } else {
@@ -167,11 +215,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
                 _ConfigSelector(
                   configs: _configs,
                   selectedId: _selectedId,
-                  onSelect: (id) => setState(() => _selectedId = id),
+                  onSelect: (cfg) => _selectConfig(cfg),
                   onDelete: (id) async {
                     final ok = await _confirmDelete();
                     if (ok == true) {
                       Api.deleteConfig(id);
+                      // Если удалили выбранный — сбросим глобал.
+                      if (SelectedConfig.current?.id == id) {
+                        SelectedConfig.clear();
+                      }
                       _reload();
                       widget.onReload?.call();
                     }
@@ -357,7 +409,7 @@ class _MoonButtonState extends State<_MoonButton> {
 class _ConfigSelector extends StatelessWidget {
   final List<ConfigItem> configs;
   final int? selectedId;
-  final ValueChanged<int> onSelect;
+  final ValueChanged<ConfigItem> onSelect;
   final ValueChanged<int> onDelete;
 
   const _ConfigSelector({
@@ -387,7 +439,7 @@ class _ConfigSelector extends StatelessWidget {
               ...configs.map((c) => _ConfigRow(
                     config: c,
                     selected: c.id == selectedId,
-                    onSelect: () => onSelect(c.id),
+                    onSelect: () => onSelect(c),
                     onDelete: () => onDelete(c.id),
                   )),
           ],

@@ -36,9 +36,6 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS = "lalune_prefs"
         private const val PREF_ONBOARDING_DONE = "onboarding_done"
 
-        // Виртуальный https-origin, через который WebView читает assets/.
-        // Fetch API, Service Worker, XHR — всё работает как на настоящем https.
-        // Это официальный способ Android 5+ (androidx.webkit.WebViewAssetLoader).
         private const val ASSET_HOST = "appassets.androidplatform.net"
         private const val ASSET_URL = "https://$ASSET_HOST/assets/app.html"
     }
@@ -50,12 +47,17 @@ class MainActivity : AppCompatActivity() {
     private val configsFile: File by lazy { File(appDir, "configs.json") }
     private val logsFile: File by lazy { File(appDir, "logs.log") }
     private val settingsFile: File by lazy { File(appDir, "settings.json") }
+    private val tokenFile: File by lazy { File(appDir, "token.json") }
     private val coreDir: File by lazy { File(appDir, "core") }
 
     private lateinit var coreManager: CoreManager
     private var configs = JSONArray()
     private var isConnected = false
     private var isCoreReady = false
+
+    // Глобально выбранный конфиг — общий для ConnectionPage и SettingsPage.
+    private var selectedConfigJson: String = "{}"
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -76,7 +78,6 @@ class MainActivity : AppCompatActivity() {
         coreManager = CoreManager(this)
         loadConfigs()
 
-        // ── AssetLoader: отдаём assets/ как https://appassets.androidplatform.net/assets/ ──
         assetLoader = WebViewAssetLoader.Builder()
             .setDomain(ASSET_HOST)
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -85,9 +86,6 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
 
         setContentView(webView)
-
-        // Загружаем app.html через виртуальный https-origin.
-        // Тогда Fetch API, Service Worker, FontManifest.json — всё работает.
         webView.loadUrl(ASSET_URL)
 
         scope.launch {
@@ -103,12 +101,9 @@ class MainActivity : AppCompatActivity() {
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
-        // Разрешаем WebView читать https://appassets.androidplatform.net/ через assetLoader.
         webView.settings.allowContentAccess = true
-        // Не блокируем mixed content — у нас один origin.
         webView.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
 
-        // WebViewClientCompat (не обычный WebViewClient) — нужен для shouldInterceptRequest с WebResourceRequest.
         webView.webViewClient = object : WebViewClientCompat() {
             override fun shouldInterceptRequest(
                 view: WebView,
@@ -259,6 +254,40 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, message)
     }
 
+    // ============ Проверка токена ВК ============
+
+    /**
+     * Проверяет файл token.json и settings.json на наличие непустого токена.
+     * Возвращает JSON в формате VkTokenState.
+     */
+    private fun computeVkTokenState(): String {
+        var hasToken = false
+
+        // 1) settings.json — ключ vkJsToken
+        try {
+            if (settingsFile.exists()) {
+                val j = JSONObject(settingsFile.readText())
+                if (j.optString("vkJsToken", "").isNotBlank()) hasToken = true
+            }
+        } catch (_: Exception) {}
+
+        // 2) token.json — ключ Token (его пишет LaLuneTokenFetcher)
+        if (!hasToken && tokenFile.exists()) {
+            try {
+                val j = JSONObject(tokenFile.readText())
+                if (j.optString("Token", "").isNotBlank()) hasToken = true
+            } catch (_: Exception) {}
+        }
+
+        val o = JSONObject()
+        o.put("hasToken", hasToken)
+        o.put("fetcherOk", true)
+        o.put("fetching", false)
+        o.put("message", if (hasToken) "Токен ВК активен" else "")
+        o.put("progress", if (hasToken) 100 else 0)
+        return o.toString()
+    }
+
     // ============ JS Bridge ============
 
     inner class AndroidBridge {
@@ -315,6 +344,7 @@ class MainActivity : AppCompatActivity() {
                 put("password", config.password)
                 put("hashes", config.hashes)
                 put("name", config.peer)
+                put("rawLink", link)
             }
             configs.put(obj)
             saveConfigs()
@@ -344,6 +374,47 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 false
             }
+        }
+
+        // ---------- глобальный выбранный конфиг ----------
+        @JavascriptInterface
+        fun setSelectedConfigJson(json: String): Boolean {
+            selectedConfigJson = json
+            return true
+        }
+
+        @JavascriptInterface
+        fun getSelectedConfigJson(): String = selectedConfigJson
+
+        // ---------- флаг «ядро скачивается» ----------
+        @JavascriptInterface
+        fun isCoreDownloading(): Boolean = false
+
+        // ---------- VK ----------
+        @JavascriptInterface
+        fun getVKTokenState(): String = computeVkTokenState()
+
+        @JavascriptInterface
+        fun validateVKToken(): String = computeVkTokenState()
+
+        @JavascriptInterface
+        fun loginVK(): Boolean {
+            // Android: токен обычно уже лежит в settings.json;
+            // если нет — считаем, что пользователь не авторизован.
+            return true
+        }
+
+        @JavascriptInterface
+        fun deleteVKToken(): Boolean {
+            try {
+                if (tokenFile.exists()) tokenFile.delete()
+                if (settingsFile.exists()) {
+                    val j = JSONObject(settingsFile.readText())
+                    j.put("vkJsToken", "")
+                    settingsFile.writeText(j.toString())
+                }
+            } catch (_: Exception) {}
+            return true
         }
 
         @JavascriptInterface
@@ -420,11 +491,9 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun updateCoreAndWait(): Boolean = true
 
-        // ====== обновление ядра (унифицированные имена для JS-моста) ======
         @JavascriptInterface
         fun checkCoreUpdate(): String = "{\"update\":false,\"version\":\"\"}"
 
-        // ====== обновление LaLune ======
         @JavascriptInterface
         fun checkLaLuneUpdate(): String = "{\"update\":false,\"version\":\"0.5.0\"}"
 
@@ -441,6 +510,15 @@ class MainActivity : AppCompatActivity() {
                 false
             }
         }
+
+        @JavascriptInterface
+        fun runVkAutoApiCalls(): String = "{\"error\":\"not supported\"}"
+
+        @JavascriptInterface
+        fun pollAutoApiResult(): String = "{\"pending\":false}"
+
+        @JavascriptInterface
+        fun finishVkCalls(callIdsJson: String): Boolean = false
     }
 
     private fun startVpnService() {

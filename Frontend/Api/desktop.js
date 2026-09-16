@@ -19,6 +19,8 @@
     let cachedCoreUpdate = '{"update":false,"version":""}';
     let cachedLaLuneUpdate = '{"update":false,"version":""}';
     let cachedVKTokenState = '{"hasToken":false,"fetcherOk":false,"fetching":false,"message":"","progress":0}';
+    let cachedSelectedConfig = '{}';
+    let cachedCoreDownloading = false;
 
     async function refresh() {
         const api = go();
@@ -27,6 +29,8 @@
         try { cachedSettings = await api.GetSettingsJson(); } catch (_) {}
         try { cachedLogs = await api.GetLogsJson(); } catch (_) {}
         try { cachedStatus = await api.GetStatusJson(); } catch (_) {}
+        try { cachedSelectedConfig = await api.GetSelectedConfigJson(); } catch (_) {}
+        try { cachedCoreDownloading = await api.IsCoreDownloading(); } catch (_) {}
     }
 
     setInterval(refresh, 1500);
@@ -67,6 +71,40 @@
             const api = go(); if (!api) return false;
             api.Disconnect().then(refresh);
             return true;
+        },
+
+        // ---------- глобально выбранный конфиг ----------
+        // Dart при выборе во вкладке «Подключение» кладёт сюда весь ConfigItem.
+        SetSelectedConfigJson: (json) => {
+            const api = go();
+            if (api && api.SetSelectedConfigJson) {
+                try { api.SetSelectedConfigJson(json); } catch (_) {}
+            }
+            try { cachedSelectedConfig = json; } catch (_) {}
+            return true;
+        },
+        // Настройки читают этот JSON.
+        GetSelectedConfigJson: () => {
+            const api = go();
+            if (api && api.GetSelectedConfigJson) {
+                api.GetSelectedConfigJson().then((raw) => {
+                    try {
+                        cachedSelectedConfig = typeof raw === 'string' ? raw : JSON.stringify(raw);
+                    } catch (_) {}
+                }).catch(() => {});
+            }
+            return cachedSelectedConfig;
+        },
+
+        // ---------- флаг «ядро скачивается» ----------
+        IsCoreDownloading: () => {
+            const api = go();
+            if (api && api.IsCoreDownloading) {
+                api.IsCoreDownloading().then((v) => {
+                    cachedCoreDownloading = !!v;
+                }).catch(() => {});
+            }
+            return cachedCoreDownloading;
         },
 
         // ---------- обновление ядра ----------
@@ -138,14 +176,10 @@
             }
             return cachedVKTokenState;
         },
-        // LoginVK — запускает fetcher, состояние читается через GetVKTokenState.
-        // Возвращает true, если процесс стартовал.
         LoginVK: () => {
             const api = go();
             if (api && api.LoginVK) {
-                api.LoginVK().then(() => {
-                    // Поллинг состояния — сделает UI сам через GetVKTokenState
-                }).catch(() => {});
+                api.LoginVK().then(() => {}).catch(() => {});
                 return true;
             }
             return false;
@@ -158,20 +192,26 @@
             }
             return false;
         },
+        // Проверяет файл token.json (%APPDATA%\.la-lune\token.json или ~/.la-lune/token.json)
+        // и возвращает актуальное состояние.
+        ValidateVKToken: () => {
+            const api = go();
+            if (api && api.ValidateVKToken) {
+                api.ValidateVKToken().then((raw) => {
+                    try {
+                        cachedVKTokenState = typeof raw === 'string' ? raw : JSON.stringify(raw);
+                    } catch (_) {}
+                }).catch(() => {});
+            }
+            return cachedVKTokenState;
+        },
 
         // ---------- Auto API ----------
-        // Создаёт звонки через VK API, сохраняет хеши, возвращает JSON
-        // {"hashes":[...],"callIds":[...],"error":""}
         RunVkAutoApiCalls: () => {
             const api = go();
             if (api && api.RunVkAutoApiCalls) {
-                // Wails 2 биндинги синхронны для скалярных типов, но для
-                // массивов возвращают Promise. Здесь используем callback-паттерн
-                // через глобальное событие.
                 const promise = api.RunVkAutoApiCalls();
                 if (promise && typeof promise.then === 'function') {
-                    // Асинхронно — но Dart ждёт синхронно. Значит должен
-                    // быть отдельный метод PollAutoApiResult.
                     window._autoApiPromise = promise;
                     return '{"pending":true}';
                 }

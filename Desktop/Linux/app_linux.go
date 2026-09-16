@@ -87,8 +87,6 @@ func (r *LinuxRunner) startCoreWithSudo(cmdArgs []string, listenPort int, bridge
 	logFile := filepath.Join(os.TempDir(), "lalune_core_logs.txt")
 	os.Remove(logFile)
 
-	// Собираем команду: сначала cd в папку ядра, потом запуск с аргументами.
-	// Аргументы квотим одиночными кавычками, чтобы пробелы и спецсимволы не ломали sh.
 	corePath := cmdArgs[0]
 	quotedArgs := make([]string, len(cmdArgs)-1)
 	for i, arg := range cmdArgs[1:] {
@@ -292,6 +290,13 @@ func (a *App) Disconnect() bool {
 	return result
 }
 
+// Глобальный конфиг (для вкладки Настройки).
+func (a *App) GetSelectedConfigJson() string       { return a.core.GetSelectedConfigJson() }
+func (a *App) SetSelectedConfigJson(j string) bool { return a.core.SetSelectedConfigJson(j) }
+
+// Флаг «ядро скачивается».
+func (a *App) IsCoreDownloading() bool { return a.core.IsCoreDownloading() }
+
 func (a *App) CheckUpdate() string {
 	version, hasUpdate, err := a.core.CheckUpdateSync()
 	if err != nil {
@@ -323,6 +328,10 @@ func (a *App) OpenLaLuneReleasesURL() string {
 
 func (a *App) GetVKTokenState() libs.VkTokenState {
 	return a.core.GetVKTokenState()
+}
+
+func (a *App) ValidateVKToken() libs.VkTokenState {
+	return a.core.ValidateVKToken()
 }
 
 func (a *App) LoginVK() bool {

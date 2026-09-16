@@ -15,10 +15,9 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   Settings _s = Settings();
-  List<ConfigItem> _configs = [];
+  ConfigItem? _selectedConfig;
   bool _loading = true;
   bool _busy = false;
-  int? _selectedConfigId;
 
   final _peerCtl = TextEditingController();
   final _vkHashesCtl = TextEditingController();
@@ -57,14 +56,30 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _load() {
     final s = Api.getSettings();
-    final cfgs = Api.getConfigs();
+
+    // Глобальный конфиг — приоритетный источник. Если его нет в Dart,
+    // пробуем вытащить из JS-моста (переживает пересоздание страницы).
+    var cfg = SelectedConfig.current;
+    if (cfg == null) {
+      cfg = Api.loadSelectedConfigFromJs();
+      if (cfg != null) SelectedConfig.set(cfg);
+    }
+    _selectedConfig = cfg;
 
     _s = s;
-    _configs = cfgs;
 
-    _peerCtl.text = s.peer;
-    _vkHashesCtl.text = s.vkHashes;
-    _passwordCtl.text = s.password;
+    // Peer/password/hashes берём из выбранного конфига, а не из settings,
+    // потому что Настройки теперь работают именно с глобальным конфигом.
+    if (cfg != null) {
+      _peerCtl.text = cfg.peer;
+      _passwordCtl.text = cfg.password;
+      _vkHashesCtl.text = cfg.hashes;
+    } else {
+      _peerCtl.text = s.peer;
+      _passwordCtl.text = s.password;
+      _vkHashesCtl.text = s.vkHashes;
+    }
+
     _workersCtl.text = s.workersPerHash.toString();
     _clientIdsCtl.text = s.clientIds;
     _deviceIdCtl.text = s.deviceId;
@@ -72,16 +87,37 @@ class _SettingsPageState extends State<SettingsPage> {
     _turnPortCtl.text = s.turnPort;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
 
-    _selectedConfigId = null;
-    for (final c in cfgs) {
-      if (c.peer == s.peer && c.password == s.password) {
-        _selectedConfigId = c.id;
-        break;
-      }
-    }
-
-    _vkState = Api.getVKTokenState();
+    // Сразу проверяем токен — вдруг он уже лежит в token.json.
+    _vkState = Api.validateVKToken();
     setState(() => _loading = false);
+  }
+
+  /// Перезагрузка блока «Основные настройки» — вызывается при возврате
+  /// на вкладку, если страница не пересоздалась.
+  void _reloadBasics() {
+    final s = Api.getSettings();
+    var cfg = SelectedConfig.current ?? Api.loadSelectedConfigFromJs();
+    if (cfg != null) SelectedConfig.set(cfg);
+
+    setState(() {
+      _selectedConfig = cfg;
+      _s = s;
+      if (cfg != null) {
+        _peerCtl.text = cfg.peer;
+        _passwordCtl.text = cfg.password;
+        _vkHashesCtl.text = cfg.hashes;
+      } else {
+        _peerCtl.text = s.peer;
+        _passwordCtl.text = s.password;
+        _vkHashesCtl.text = s.vkHashes;
+      }
+      _workersCtl.text = s.workersPerHash.toString();
+      _clientIdsCtl.text = s.clientIds;
+      _deviceIdCtl.text = s.deviceId;
+      _turnHostCtl.text = s.turnHost;
+      _turnPortCtl.text = s.turnPort;
+      _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
+    });
   }
 
   void _startVkPolling() {
@@ -97,23 +133,17 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
-  void _applyConfig(ConfigItem c) {
-    setState(() {
-      _selectedConfigId = c.id;
-      _peerCtl.text = c.peer;
-      _passwordCtl.text = c.password;
-      if (c.hashes.isNotEmpty) _vkHashesCtl.text = c.hashes;
-    });
-  }
-
   Future<void> _save() async {
     setState(() => _busy = true);
 
+    // Peer/password/hashes пишем в settings из контроллеров — но если
+    // есть глобальный конфиг, лучше синхронизировать его с настройками.
+    final cfg = _selectedConfig;
     final s = _s.copyWith(
-      peer: _peerCtl.text.trim(),
-      vkHashes: _vkHashesCtl.text.trim(),
+      peer: cfg?.peer ?? _peerCtl.text.trim(),
+      vkHashes: cfg?.hashes ?? _vkHashesCtl.text.trim(),
+      password: cfg?.password ?? _passwordCtl.text,
       vkJsToken: _s.vkJsToken,
-      password: _passwordCtl.text,
       workersPerHash: int.tryParse(_workersCtl.text) ?? 9,
       clientIds: _clientIdsCtl.text.trim(),
       deviceId: _s.deviceId,
@@ -146,18 +176,30 @@ class _SettingsPageState extends State<SettingsPage> {
   // ============================================================
 
   void _setAuthMode(String mode) {
-    setState(() => _authMode = mode);
+    // Авто-режимы требуют валидного токена.
     if (mode == 'autoApi' || mode == 'autoVk') {
-      if (!_vkState.hasToken) {
-        Toast.show(context, 'Сначала войдите в ВК', isError: true);
+      final st = Api.validateVKToken();
+      setState(() => _vkState = st);
+      if (!st.hasToken) {
+        Toast.show(context, 'Требуется авторизация ВК', isError: true);
+        return;
       }
     }
+    setState(() => _authMode = mode);
   }
 
   Future<void> _onLoginTap() async {
     if (_vkLoginInProgress) return;
-    _vkLoginInProgress = true;
 
+    // Кнопка «Войти» сначала проверяет token.json — вдруг токен уже есть.
+    final st = Api.validateVKToken();
+    setState(() => _vkState = st);
+    if (st.hasToken) {
+      Toast.show(context, 'Токен ВК уже активен');
+      return;
+    }
+
+    _vkLoginInProgress = true;
     Toast.show(context, 'Запускаю LaLuneTokenFetcher...');
 
     final started = Api.loginVK();
@@ -170,14 +212,14 @@ class _SettingsPageState extends State<SettingsPage> {
     for (var i = 0; i < 600; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
-      final st = Api.getVKTokenState();
-      setState(() => _vkState = st);
-      if (st.hasToken) {
+      final cur = Api.validateVKToken();
+      setState(() => _vkState = cur);
+      if (cur.hasToken) {
         Toast.show(context, 'Поздравляем, токен ВК получен успешно');
         _vkLoginInProgress = false;
         return;
       }
-      if (!st.fetching && i > 4) break;
+      if (!cur.fetching && i > 4) break;
     }
 
     _vkLoginInProgress = false;
@@ -187,6 +229,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildAuthBlock() {
+    final hasToken = _vkState.hasToken;
     return GlassCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -196,16 +239,18 @@ class _SettingsPageState extends State<SettingsPage> {
               fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
           const SizedBox(height: 10),
 
-          _authOption('manual', 'Ручной', 'Ввести хеши вручную'),
-          _authOption('autoApi', 'Авто API', 'Создавать звонки через VK API'),
-          _authOption('autoVk', 'Авто ВК', 'Ядро само авторизуется через VK'),
+          _authOption('manual', 'Ручной', 'Ввести хеши вручную', enabled: true),
+          _authOption('autoApi', 'Авто API', 'Создавать звонки через VK API',
+              enabled: hasToken),
+          _authOption('autoVk', 'Авто ВК', 'Ядро само авторизуется через VK',
+              enabled: hasToken),
 
           const SizedBox(height: 12),
 
-          if (!_vkState.hasToken)
+          if (!hasToken)
             _buildLoginButton()
           else
-            _buildTokenOkBadge(),
+            _buildTokenActiveBadge(),
 
           if (_vkState.fetching) ...[
             const SizedBox(height: 10),
@@ -278,26 +323,32 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildTokenOkBadge() {
+  /// После успешной авторизации: «Активно», некликабельно, без галочки,
+  /// но с крестиком для сброса токена (чтобы можно было выйти).
+  Widget _buildTokenActiveBadge() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFF7CFF9A).withOpacity(0.12),
+        color: const Color(0xFF7CFF9A).withOpacity(0.10),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF7CFF9A).withOpacity(0.5)),
+        border: Border.all(color: const Color(0xFF7CFF9A).withOpacity(0.45)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.check_circle, size: 18, color: Color(0xFF7CFF9A)),
-          const SizedBox(width: 10),
           const Expanded(
-            child: Text('Токен ВК получен',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            child: Text('Активно',
+              style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
           ),
           IconButton(
+            tooltip: 'Сбросить токен',
             onPressed: () {
               Api.deleteVKToken();
-              setState(() => _vkState = VkTokenState.empty);
+              setState(() {
+                _vkState = VkTokenState.empty;
+                if (_authMode == 'autoApi' || _authMode == 'autoVk') {
+                  _authMode = 'manual';
+                }
+              });
               Toast.show(context, 'Токен ВК удалён');
             },
             icon: const Icon(Icons.delete_outline, size: 18),
@@ -307,41 +358,56 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _authOption(String value, String title, String subtitle) {
+  Widget _authOption(String value, String title, String subtitle,
+      {required bool enabled}) {
     final selected = _authMode == value;
+    final opacity = enabled ? 1.0 : 0.4;
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: InkWell(
-        onTap: () => _setAuthMode(value),
-        borderRadius: BorderRadius.circular(10),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: selected ? const Color(0xFF4A6CF7).withOpacity(0.18)
-              : Colors.white.withOpacity(0.02),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: selected ? const Color(0xFF4A6CF7).withOpacity(0.55)
-                : Colors.white.withOpacity(0.08),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(selected ? Icons.radio_button_checked : Icons.radio_button_off,
-                size: 18,
-                color: selected ? const Color(0xFF4A6CF7) : Colors.white.withOpacity(0.4)),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-                    Text(subtitle, style: TextStyle(fontSize: 11.5, color: Colors.white.withOpacity(0.55))),
-                  ],
-                ),
+      child: Opacity(
+        opacity: opacity,
+        child: InkWell(
+          onTap: enabled ? () => _setAuthMode(value) : null,
+          borderRadius: BorderRadius.circular(10),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? const Color(0xFF4A6CF7).withOpacity(0.18)
+                : Colors.white.withOpacity(0.02),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: selected ? const Color(0xFF4A6CF7).withOpacity(0.55)
+                  : Colors.white.withOpacity(0.08),
               ),
-            ],
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  selected
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  size: 18,
+                  color: selected
+                      ? const Color(0xFF4A6CF7)
+                      : Colors.white.withOpacity(0.4),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      Text(subtitle, style: TextStyle(fontSize: 11.5, color: Colors.white.withOpacity(0.55))),
+                    ],
+                  ),
+                ),
+                if (!enabled)
+                  Icon(Icons.lock_outline,
+                      size: 14, color: Colors.white.withOpacity(0.5)),
+              ],
+            ),
           ),
         ),
       ),
@@ -369,16 +435,46 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (_configs.isNotEmpty) ...[
-                      Text('Конфиг',
-                        style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65))),
-                      const SizedBox(height: 6),
-                      _configDropdown(),
-                      const SizedBox(height: 8),
-                      Divider(color: Colors.white.withOpacity(0.08), height: 16),
-                    ],
-                    InputRow(label: 'Peer', controller: _peerCtl),
-                    InputRow(label: 'Password', controller: _passwordCtl),
+                    // Селектор конфига убран — источник истины теперь
+                    // глобальная переменная SelectedConfig, заполняемая
+                    // во вкладке «Подключение». Показываем только
+                    // информационную строку, чтобы пользователь понимал,
+                    // какой конфиг сейчас редактируется.
+                    if (_selectedConfig != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.link, size: 14,
+                                color: Color(0xFF7CFF9A)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Конфиг: ${_selectedConfig!.name.isEmpty ? _selectedConfig!.peer : _selectedConfig!.name}',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Colors.white.withOpacity(0.75),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Text(
+                          'Конфиг не выбран. Выберите во вкладке «Подключение».',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withOpacity(0.55),
+                          ),
+                        ),
+                      ),
+
+                    InputRow(label: 'Peer', controller: _peerCtl, readOnly: true),
+                    InputRow(label: 'Password', controller: _passwordCtl, readOnly: true),
                     InputRow(label: 'Workers on hash', controller: _workersCtl,
                       keyboardType: TextInputType.number),
                   ],
@@ -448,38 +544,6 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _configDropdown() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white.withOpacity(0.12)),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<int?>(
-          value: _selectedConfigId,
-          isExpanded: true,
-          dropdownColor: const Color(0xFF0F1540),
-          iconEnabledColor: Colors.white70,
-          hint: Text('Не выбран', style: TextStyle(color: Colors.white.withOpacity(0.55))),
-          items: [
-            for (final c in _configs)
-              DropdownMenuItem<int?>(value: c.id,
-                child: Text(c.name.isEmpty ? c.peer : c.name,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13.5))),
-          ],
-          onChanged: (id) {
-            if (id == null) return;
-            final c = _configs.firstWhere((e) => e.id == id, orElse: () => _configs.first);
-            _applyConfig(c);
-          },
         ),
       ),
     );

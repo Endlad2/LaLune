@@ -19,11 +19,37 @@ import 'dart:js_interop';
 @JS('window.api.GetVKTokenState') external String _getVKTokenState();
 @JS('window.api.LoginVK') external bool _loginVK();
 @JS('window.api.DeleteVKToken') external bool _deleteVKToken();
+@JS('window.api.ValidateVKToken') external String _validateVKToken();
 @JS('window.api.RunVkAutoApiCalls') external String _runVkAutoApiCalls();
 @JS('window.api.PollAutoApiResult') external String _pollAutoApiResult();
 @JS('window.api.FinishVkCalls') external bool _finishVkCalls(String callIdsJson);
 @JS('window.api.GetDeviceId') external String _getDeviceId();
 @JS('window.api.RegenerateDeviceId') external String _regenerateDeviceId();
+@JS('window.api.SetSelectedConfigJson') external bool _setSelectedConfigJson(String json);
+@JS('window.api.GetSelectedConfigJson') external String _getSelectedConfigJson();
+@JS('window.api.IsCoreDownloading') external bool _isCoreDownloading();
+
+/// Глобальная переменная выбранного конфига.
+/// Заполняется во вкладке «Подключение», читается во вкладке «Настройки».
+class SelectedConfig {
+  static ConfigItem? _current;
+
+  static ConfigItem? get current => _current;
+
+  static void set(ConfigItem? cfg) {
+    _current = cfg;
+    // Дублируем в JS-мост — на случай пересоздания Dart-страниц.
+    try {
+      if (cfg == null) {
+        _setSelectedConfigJson('{}');
+      } else {
+        _setSelectedConfigJson(jsonEncode(cfg.toJson()));
+      }
+    } catch (_) {}
+  }
+
+  static void clear() => set(null);
+}
 
 class ConfigItem {
   final int id;
@@ -32,18 +58,37 @@ class ConfigItem {
   final String password;
   final String hashes;
   final String name;
+  final String rawLink;
 
-  ConfigItem({required this.id, required this.protocol, required this.peer,
-    required this.password, required this.hashes, required this.name});
+  ConfigItem({
+    required this.id,
+    required this.protocol,
+    required this.peer,
+    required this.password,
+    required this.hashes,
+    required this.name,
+    this.rawLink = '',
+  });
 
   factory ConfigItem.fromJson(Map<String, dynamic> j) => ConfigItem(
-    id: (j['id'] as num).toInt(),
+    id: (j['id'] as num?)?.toInt() ?? 0,
     protocol: (j['protocol'] ?? 'CSQTT') as String,
     peer: (j['peer'] ?? '') as String,
     password: (j['password'] ?? '') as String,
     hashes: (j['hashes'] ?? '') as String,
     name: (j['name'] ?? j['peer'] ?? '') as String,
+    rawLink: (j['rawLink'] ?? '') as String,
   );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'protocol': protocol,
+    'peer': peer,
+    'password': password,
+    'hashes': hashes,
+    'name': name,
+    'rawLink': rawLink,
+  };
 }
 
 class Settings {
@@ -283,6 +328,13 @@ class Api {
   static bool loginVK() { try { return _loginVK(); } catch (_) { return false; } }
   static bool deleteVKToken() { try { return _deleteVKToken(); } catch (_) { return false; } }
 
+  /// Проверяет файл token.json (Windows: %APPDATA%\.la-lune\token.json,
+  /// Linux: ~/.la-lune/token.json, Android: settings.json/SharedPreferences).
+  static VkTokenState validateVKToken() {
+    try { return VkTokenState.fromJsonString(_validateVKToken()); }
+    catch (_) { return VkTokenState.empty; }
+  }
+
   static AutoApiResult runVkAutoApiCalls() {
     try { return AutoApiResult.fromJsonString(_runVkAutoApiCalls()); }
     catch (_) { return const AutoApiResult(error: 'js error'); }
@@ -297,4 +349,20 @@ class Api {
 
   static String getDeviceId() { try { return _getDeviceId(); } catch (_) { return ''; } }
   static String regenerateDeviceId() { try { return _regenerateDeviceId(); } catch (_) { return ''; } }
+
+  /// Флаг «ядро скачивается» — UI показывает тост.
+  static bool isCoreDownloading() {
+    try { return _isCoreDownloading(); } catch (_) { return false; }
+  }
+
+  /// Читает выбранный конфиг из JS-моста (когда Dart-страница пересоздалась).
+  static ConfigItem? loadSelectedConfigFromJs() {
+    try {
+      final raw = _getSelectedConfigJson();
+      if (raw.isEmpty || raw == '{}' || raw == 'null') return null;
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      if (j.isEmpty || (j['id'] == null && j['peer'] == null)) return null;
+      return ConfigItem.fromJson(j);
+    } catch (_) { return null; }
+  }
 }

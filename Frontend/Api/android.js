@@ -10,6 +10,9 @@
         return window.lalune;
     }
 
+    let cachedVKTokenState = '{"hasToken":false,"fetcherOk":false,"fetching":false,"message":"","progress":0}';
+    let cachedSelectedConfig = '{}';
+
     window.api = {
         GetConfigsJson: () => { const l = lalune(); if (!l) return '[]'; try { return l.getConfigs(); } catch (_) { return '[]'; } },
         SaveConfig: (link) => { const l = lalune(); if (!l) return false; try { return l.saveConfig(link); } catch (_) { return false; } },
@@ -21,6 +24,36 @@
         GetStatusJson: () => { const l = lalune(); if (!l) return '{"connected":false}'; try { return l.getStatus(); } catch (_) { return '{"connected":false}'; } },
         Connect: (id) => { const l = lalune(); if (!l) return false; try { return l.connect(id); } catch (_) { return false; } },
         Disconnect: () => { const l = lalune(); if (!l) return false; try { return l.disconnect(); } catch (_) { return false; } },
+
+        // ---------- глобально выбранный конфиг ----------
+        SetSelectedConfigJson: (json) => {
+            const l = lalune();
+            if (l && typeof l.setSelectedConfigJson === 'function') {
+                try { return l.setSelectedConfigJson(json); } catch (_) {}
+            }
+            try { cachedSelectedConfig = json; } catch (_) {}
+            return true;
+        },
+        GetSelectedConfigJson: () => {
+            const l = lalune();
+            if (l && typeof l.getSelectedConfigJson === 'function') {
+                try {
+                    const r = l.getSelectedConfigJson();
+                    cachedSelectedConfig = r;
+                    return r;
+                } catch (_) {}
+            }
+            return cachedSelectedConfig;
+        },
+
+        // ---------- флаг «ядро скачивается» ----------
+        IsCoreDownloading: () => {
+            const l = lalune();
+            if (l && typeof l.isCoreDownloading === 'function') {
+                try { return l.isCoreDownloading(); } catch (_) {}
+            }
+            return false;
+        },
 
         CheckCoreUpdate: () => {
             const l = lalune(); if (!l) return '{"update":false,"version":""}';
@@ -55,9 +88,13 @@
         GetVKTokenState: () => {
             const l = lalune(); if (!l) return '{"hasToken":false,"fetching":false,"message":"","progress":0}';
             try {
-                if (typeof l.getVKTokenState === 'function') return l.getVKTokenState();
+                if (typeof l.getVKTokenState === 'function') {
+                    const result = l.getVKTokenState();
+                    cachedVKTokenState = result;
+                    return result;
+                }
             } catch (_) {}
-            return '{"hasToken":false,"fetching":false,"message":"","progress":0}';
+            return cachedVKTokenState;
         },
         LoginVK: () => {
             const l = lalune(); if (!l) return false;
@@ -72,6 +109,21 @@
                 if (typeof l.deleteVKToken === 'function') return l.deleteVKToken();
             } catch (_) {}
             return false;
+        },
+        // Проверка token.json / settings.json на Android
+        ValidateVKToken: () => {
+            const l = lalune(); if (!l) return cachedVKTokenState;
+            try {
+                if (typeof l.validateVKToken === 'function') {
+                    cachedVKTokenState = l.validateVKToken();
+                    return cachedVKTokenState;
+                }
+                if (typeof l.getVKTokenState === 'function') {
+                    cachedVKTokenState = l.getVKTokenState();
+                    return cachedVKTokenState;
+                }
+            } catch (_) {}
+            return cachedVKTokenState;
         },
 
         // ---------- Auto API ----------

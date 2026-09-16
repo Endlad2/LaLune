@@ -36,6 +36,7 @@ type Config struct {
 	Password string `json:"password"`
 	Hashes   string `json:"hashes"`
 	Name     string `json:"name"`
+	RawLink  string `json:"rawLink"`
 }
 
 type Settings struct {
@@ -75,6 +76,15 @@ type AppCore struct {
 	configsCallback func(string)
 	updateCallback  func(string)
 	isDownloading   bool
+
+	// Глобально выбранный конфиг (для SettingsPage).
+	selectedConfig *Config
+	selMu          sync.RWMutex
+
+	// Флаг «ядро скачивается» — для показа тоста в UI.
+	coreDownloading    bool
+	coreDownloadingMu  sync.RWMutex
+	coreDownloadingCb  func(bool)
 
 	activeCallIds []string
 	activeCallMux sync.Mutex
@@ -263,6 +273,7 @@ func (a *AppCore) GetLogsJson() string {
 
 func (a *AppCore) SaveConfig(link string) bool {
 	config := ParseCsqttLink(link)
+	config.RawLink = link
 	result, err := a.db.Exec(
 		"INSERT INTO configs (protocol, peer, password, hashes, name) VALUES (?, ?, ?, ?, ?)",
 		config.Protocol, config.Peer, config.Password, config.Hashes, config.Name,
@@ -329,6 +340,69 @@ func (a *AppCore) SetStatusCallback(cb func(bool))    { a.statusCallback = cb }
 func (a *AppCore) SetConfigsCallback(cb func(string)) { a.configsCallback = cb }
 func (a *AppCore) SetUpdateCallback(cb func(string))  { a.updateCallback = cb }
 
+// SetCoreDownloadingCallback — регистрирует колбэк, который дёргается,
+// когда ядро начинает/перестаёт скачиваться. UI показывает тост.
+func (a *AppCore) SetCoreDownloadingCallback(cb func(bool)) {
+	a.coreDownloadingMu.Lock()
+	a.coreDownloadingCb = cb
+	a.coreDownloadingMu.Unlock()
+}
+
+// NotifyCoreDownloading — вызывается из bridge.Connect при скачивании ядра.
+func (a *AppCore) NotifyCoreDownloading(downloading bool) {
+	a.coreDownloadingMu.Lock()
+	a.coreDownloading = downloading
+	cb := a.coreDownloadingCb
+	a.coreDownloadingMu.Unlock()
+	if cb != nil {
+		cb(downloading)
+	}
+}
+
+// IsCoreDownloading — JS-биндинг, чтобы фронт мог проверить статус.
+func (a *AppCore) IsCoreDownloading() bool {
+	a.coreDownloadingMu.RLock()
+	defer a.coreDownloadingMu.RUnlock()
+	return a.coreDownloading
+}
+
+// ============ Глобально выбранный конфиг ============
+
+// SetSelectedConfig — сохраняет конфиг в глобальной переменной.
+func (a *AppCore) SetSelectedConfig(config *Config) {
+	a.selMu.Lock()
+	a.selectedConfig = config
+	a.selMu.Unlock()
+}
+
+// GetSelectedConfig — возвращает глобально выбранный конфиг (или nil).
+func (a *AppCore) GetSelectedConfig() *Config {
+	a.selMu.RLock()
+	defer a.selMu.RUnlock()
+	return a.selectedConfig
+}
+
+// GetSelectedConfigJson — JS-биндинг: JSON выбранного конфига или "{}".
+func (a *AppCore) GetSelectedConfigJson() string {
+	c := a.GetSelectedConfig()
+	if c == nil {
+		return "{}"
+	}
+	data, _ := json.Marshal(c)
+	return string(data)
+}
+
+// SetSelectedConfigJson — JS-биндинг: сохранить конфиг из JSON.
+// Dart при выборе во вкладке «Подключение» шлёт сюда весь объект.
+func (a *AppCore) SetSelectedConfigJson(jsonStr string) bool {
+	var c Config
+	if err := json.Unmarshal([]byte(jsonStr), &c); err != nil {
+		return false
+	}
+	a.SetSelectedConfig(&c)
+	return true
+}
+
 // ============ Внутренние методы ============
 
 func (a *AppCore) AddLog(message string) {
@@ -371,12 +445,14 @@ func ParseCsqttLink(link string) Config {
 	link = strings.TrimSpace(link)
 	if !strings.HasPrefix(strings.ToLower(link), "csqtt://") {
 		config.Peer = link
+		config.RawLink = link
 		return config
 	}
 
 	parsed, err := url.Parse(link)
 	if err != nil {
 		config.Peer = link
+		config.RawLink = link
 		return config
 	}
 	params := parsed.Query()
@@ -384,6 +460,7 @@ func ParseCsqttLink(link string) Config {
 	if strings.ToLower(parsed.Hostname()) == "connect" {
 		if params.Get("v") != "2" {
 			config.Peer = link
+			config.RawLink = link
 			return config
 		}
 		host := params.Get("host")
@@ -391,6 +468,7 @@ func ParseCsqttLink(link string) Config {
 		password := params.Get("password")
 		if host == "" || port == "" || password == "" {
 			config.Peer = link
+			config.RawLink = link
 			return config
 		}
 		config.Peer = fmt.Sprintf("%s:%s", host, port)
@@ -414,12 +492,14 @@ func ParseCsqttLink(link string) Config {
 		password := parsed.User.Username()
 		if host == "" || password == "" {
 			config.Peer = link
+			config.RawLink = link
 			return config
 		}
 		config.Peer = fmt.Sprintf("%s:%s", host, port)
 		config.Password = password
 		config.Name = config.Peer
 	}
+	config.RawLink = link
 	return config
 }
 
@@ -430,4 +510,44 @@ func (a *AppCore) GetConfigByID(id int64) *Config {
 		return nil
 	}
 	return &c
+}
+
+// ============ Проверка токена ВК ============
+
+// HasValidVKToken — проверяет файл token.json на наличие непустого токена.
+//   Windows: %APPDATA%\.la-lune\token.json
+//   Linux:   ~/.la-lune/token.json
+func (a *AppCore) HasValidVKToken() bool {
+	// Сначала смотрим в settings (там токен после SaveVKToken).
+	a.mu.Lock()
+	tokenFromSettings := strings.TrimSpace(a.settings.VkJsToken)
+	a.mu.Unlock()
+	if tokenFromSettings != "" {
+		return true
+	}
+
+	// Затем — в файле token.json (его пишет LaLuneTokenFetcher).
+	tokenFile := filepath.Join(a.appDir, "token.json")
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return false
+	}
+	var j struct {
+		Token string `json:"Token"`
+	}
+	if err := json.Unmarshal(data, &j); err != nil {
+		return false
+	}
+	return strings.TrimSpace(j.Token) != ""
+}
+
+// GetVKTokenState — публичный JS-биндинг: возвращает JSON состояния токена.
+func (a *AppCore) GetVKTokenState() VkTokenState {
+	return VkTokenState{
+		HasToken:  a.HasValidVKToken(),
+		FetcherOK: a.IsFetcherInstalled(),
+		Fetching:  a.IsCoreDownloading(),
+		Message:   "",
+		Progress:  0,
+	}
 }

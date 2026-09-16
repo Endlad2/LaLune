@@ -45,6 +45,9 @@ func (b *Bridge) Connect(configId int64) bool {
 		return false
 	}
 
+	// Запоминаем выбранный конфиг глобально — пригодится в SettingsPage.
+	b.Core.SetSelectedConfig(config)
+
 	settings := b.Core.GetSettings()
 
 	if settings.AuthMode == "autoApi" {
@@ -91,6 +94,10 @@ func (b *Bridge) Disconnect() bool {
 func (b *Bridge) connectWorker(config Config, settings Settings) {
 	if _, err := os.Stat(b.Core.GetCorePath()); os.IsNotExist(err) {
 		b.Core.AddLog("[API] Ядро не найдено, скачиваю...")
+		// Сообщаем UI, что ядро скачивается — тост «Подождите, скачивается ядро...»
+		b.Core.NotifyCoreDownloading(true)
+		defer b.Core.NotifyCoreDownloading(false)
+
 		remoteVersion := b.Core.FetchLatestVersion()
 		if remoteVersion == "" {
 			b.Core.AddLog("[ERROR] Не удалось получить версию")
@@ -101,6 +108,16 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 		if _, err := os.Stat(b.Core.GetCorePath()); os.IsNotExist(err) {
 			b.Core.AddLog("[ERROR] Не удалось скачать ядро")
 			return
+		}
+
+		// Небольшая пауза, чтобы ядро успело «осесть» и UI показал сообщение
+		// ровно те 10 секунд, о которых говорит тост.
+		b.Core.AddLog("[API] Ядро скачано, запускаю через ~10 сек...")
+		select {
+		case <-b.Core.ctx.Done():
+			return
+		case <-timeAfterSeconds(10):
+			// продолжаем
 		}
 	}
 
@@ -121,8 +138,6 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 }
 
 // buildCommand — CLI-флаги ядра CSQTT.
-//
-// Токен ВК передаётся через --token (только для режима auto_js).
 func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int) []string {
 	normalizedHashes := strings.ReplaceAll(config.Hashes, " ", ",")
 	normalizedHashes = strings.ReplaceAll(normalizedHashes, "\t", ",")
