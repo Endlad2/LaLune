@@ -135,17 +135,44 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with: { dotnet-version: '8.0.x' }
-      - run: dotnet --info
+
+      # На Linux fetcher использует GTK+WebKitGTK для окна авторизации.
+      # Ставим dev-пакеты, чтобы dotnet publish нашёл библиотеки.
+      - name: Install WebKitGTK (Linux only)
+        if: matrix.platform == 'Linux'
+        run: |
+          sudo apt-get update
+          # В ubuntu-22.04 есть webkit2gtk-4.0-dev; в новых ubuntu — 4.1.
+          # Пробуем оба варианта, чтобы работало на разных раннерах.
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config || true
+          # Если 4.1-dev не установился, ставим только то, что есть.
+          pkg-config --modversion webkit2gtk-4.1 || \
+            pkg-config --modversion webkit2gtk-4.0 || \
+            echo "WebKitGTK не найден через pkg-config"
+
+      - name: Show dotnet version
+        run: dotnet --info
+
       - name: Sanity check
         shell: bash
         run: ls -la Core/LaLuneTokenFetcher
-      - run: python build_token_grabber.py --platform ${{ matrix.platform }}
+
+      - name: Build fetcher
+        run: python build_token_grabber.py --platform ${{ matrix.platform }}
+
       - name: Verify zip
         shell: bash
         run: |
           ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
           test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
           unzip -l "$ZIP"
+
       - uses: actions/upload-artifact@v4
         with:
           name: LaLuneTokenFetcher-${{ matrix.platform }}
@@ -170,7 +197,6 @@ jobs:
           zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
-          # Token fetcher'ы копируем как есть — они уже zip
           cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
           cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
           ls -la
