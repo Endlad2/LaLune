@@ -71,31 +71,23 @@ jobs:
       - run: flutter config --enable-web
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
-
       - name: Use preinstalled Android SDK
         run: |
-          if [ -z "$ANDROID_HOME" ]; then
-            if [ -d "/usr/local/lib/android/sdk" ]; then
-              echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-              echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-            fi
+          if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
+            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           fi
           echo "ANDROID_HOME=$ANDROID_HOME"
-
       - name: Accept Android licenses
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           yes | "$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '8.9' }
-
-      - name: Prepare Android Core (Java from Core/)
+      - name: Prepare Android Core
         run: python prepare_android_core.py
-
       - name: Build Dart frontend for Android
         run: python build_frontend.py --platform Android
-
       - name: Copy frontend to Android assets
         run: |
           ASSETS_DIR="Mobile/Android/app/src/main/assets"
@@ -104,44 +96,84 @@ jobs:
           cp -r Frontend/output/. "$ASSETS_DIR/"
           test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
           test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
-          ls -la "$ASSETS_DIR"
-
       - name: Download core binaries
         run: |
           mkdir -p Mobile/Android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
           curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
           curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
-
       - name: Build Android APK
         working-directory: Mobile/Android
         run: gradle assembleDebug --stacktrace --no-daemon
-
       - name: Locate APK
         id: find_apk
         run: |
           APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
           [ -z "$APK" ] && exit 1
           echo "apk=$APK" >> $GITHUB_OUTPUT
-
       - uses: actions/upload-artifact@v4
         with:
           name: LaLune-Android
           path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
+  build-token-fetcher:
+    name: "Token Fetcher - ${{ matrix.platform }}"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-latest
+          - platform: Linux
+            runner: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet --info
+      - name: Sanity check
+        shell: bash
+        run: ls -la Core/LaLuneTokenFetcher
+      - run: python build_token_grabber.py --platform ${{ matrix.platform }}
+      - name: Verify zip
+        shell: bash
+        run: |
+          ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
+          test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
+          unzip -l "$ZIP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaLuneTokenFetcher-${{ matrix.platform }}
+          path: Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip
+          if-no-files-found: error
+
   create-release:
     name: Create Release
-    needs: [build-desktop-linux, build-desktop-windows, build-android]
+    needs:
+      - build-desktop-linux
+      - build-desktop-windows
+      - build-android
+      - build-token-fetcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with: { path: release }
-      - run: |
+      - run: find release -type f | head -50
+      - name: Create ZIP archives
+        run: |
           cd release
           zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
+          # Token fetcher'ы копируем как есть — они уже zip
+          cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
+          cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
+          ls -la
       - id: date
         run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
       - uses: softprops/action-gh-release@v2
