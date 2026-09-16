@@ -26,9 +26,6 @@ const (
 	USER_AGENT          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	HTTP_TIMEOUT        = 30 * time.Second
 
-	// LaLuneVersion — текущая версия клиента.
-	// Меняется при релизе. UI показывает её на вкладке "Информация",
-	// и сравнивает с версией из GitHub API при проверке обновлений.
 	LaLuneVersion = "0.5.0"
 )
 
@@ -44,6 +41,7 @@ type Config struct {
 type Settings struct {
 	Peer           string `json:"peer"`
 	VkHashes       string `json:"vkHashes"`
+	VkJsToken      string `json:"vkJsToken"`
 	TurnHost       string `json:"turnHost"`
 	TurnPort       string `json:"turnPort"`
 	WorkersPerHash int    `json:"workersPerHash"`
@@ -54,9 +52,9 @@ type Settings struct {
 	CaptchaMode    string `json:"captchaMode"`
 	DeviceId       string `json:"deviceId"`
 	AutoConnect    bool   `json:"autoConnect"`
+	AuthMode       string `json:"authMode"` // manual | autoApi | autoVk
 }
 
-// AppCore - общая логика приложения
 type AppCore struct {
 	ctx             context.Context
 	db              *sql.DB
@@ -74,12 +72,13 @@ type AppCore struct {
 	configsCallback func(string)
 	updateCallback  func(string)
 	isDownloading   bool
+
+	activeCallIds []string
+	activeCallMux sync.Mutex
 }
 
 func NewAppCore() *AppCore {
-	return &AppCore{
-		logs: []string{},
-	}
+	return &AppCore{logs: []string{}}
 }
 
 func (a *AppCore) Startup(ctx context.Context) {
@@ -96,7 +95,6 @@ func (a *AppCore) Startup(ctx context.Context) {
 	a.wintunPath = filepath.Join(a.appDir, "wintun.dll")
 
 	a.AddLog(fmt.Sprintf("[INFO] Папка приложения: %s", a.appDir))
-	a.AddLog(fmt.Sprintf("[INFO] Путь к БД: %s", filepath.Join(a.appDir, "configs.db")))
 
 	a.InitDB()
 	a.LoadSettings()
@@ -128,14 +126,12 @@ func (a *AppCore) GetCoreFilename() string {
 
 func (a *AppCore) InitDB() {
 	dbPath := filepath.Join(a.appDir, "configs.db")
-	a.AddLog(fmt.Sprintf("[DB] Инициализация БД: %s", dbPath))
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		a.AddLog(fmt.Sprintf("[DB] Ошибка открытия: %v", err))
 		return
 	}
-
 	if err := db.Ping(); err != nil {
 		a.AddLog(fmt.Sprintf("[DB] Ошибка ping: %v", err))
 		return
@@ -158,14 +154,6 @@ func (a *AppCore) InitDB() {
 		return
 	}
 
-	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM configs").Scan(&count)
-	if err != nil {
-		a.AddLog(fmt.Sprintf("[DB] Ошибка подсчета записей: %v", err))
-	} else {
-		a.AddLog(fmt.Sprintf("[DB] Найдено %d конфигов", count))
-	}
-
 	a.db = db
 	a.AddLog("[DB] БД инициализирована успешно")
 }
@@ -173,7 +161,6 @@ func (a *AppCore) InitDB() {
 func (a *AppCore) LoadSettings() {
 	data, err := os.ReadFile(a.settingsFile)
 	if err != nil {
-		a.AddLog("[SETTINGS] Файл настроек не найден, создаю стандартные")
 		a.settings = Settings{
 			WorkersPerHash: 9,
 			Obfs:           "video",
@@ -182,6 +169,7 @@ func (a *AppCore) LoadSettings() {
 			VkAuthMode:     "vkcalls",
 			CaptchaMode:    "auto",
 			DeviceId:       uuid.New().String(),
+			AuthMode:       "manual",
 		}
 		a.SaveSettingsFile()
 		return
@@ -196,6 +184,9 @@ func (a *AppCore) LoadSettings() {
 		a.settings.DeviceId = uuid.New().String()
 		a.SaveSettingsFile()
 	}
+	if a.settings.AuthMode == "" {
+		a.settings.AuthMode = "manual"
+	}
 	a.AddLog("[SETTINGS] Настройки загружены")
 }
 
@@ -208,11 +199,8 @@ func (a *AppCore) SaveSettingsFile() {
 
 func (a *AppCore) LoadConfigs() {
 	if a.db == nil {
-		a.AddLog("[CONFIGS] БД не инициализирована")
 		return
 	}
-
-	a.AddLog("[CONFIGS] Загрузка конфигов из БД...")
 
 	rows, err := a.db.Query("SELECT id, protocol, peer, password, hashes, name FROM configs ORDER BY id DESC")
 	if err != nil {
@@ -225,13 +213,10 @@ func (a *AppCore) LoadConfigs() {
 	for rows.Next() {
 		var c Config
 		if err := rows.Scan(&c.ID, &c.Protocol, &c.Peer, &c.Password, &c.Hashes, &c.Name); err != nil {
-			a.AddLog(fmt.Sprintf("[CONFIGS] Ошибка сканирования: %v", err))
 			continue
 		}
 		configs = append(configs, c)
 	}
-
-	a.AddLog(fmt.Sprintf("[CONFIGS] Загружено %d конфигов", len(configs)))
 
 	data, _ := json.Marshal(configs)
 	if a.configsCallback != nil {
@@ -243,13 +228,10 @@ func (a *AppCore) LoadConfigs() {
 
 func (a *AppCore) GetConfigsJson() string {
 	if a.db == nil {
-		a.AddLog("[API] GetConfigsJson: БД не инициализирована")
 		return "[]"
 	}
-
 	rows, err := a.db.Query("SELECT id, protocol, peer, password, hashes, name FROM configs ORDER BY id DESC")
 	if err != nil {
-		a.AddLog(fmt.Sprintf("[API] GetConfigsJson ошибка: %v", err))
 		return "[]"
 	}
 	defer rows.Close()
@@ -276,13 +258,11 @@ func (a *AppCore) GetLogsJson() string {
 	a.mu.Lock()
 	logs := append([]string{}, a.logs...)
 	a.mu.Unlock()
-
 	data, _ := json.Marshal(logs)
 	return string(data)
 }
 
 func (a *AppCore) SaveConfig(link string) bool {
-	a.AddLog(fmt.Sprintf("[API] Сохранение конфига: %s", link))
 	config := ParseCsqttLink(link)
 
 	result, err := a.db.Exec(
@@ -301,25 +281,17 @@ func (a *AppCore) SaveConfig(link string) bool {
 }
 
 func (a *AppCore) DeleteConfig(id int64) bool {
-	a.AddLog(fmt.Sprintf("[API] Удаление конфига ID: %d", id))
-
 	_, err := a.db.Exec("DELETE FROM configs WHERE id = ?", id)
 	if err != nil {
-		a.AddLog(fmt.Sprintf("[API] Ошибка удаления: %v", err))
 		return false
 	}
-
-	a.AddLog(fmt.Sprintf("[API] Конфиг %d удален", id))
 	a.LoadConfigs()
 	return true
 }
 
 func (a *AppCore) SaveSettings(settingsJson string) bool {
-	a.AddLog("[API] Сохранение настроек")
-
 	var newSettings Settings
 	if err := json.Unmarshal([]byte(settingsJson), &newSettings); err != nil {
-		a.AddLog(fmt.Sprintf("[API] Ошибка парсинга настроек: %v", err))
 		return false
 	}
 
@@ -329,9 +301,20 @@ func (a *AppCore) SaveSettings(settingsJson string) bool {
 	if newSettings.DeviceId == "" {
 		newSettings.DeviceId = uuid.New().String()
 	}
+	// Токен ВК переносим, если фронт его не прислал
+	if newSettings.VkJsToken == "" {
+		newSettings.VkJsToken = a.settings.VkJsToken
+	}
+	if newSettings.AuthMode == "" {
+		newSettings.AuthMode = "manual"
+	}
 
+	a.mu.Lock()
 	a.settings = newSettings
-	a.SaveSettingsFile()
+	data, _ := json.MarshalIndent(a.settings, "", "  ")
+	_ = os.WriteFile(a.settingsFile, data, 0644)
+	a.mu.Unlock()
+
 	a.AddLog("[API] Настройки сохранены")
 	return true
 }
@@ -344,21 +327,10 @@ func (a *AppCore) ClearLogs() bool {
 	return true
 }
 
-func (a *AppCore) SetLogCallback(callback func(string)) {
-	a.logCallback = callback
-}
-
-func (a *AppCore) SetStatusCallback(callback func(bool)) {
-	a.statusCallback = callback
-}
-
-func (a *AppCore) SetConfigsCallback(callback func(string)) {
-	a.configsCallback = callback
-}
-
-func (a *AppCore) SetUpdateCallback(callback func(string)) {
-	a.updateCallback = callback
-}
+func (a *AppCore) SetLogCallback(callback func(string))     { a.logCallback = callback }
+func (a *AppCore) SetStatusCallback(callback func(bool))    { a.statusCallback = callback }
+func (a *AppCore) SetConfigsCallback(callback func(string)) { a.configsCallback = callback }
+func (a *AppCore) SetUpdateCallback(callback func(string))  { a.updateCallback = callback }
 
 // ============ Внутренние методы ============
 
@@ -392,35 +364,15 @@ func (a *AppCore) SetConnected(connected bool) {
 	}
 }
 
-func (a *AppCore) GetDB() *sql.DB {
-	return a.db
-}
-
-func (a *AppCore) GetSettings() Settings {
-	return a.settings
-}
-
-func (a *AppCore) GetAppDir() string {
-	return a.appDir
-}
-
-func (a *AppCore) GetCorePath() string {
-	return a.corePath
-}
-
-func (a *AppCore) GetLatestFile() string {
-	return a.latestFile
-}
-
-func (a *AppCore) GetWintunPath() string {
-	return a.wintunPath
-}
+func (a *AppCore) GetDB() *sql.DB           { return a.db }
+func (a *AppCore) GetSettings() Settings    { return a.settings }
+func (a *AppCore) GetAppDir() string        { return a.appDir }
+func (a *AppCore) GetCorePath() string      { return a.corePath }
+func (a *AppCore) GetLatestFile() string    { return a.latestFile }
+func (a *AppCore) GetWintunPath() string    { return a.wintunPath }
 
 func ParseCsqttLink(link string) Config {
-	config := Config{
-		Protocol: "CSQTT",
-		Name:     "Config",
-	}
+	config := Config{Protocol: "CSQTT", Name: "Config"}
 
 	link = strings.TrimSpace(link)
 	if !strings.HasPrefix(strings.ToLower(link), "csqtt://") {
@@ -437,35 +389,29 @@ func ParseCsqttLink(link string) Config {
 	params := parsed.Query()
 
 	if strings.ToLower(parsed.Hostname()) == "connect" {
-		version := params.Get("v")
-		if version != "2" {
+		if params.Get("v") != "2" {
 			config.Peer = link
 			return config
 		}
-
 		host := params.Get("host")
 		port := params.Get("peer")
 		password := params.Get("password")
-
 		if host == "" || port == "" || password == "" {
 			config.Peer = link
 			return config
 		}
-
 		config.Peer = fmt.Sprintf("%s:%s", host, port)
 		config.Password = password
 
 		if hashes := params.Get("hashes"); hashes != "" {
-			parts := strings.Split(hashes, "+")
 			var clean []string
-			for _, p := range parts {
+			for _, p := range strings.Split(hashes, "+") {
 				if p != "" {
 					clean = append(clean, p)
 				}
 			}
 			config.Hashes = strings.Join(clean, ",")
 		}
-
 		config.Name = config.Peer
 	} else {
 		host := parsed.Hostname()
@@ -474,12 +420,10 @@ func ParseCsqttLink(link string) Config {
 			port = "46000"
 		}
 		password := parsed.User.Username()
-
 		if host == "" || password == "" {
 			config.Peer = link
 			return config
 		}
-
 		config.Peer = fmt.Sprintf("%s:%s", host, port)
 		config.Password = password
 		config.Name = config.Peer

@@ -17,10 +17,8 @@ import (
 	"time"
 )
 
-// Импортируем Libs
 import "lalune-desktop/Libs"
 
-// App - основное приложение для Linux
 type App struct {
 	core      *libs.AppCore
 	bridge    *libs.Bridge
@@ -38,48 +36,34 @@ type LinuxTun struct {
 	mu           sync.Mutex
 }
 
-func (t *LinuxTun) Setup() error {
-	return nil
-}
+func (t *LinuxTun) Setup() error              { return nil }
+func (t *LinuxTun) Start(_ net.Conn, _ *bool) {}
+func (t *LinuxTun) Stop()                     {}
 
-func (t *LinuxTun) Start(udpConn net.Conn, running *bool) {
-	// Не используется — ядро само работает с TUN
-}
-
-func (t *LinuxTun) Stop() {
-}
-
-func (t *LinuxTun) SetupRoutes(tunIP string, tunDNS string) {
+func (t *LinuxTun) SetupRoutes(tunIP, tunDNS string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	t.app.core.AddLog(fmt.Sprintf("[TUN] Настройка TUN (IP: %s, DNS: %s)...", tunIP, tunDNS))
 
 	cmd := fmt.Sprintf("ip tuntap add dev csqtt0 mode tun && ip addr add %s/32 dev csqtt0 && ip link set csqtt0 up && ip link set csqtt0 mtu 1300", tunIP)
 	t.app.runSudo(cmd)
 
-	dnsServers := strings.Split(tunDNS, ",")
-	for _, dns := range dnsServers {
+	for _, dns := range strings.Split(tunDNS, ",") {
 		dns = strings.TrimSpace(dns)
 		if dns != "" {
 			t.app.runSudo(fmt.Sprintf("echo 'nameserver %s' >> /etc/resolv.conf", dns))
 		}
 	}
-
 	t.app.runSudo("ip route add default dev csqtt0")
-
 	t.app.core.AddLog("[TUN] TUN настроен успешно")
 }
 
 func (t *LinuxTun) CleanupRoutes() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	t.app.core.AddLog("[TUN] Удаление TUN...")
-
 	t.app.runSudo("ip route del default dev csqtt0 2>/dev/null || true")
 	t.app.runSudo("ip tuntap del dev csqtt0 mode tun 2>/dev/null || true")
-
 	t.app.core.AddLog("[TUN] TUN удалён")
 }
 
@@ -89,7 +73,8 @@ func (t *LinuxTun) AddBypassRoute(ip string) {
 	t.bypassRoutes = append(t.bypassRoutes, ip)
 }
 
-// LinuxRunner реализует libs.CoreRunner для Linux
+// ============ Runner ============
+
 type LinuxRunner struct {
 	app *App
 }
@@ -102,12 +87,24 @@ func (r *LinuxRunner) startCoreWithSudo(cmdArgs []string, listenPort int, bridge
 	logFile := filepath.Join(os.TempDir(), "lalune_core_logs.txt")
 	os.Remove(logFile)
 
-	cmdStr := strings.Join(cmdArgs, " ")
-	fullCmd := fmt.Sprintf("%s > %s 2>&1", cmdStr, logFile)
+	// Собираем команду: сначала cd в папку ядра, потом запуск с аргументами.
+	// Аргументы квотим одиночными кавычками, чтобы пробелы и спецсимволы не ломали sh.
+	corePath := cmdArgs[0]
+	quotedArgs := make([]string, len(cmdArgs)-1)
+	for i, arg := range cmdArgs[1:] {
+		escaped := strings.ReplaceAll(arg, "'", "'\\''")
+		quotedArgs[i] = "'" + escaped + "'"
+	}
+
+	cmdLine := fmt.Sprintf("'%s' %s > '%s' 2>&1",
+		strings.ReplaceAll(corePath, "'", "'\\''"),
+		strings.Join(quotedArgs, " "),
+		logFile,
+	)
 
 	bridge.Core.AddLog("[INFO] Запуск ядра через sudo...")
 
-	cmd := exec.Command("sh", "-c", r.app.runSudoCommand(fullCmd))
+	cmd := exec.Command("sh", "-c", r.app.runSudoCommand(cmdLine))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -139,24 +136,17 @@ func (r *LinuxRunner) startCoreWithSudo(cmdArgs []string, listenPort int, bridge
 					newContent := string(content[lastOffset:])
 					lastOffset = int64(len(content))
 
-					lines := strings.Split(newContent, "\n")
-					for _, line := range lines {
+					for _, line := range strings.Split(newContent, "\n") {
 						line = strings.TrimSpace(line)
-						if line == "" {
+						if line == "" || strings.Contains(line, "__CSQTT_EVENT__|STOPPED|") {
 							continue
 						}
-
-						if strings.Contains(line, "__CSQTT_EVENT__|STOPPED|") {
-							continue
-						}
-
 						bridge.Core.AddLog(line)
 
-						if matches := listenRe.FindStringSubmatch(line); matches != nil {
-							fmt.Sscanf(matches[1], "%d", &coreListenPort)
+						if m := listenRe.FindStringSubmatch(line); m != nil {
+							fmt.Sscanf(m[1], "%d", &coreListenPort)
 							bridge.Core.AddLog(fmt.Sprintf("[TUN] Порт ядра: %d", coreListenPort))
 						}
-
 						tunIP, tunDNS := bridge.ParseTunconf(line)
 						if tunIP != "" && tunDNS != "" {
 							select {
@@ -164,10 +154,9 @@ func (r *LinuxRunner) startCoreWithSudo(cmdArgs []string, listenPort int, bridge
 							default:
 							}
 						}
-
-						if matches := statRe.FindStringSubmatch(line); matches != nil {
+						if m := statRe.FindStringSubmatch(line); m != nil {
 							var active int
-							fmt.Sscanf(matches[1], "%d", &active)
+							fmt.Sscanf(m[1], "%d", &active)
 							if active > 0 {
 								select {
 								case trafficChan <- true:
@@ -184,29 +173,24 @@ func (r *LinuxRunner) startCoreWithSudo(cmdArgs []string, listenPort int, bridge
 
 	go func() {
 		var tunIP, tunDNS string
-		hasConf := false
-		hasTraffic := false
-
+		hasConf, hasTraffic := false, false
 		for !hasConf || !hasTraffic {
 			select {
 			case conf := <-tunconfChan:
-				tunIP = conf[0]
-				tunDNS = conf[1]
+				tunIP, tunDNS = conf[0], conf[1]
 				hasConf = true
-				bridge.Core.AddLog(fmt.Sprintf("[TUN] TUNCONF получен: IP=%s DNS=%s", tunIP, tunDNS))
+				bridge.Core.AddLog(fmt.Sprintf("[TUN] TUNCONF: IP=%s DNS=%s", tunIP, tunDNS))
 			case <-trafficChan:
 				hasTraffic = true
-				bridge.Core.AddLog("[TUN] Трафик обнаружен (Активных > 0)")
+				bridge.Core.AddLog("[TUN] Трафик обнаружен")
 			case <-time.After(90 * time.Second):
 				bridge.Core.AddLog("[TUN] Таймаут ожидания")
 				bridge.Core.SetConnected(false)
 				return
 			}
 		}
-
 		bridge.Core.AddLog("[TUN] Настройка TUN...")
 		time.Sleep(750 * time.Millisecond)
-
 		if tun, ok := bridge.Tun.(*LinuxTun); ok {
 			tun.SetupRoutes(tunIP, tunDNS)
 		}
@@ -227,10 +211,7 @@ func (r *LinuxRunner) startCoreWithSudo(cmdArgs []string, listenPort int, bridge
 func NewApp() *App {
 	core := libs.NewAppCore()
 	tun := &LinuxTun{}
-	app := &App{
-		core: core,
-		tun:  tun,
-	}
+	app := &App{core: core, tun: tun}
 	tun.app = app
 	app.runner = &LinuxRunner{app: app}
 	app.bridge = libs.NewBridge(core, tun, app.runner)
@@ -240,14 +221,11 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.core.Startup(ctx)
 	a.core.LoadConfigs()
-
 	a.isRoot = os.Geteuid() == 0
-
 	if a.isRoot {
 		a.core.AddLog("[INFO] Запущено от root")
 	} else {
 		a.core.AddLog("[INFO] Запущено без root прав")
-		a.core.AddLog("[INFO] Запросите пароль root в окне")
 	}
 }
 
@@ -264,11 +242,9 @@ func (a *App) runSudoCommand(command string) string {
 	a.mu.Lock()
 	pass := a.sudoPass
 	a.mu.Unlock()
-
 	if pass == "" {
 		return fmt.Sprintf("sudo %s", command)
 	}
-
 	return fmt.Sprintf("echo '%s' | sudo -S %s", pass, command)
 }
 
@@ -285,37 +261,35 @@ func (a *App) SetSudoPassword(password string) bool {
 		a.core.AddLog("[SUDO] Неверный пароль")
 		return false
 	}
-
 	a.core.AddLog("[SUDO] Пароль сохранён")
 	return true
 }
 
-func (a *App) GetConfigsJson() string {
-	return a.core.GetConfigsJson()
-}
+// ============ API ============
 
-func (a *App) GetSettingsJson() string {
-	return a.core.GetSettingsJson()
-}
-
-func (a *App) GetLogsJson() string {
-	return a.core.GetLogsJson()
-}
-
-func (a *App) GetStatusJson() string {
-	return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected())
-}
-
-func (a *App) SaveConfig(link string) bool {
-	return a.core.SaveConfig(link)
-}
-
-func (a *App) DeleteConfig(id int64) bool {
-	return a.core.DeleteConfig(id)
-}
-
-func (a *App) SaveSettings(settingsJson string) bool {
-	return a.core.SaveSettings(settingsJson)
+func (a *App) GetConfigsJson() string      { return a.core.GetConfigsJson() }
+func (a *App) GetSettingsJson() string     { return a.core.GetSettingsJson() }
+func (a *App) GetLogsJson() string         { return a.core.GetLogsJson() }
+func (a *App) GetStatusJson() string       { return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected()) }
+func (a *App) SaveConfig(link string) bool { return a.core.SaveConfig(link) }
+func (a *App) DeleteConfig(id int64) bool  { return a.core.DeleteConfig(id) }
+func (a *App) SaveSettings(j string) bool  { return a.core.SaveSettings(j) }
+func (a *App) ClearLogs() bool             { return a.core.ClearLogs() }
+func (a *App) UpdateCore() bool            { return a.core.UpdateCore() }
+func (a *App) Connect(id int64) bool       { return a.bridge.Connect(id) }
+func (a *App) Disconnect() bool {
+	a.mu.Lock()
+	pid := a.clientPID
+	a.mu.Unlock()
+	if pid > 0 {
+		a.core.AddLog(fmt.Sprintf("[INFO] Останавливаем клиент (PID: %d)...", pid))
+		syscall.Kill(pid, syscall.SIGTERM)
+		time.Sleep(1 * time.Second)
+		syscall.Kill(pid, syscall.SIGKILL)
+	}
+	result := a.bridge.Disconnect()
+	a.tun.CleanupRoutes()
+	return result
 }
 
 func (a *App) CheckUpdate() string {
@@ -328,55 +302,70 @@ func (a *App) CheckUpdate() string {
 
 func (a *App) UpdateCoreAndWait() bool {
 	if a.core.IsConnected() {
-		a.core.AddLog("[UPDATE] Отключаемся перед обновлением...")
 		a.bridge.Disconnect()
 		time.Sleep(1 * time.Second)
 	}
-
-	remoteVersion := a.core.FetchLatestVersion()
-	if remoteVersion == "" {
-		a.core.AddLog("[UPDATE] Не удалось получить версию")
+	remote := a.core.FetchLatestVersion()
+	if remote == "" {
 		return false
 	}
-
-	a.core.PerformUpdate(remoteVersion)
-	a.core.AddLog("[UPDATE] Обновление завершено")
+	a.core.PerformUpdate(remote)
 	return true
 }
 
-func (a *App) Connect(configId int64) bool {
-	remoteVersion, hasUpdate, err := a.core.CheckUpdateSync()
-	if err == nil && hasUpdate {
-		a.core.AddLog(fmt.Sprintf("[UPDATE] Доступна версия %s. Обновитесь перед подключением.", remoteVersion))
-		return false
+func (a *App) CheckLaLuneUpdate() libs.LaLuneUpdateResult {
+	return a.core.CheckLaLuneUpdate()
+}
+
+func (a *App) OpenLaLuneReleasesURL() string {
+	return a.core.OpenLaLuneReleasesURL()
+}
+
+func (a *App) GetVKTokenState() libs.VkTokenState {
+	return a.core.GetVKTokenState()
+}
+
+func (a *App) LoginVK() bool {
+	ch := a.core.StartVKTokenFetcher()
+	go func() {
+		for st := range ch {
+			if st.Message != "" {
+				a.core.AddLog("[VK] " + st.Message)
+			}
+		}
+	}()
+	return true
+}
+
+func (a *App) DeleteVKToken() bool { return a.core.DeleteVKToken() }
+
+func (a *App) RunVkAutoApiCalls() string {
+	hashes, callIds, err := a.core.RunVkAutoApiCalls(func(s string) {
+		a.core.AddLog(s)
+	})
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
-
-	return a.bridge.Connect(configId)
+	return fmt.Sprintf(`{"hashes":%s,"callIds":%s}`,
+		jsonStringArrayLinux(hashes), jsonStringArrayLinux(callIds))
 }
 
-func (a *App) Disconnect() bool {
-	a.mu.Lock()
-	pid := a.clientPID
-	a.mu.Unlock()
+func (a *App) PollAutoApiResult() string { return `{"pending":false}` }
 
-	if pid > 0 {
-		a.core.AddLog(fmt.Sprintf("[INFO] Останавливаем клиент (PID: %d)...", pid))
-		syscall.Kill(pid, syscall.SIGTERM)
-		time.Sleep(1 * time.Second)
-		syscall.Kill(pid, syscall.SIGKILL)
+func (a *App) FinishVkCalls(callIds []string) bool {
+	a.core.FinishVkCalls(callIds)
+	return true
+}
+
+func jsonStringArrayLinux(items []string) string {
+	if len(items) == 0 {
+		return "[]"
 	}
-
-	result := a.bridge.Disconnect()
-
-	a.tun.CleanupRoutes()
-
-	return result
-}
-
-func (a *App) ClearLogs() bool {
-	return a.core.ClearLogs()
-}
-
-func (a *App) UpdateCore() bool {
-	return a.core.UpdateCore()
+	q := make([]string, len(items))
+	for i, s := range items {
+		s = strings.ReplaceAll(s, `\`, `\\`)
+		s = strings.ReplaceAll(s, `"`, `\"`)
+		q[i] = `"` + s + `"`
+	}
+	return "[" + strings.Join(q, ",") + "]"
 }

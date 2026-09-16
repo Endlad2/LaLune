@@ -1,0 +1,12 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+.idea/
+
+# Результат сборки
+output/
+
+# Нативный хелпер (собирается из .c через build.sh или build_token_grabber.py)
+Linux/native/la-lune-webview-helper

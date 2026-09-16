@@ -18,10 +18,9 @@ import (
 	"unsafe"
 )
 
-// Импортируем Libs
 import "lalune-desktop/Libs"
 
-// ============ Wintun DLL обёртка ============
+// ============ Wintun DLL ============
 
 var (
 	wintunDLL          *syscall.DLL
@@ -40,12 +39,10 @@ func initWintun(dllPath string) error {
 	if wintunDLL != nil {
 		return nil
 	}
-
 	dll, err := syscall.LoadDLL(dllPath)
 	if err != nil {
 		return fmt.Errorf("не удалось загрузить wintun.dll: %v", err)
 	}
-
 	wintunDLL = dll
 	procCreateAdapter = dll.MustFindProc("WintunCreateAdapter")
 	procOpenAdapter = dll.MustFindProc("WintunOpenAdapter")
@@ -56,20 +53,14 @@ func initWintun(dllPath string) error {
 	procReleaseReceive = dll.MustFindProc("WintunReleaseReceivePacket")
 	procAllocateSend = dll.MustFindProc("WintunAllocateSendPacket")
 	procSendPacket = dll.MustFindProc("WintunSendPacket")
-
 	return nil
 }
 
-func wintunCreateAdapter(name string, tunnelType string) (uintptr, error) {
+func wintunCreateAdapter(name, tunnelType string) (uintptr, error) {
 	namePtr, _ := syscall.UTF16PtrFromString(name)
 	typePtr, _ := syscall.UTF16PtrFromString(tunnelType)
-
 	ret, _, _ := procCreateAdapter.Call(
-		uintptr(unsafe.Pointer(namePtr)),
-		uintptr(unsafe.Pointer(typePtr)),
-		0,
-	)
-
+		uintptr(unsafe.Pointer(namePtr)), uintptr(unsafe.Pointer(typePtr)), 0)
 	if ret == 0 {
 		return 0, fmt.Errorf("WintunCreateAdapter failed")
 	}
@@ -85,9 +76,9 @@ func wintunOpenAdapter(name string) (uintptr, error) {
 	return ret, nil
 }
 
-func wintunCloseAdapter(adapter uintptr) {
-	procCloseAdapter.Call(adapter)
-}
+func wintunCloseAdapter(adapter uintptr)          { procCloseAdapter.Call(adapter) }
+func wintunEndSession(session uintptr)            { procEndSession.Call(session) }
+func wintunSendPacket(session, packet uintptr)    { procSendPacket.Call(session, packet) }
 
 func wintunStartSession(adapter uintptr, capacity uint32) (uintptr, error) {
 	ret, _, _ := procStartSession.Call(adapter, uintptr(capacity))
@@ -97,21 +88,15 @@ func wintunStartSession(adapter uintptr, capacity uint32) (uintptr, error) {
 	return ret, nil
 }
 
-func wintunEndSession(session uintptr) {
-	procEndSession.Call(session)
-}
-
 func wintunReceivePacket(session uintptr) ([]byte, error) {
 	var size uint32
 	ret, _, _ := procReceivePacket.Call(session, uintptr(unsafe.Pointer(&size)))
 	if ret == 0 {
 		return nil, fmt.Errorf("no packet")
 	}
-
 	packet := make([]byte, size)
 	copy(packet, unsafe.Slice((*byte)(unsafe.Pointer(ret)), int(size)))
 	procReleaseReceive.Call(session, ret)
-
 	return packet, nil
 }
 
@@ -123,11 +108,7 @@ func wintunAllocateSendPacket(session uintptr, size uint32) (uintptr, error) {
 	return ret, nil
 }
 
-func wintunSendPacket(session uintptr, packet uintptr) {
-	procSendPacket.Call(session, packet)
-}
-
-// ============ ShellExecute для UAC ============
+// ============ ShellExecuteEx ============
 
 var (
 	shell32DLL      = syscall.NewLazyDLL("shell32.dll")
@@ -157,7 +138,8 @@ type shellExecuteInfo struct {
 	hProcess     uintptr
 }
 
-// App - основное приложение для Windows
+// ============ App ============
+
 type App struct {
 	core    *libs.AppCore
 	bridge  *libs.Bridge
@@ -178,19 +160,15 @@ type WindowsTun struct {
 
 func (t *WindowsTun) Setup() error {
 	dllPath := filepath.Join(t.app.core.GetAppDir(), "wintun.dll")
-
 	if err := initWintun(dllPath); err != nil {
 		return err
 	}
-
 	if t.adapter == 0 {
-		adapter, err := wintunOpenAdapter("CSQTT")
-		if err == nil {
+		if adapter, err := wintunOpenAdapter("CSQTT"); err == nil {
 			t.adapter = adapter
 			t.app.core.AddLog("[TUN] Адаптер CSQTT уже существует, открыт")
 		}
 	}
-
 	if t.adapter == 0 {
 		t.app.core.AddLog("[TUN] Создание Wintun адаптера...")
 		adapter, err := wintunCreateAdapter("CSQTT", "Wintun")
@@ -199,7 +177,6 @@ func (t *WindowsTun) Setup() error {
 		}
 		t.adapter = adapter
 	}
-
 	if !t.hasSession {
 		session, err := wintunStartSession(t.adapter, 0x400000)
 		if err != nil {
@@ -210,7 +187,6 @@ func (t *WindowsTun) Setup() error {
 		t.session = session
 		t.hasSession = true
 	}
-
 	t.app.core.AddLog("[TUN] Wintun адаптер готов")
 	return nil
 }
@@ -229,7 +205,6 @@ func (t *WindowsTun) Start(udpConn net.Conn, running *bool) {
 			udpConn.Write(packet)
 		}
 	}()
-
 	go func() {
 		buf := make([]byte, 65535)
 		for *running {
@@ -237,12 +212,10 @@ func (t *WindowsTun) Start(udpConn net.Conn, running *bool) {
 			if err != nil {
 				return
 			}
-
 			packet, err := wintunAllocateSendPacket(t.session, uint32(n))
 			if err != nil {
 				continue
 			}
-
 			copy(unsafe.Slice((*byte)(unsafe.Pointer(packet)), n), buf[:n])
 			wintunSendPacket(t.session, packet)
 		}
@@ -252,7 +225,6 @@ func (t *WindowsTun) Start(udpConn net.Conn, running *bool) {
 func (t *WindowsTun) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	if t.hasSession {
 		wintunEndSession(t.session)
 		t.session = 0
@@ -264,7 +236,7 @@ func (t *WindowsTun) Stop() {
 	}
 }
 
-func (t *WindowsTun) SetupRoutes(tunIP string, tunDNS string) {
+func (t *WindowsTun) SetupRoutes(tunIP, tunDNS string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -272,23 +244,18 @@ func (t *WindowsTun) SetupRoutes(tunIP string, tunDNS string) {
 	if t.gateway != "" {
 		t.app.core.AddLog(fmt.Sprintf("[TUN] Физический шлюз: %s", t.gateway))
 	}
-
 	for _, ip := range t.bypassRoutes {
 		if t.gateway != "" {
 			exec.Command("route", "ADD", ip, "MASK", "255.255.255.255", t.gateway, "METRIC", "1").Run()
 		}
 	}
-
 	exec.Command("netsh", "interface", "ipv4", "set", "address",
-		"name=\"CSQTT\"", "source=static",
-		"address="+tunIP, "mask=255.255.255.255").Run()
-
+		"name=\"CSQTT\"", "source=static", "address="+tunIP, "mask=255.255.255.255").Run()
 	exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
 		"\"CSQTT\"", "mtu=1300", "store=active").Run()
 
-	dnsServers := strings.Split(tunDNS, ",")
 	dnsIndex := 1
-	for _, dns := range dnsServers {
+	for _, dns := range strings.Split(tunDNS, ",") {
 		dns = strings.TrimSpace(dns)
 		if dns != "" && dnsIndex <= 2 {
 			exec.Command("netsh", "interface", "ipv4", "add", "dnsservers",
@@ -297,21 +264,17 @@ func (t *WindowsTun) SetupRoutes(tunIP string, tunDNS string) {
 			dnsIndex++
 		}
 	}
-
 	exec.Command("netsh", "interface", "ipv4", "add", "route",
 		"prefix=0.0.0.0/0", "interface=\"CSQTT\"",
 		"nexthop=0.0.0.0", "metric=5", "store=active").Run()
-
 	t.app.core.AddLog("[TUN] Маршруты настроены")
 }
 
 func (t *WindowsTun) CleanupRoutes() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	exec.Command("netsh", "interface", "ipv4", "delete", "route",
 		"prefix=0.0.0.0/0", "interface=\"CSQTT\"", "store=active").Run()
-
 	for _, ip := range t.bypassRoutes {
 		exec.Command("route", "DELETE", ip).Run()
 	}
@@ -322,22 +285,17 @@ func (t *WindowsTun) CleanupRoutes() {
 func (t *WindowsTun) AddBypassRoute(ip string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
+	if net.ParseIP(ip) == nil {
 		return
 	}
-
 	for _, existing := range t.bypassRoutes {
 		if existing == ip {
 			return
 		}
 	}
-
 	if t.gateway != "" {
 		exec.Command("route", "ADD", ip, "MASK", "255.255.255.255", t.gateway, "METRIC", "1").Run()
 	}
-
 	t.bypassRoutes = append(t.bypassRoutes, ip)
 }
 
@@ -346,9 +304,7 @@ func getPhysicalGateway() string {
 	if err != nil {
 		return ""
 	}
-
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "0.0.0.0") {
 			fields := strings.Fields(line)
 			if len(fields) >= 3 && fields[0] == "0.0.0.0" {
@@ -356,11 +312,11 @@ func getPhysicalGateway() string {
 			}
 		}
 	}
-
 	return ""
 }
 
-// WindowsRunner реализует libs.CoreRunner для Windows
+// ============ Runner ============
+
 type WindowsRunner struct {
 	app *App
 }
@@ -372,26 +328,22 @@ func (r *WindowsRunner) StartCore(cmdArgs []string, listenPort int, bridge *libs
 func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridge *libs.Bridge) {
 	logFile := filepath.Join(os.TempDir(), "csqtt_core_logs.txt")
 	batPath := filepath.Join(os.TempDir(), "lalune_start_core.bat")
-
 	os.Remove(logFile)
 
 	quotedArgs := make([]string, len(cmdArgs)-1)
 	for i, arg := range cmdArgs[1:] {
-		quotedArgs[i] = "\"" + strings.ReplaceAll(arg, "\"", "\\\"") + "\""
+		// Внутри bat-файла экранируем двойные кавычки внутри аргументов
+		// и обрамляем сам аргумент кавычками, чтобы пробелы и спецсимволы не ломали команду.
+		escaped := strings.ReplaceAll(arg, "\"", "\\\"")
+		quotedArgs[i] = "\"" + escaped + "\""
 	}
 
 	batContent := fmt.Sprintf("@echo off\r\n\"%s\" %s > \"%s\" 2>&1\r\n",
-		cmdArgs[0],
-		strings.Join(quotedArgs, " "),
-		logFile,
-	)
-
+		cmdArgs[0], strings.Join(quotedArgs, " "), logFile)
 	os.WriteFile(batPath, []byte(batContent), 0644)
 
 	bridge.Core.AddLog("[INFO] Запуск ядра через UAC...")
-
-	err := runAsAdminWithBat(batPath)
-	if err != nil {
+	if err := runAsAdminWithBat(batPath); err != nil {
 		bridge.Core.AddLog(fmt.Sprintf("[ERROR] Не удалось запустить от админа: %v", err))
 		bridge.Core.SetConnected(false)
 		return
@@ -399,9 +351,8 @@ func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridg
 	bridge.Core.AddLog("[INFO] Ядро запущено от администратора")
 
 	type TunConf struct {
-		IP   string
-		DNS  string
-		Port int
+		IP, DNS string
+		Port    int
 	}
 	tunconfChan := make(chan TunConf, 1)
 	trafficDetectedChan := make(chan bool, 1)
@@ -416,32 +367,23 @@ func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridg
 
 	go func() {
 		for bridge.Core.IsConnected() {
-			file, err := os.Open(logFile)
-			if err == nil {
+			if file, err := os.Open(logFile); err == nil {
 				file.Seek(lastOffset, 0)
 				content, _ := os.ReadFile(logFile)
-
 				if int64(len(content)) > lastOffset {
 					newContent := string(content[lastOffset:])
 					lastOffset = int64(len(content))
 
-					lines := strings.Split(newContent, "\n")
-					for _, line := range lines {
+					for _, line := range strings.Split(newContent, "\n") {
 						line = strings.TrimSpace(line)
-						if line == "" {
+						if line == "" || strings.Contains(line, "__CSQTT_EVENT__|STOPPED|") {
 							continue
 						}
-
-						if strings.Contains(line, "__CSQTT_EVENT__|STOPPED|") {
-							continue
-						}
-
 						bridge.Core.AddLog(line)
 
-						if matches := listenRe.FindStringSubmatch(line); matches != nil {
-							fmt.Sscanf(matches[1], "%d", &coreListenPort)
+						if m := listenRe.FindStringSubmatch(line); m != nil {
+							fmt.Sscanf(m[1], "%d", &coreListenPort)
 						}
-
 						if strings.Contains(line, "TURN") || strings.Contains(line, "Relay") {
 							for _, match := range ipv4Re.FindAllString(line, -1) {
 								transportMu.Lock()
@@ -454,23 +396,16 @@ func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridg
 								transportMu.Unlock()
 							}
 						}
-
 						tunIP, tunDNS := bridge.ParseTunconf(line)
 						if tunIP != "" && tunDNS != "" {
-							conf := TunConf{
-								IP:   tunIP,
-								DNS:  tunDNS,
-								Port: coreListenPort,
-							}
 							select {
-							case tunconfChan <- conf:
+							case tunconfChan <- TunConf{IP: tunIP, DNS: tunDNS, Port: coreListenPort}:
 							default:
 							}
 						}
-
-						if matches := statRe.FindStringSubmatch(line); matches != nil {
+						if m := statRe.FindStringSubmatch(line); m != nil {
 							var active int
-							fmt.Sscanf(matches[1], "%d", &active)
+							fmt.Sscanf(m[1], "%d", &active)
 							if active > 0 {
 								select {
 								case trafficDetectedChan <- true:
@@ -488,15 +423,13 @@ func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridg
 
 	go func() {
 		var conf TunConf
-		hasConf := false
-		hasTraffic := false
-
+		hasConf, hasTraffic := false, false
 		for !hasConf || !hasTraffic {
 			select {
 			case c := <-tunconfChan:
 				conf = c
 				hasConf = true
-				bridge.Core.AddLog(fmt.Sprintf("[TUN] TUNCONF получен: IP=%s DNS=%s Port=%d", c.IP, c.DNS, c.Port))
+				bridge.Core.AddLog(fmt.Sprintf("[TUN] TUNCONF: IP=%s DNS=%s Port=%d", c.IP, c.DNS, c.Port))
 			case <-trafficDetectedChan:
 				hasTraffic = true
 				bridge.Core.AddLog("[TUN] Трафик обнаружен (Активных > 0)")
@@ -506,10 +439,8 @@ func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridg
 				return
 			}
 		}
-
 		bridge.Core.AddLog("[TUN] Настройка TUN...")
 		time.Sleep(750 * time.Millisecond)
-
 		if err := bridge.SetupTun(); err != nil {
 			bridge.Core.AddLog(fmt.Sprintf("[TUN] Ошибка: %v", err))
 		} else {
@@ -528,13 +459,12 @@ func (r *WindowsRunner) startCoreWithUAC(cmdArgs []string, listenPort int, bridg
 	}()
 }
 
+// ============ Startup ============
+
 func NewApp() *App {
 	core := libs.NewAppCore()
 	tun := &WindowsTun{}
-	app := &App{
-		core: core,
-		tun:  tun,
-	}
+	app := &App{core: core, tun: tun}
 	tun.app = app
 	app.runner = &WindowsRunner{app: app}
 	app.bridge = libs.NewBridge(core, tun, app.runner)
@@ -545,13 +475,11 @@ func (a *App) startup(ctx context.Context) {
 	a.isAdmin = isAdmin()
 	a.core.Startup(ctx)
 	a.core.LoadConfigs()
-
 	if a.isAdmin {
 		a.core.AddLog("[INFO] Запущено от администратора")
 	} else {
 		a.core.AddLog("[INFO] Запущено без прав администратора")
 	}
-
 	a.ensureWintun()
 }
 
@@ -561,9 +489,7 @@ func isAdmin() bool {
 }
 
 func (a *App) ensureWintun() bool {
-	appDir := a.core.GetAppDir()
-	_, err := libs.DownloadAndExtractWintun(appDir)
-	if err != nil {
+	if _, err := libs.DownloadAndExtractWintun(a.core.GetAppDir()); err != nil {
 		a.core.AddLog(fmt.Sprintf("[WINTUN] Ошибка: %v", err))
 		return false
 	}
@@ -584,7 +510,6 @@ func runAsAdminWithBat(batPath string) error {
 		lpParameters: params,
 		nShow:        SW_HIDE,
 	}
-
 	ret, _, _ := procShellExecEx.Call(uintptr(unsafe.Pointer(&sei)))
 	if ret == 0 {
 		return fmt.Errorf("ShellExecuteEx failed")
@@ -592,35 +517,19 @@ func runAsAdminWithBat(batPath string) error {
 	return nil
 }
 
-// ============ API для JS ============
+// ============ API ============
 
-func (a *App) GetConfigsJson() string {
-	return a.core.GetConfigsJson()
-}
-
-func (a *App) GetSettingsJson() string {
-	return a.core.GetSettingsJson()
-}
-
-func (a *App) GetLogsJson() string {
-	return a.core.GetLogsJson()
-}
-
-func (a *App) GetStatusJson() string {
-	return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected())
-}
-
-func (a *App) SaveConfig(link string) bool {
-	return a.core.SaveConfig(link)
-}
-
-func (a *App) DeleteConfig(id int64) bool {
-	return a.core.DeleteConfig(id)
-}
-
-func (a *App) SaveSettings(settingsJson string) bool {
-	return a.core.SaveSettings(settingsJson)
-}
+func (a *App) GetConfigsJson() string      { return a.core.GetConfigsJson() }
+func (a *App) GetSettingsJson() string     { return a.core.GetSettingsJson() }
+func (a *App) GetLogsJson() string         { return a.core.GetLogsJson() }
+func (a *App) GetStatusJson() string       { return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected()) }
+func (a *App) SaveConfig(link string) bool { return a.core.SaveConfig(link) }
+func (a *App) DeleteConfig(id int64) bool  { return a.core.DeleteConfig(id) }
+func (a *App) SaveSettings(j string) bool  { return a.core.SaveSettings(j) }
+func (a *App) ClearLogs() bool             { return a.core.ClearLogs() }
+func (a *App) UpdateCore() bool            { return a.core.UpdateCore() }
+func (a *App) Connect(id int64) bool       { return a.bridge.Connect(id) }
+func (a *App) Disconnect() bool            { return a.bridge.Disconnect() }
 
 func (a *App) CheckUpdate() string {
 	version, hasUpdate, err := a.core.CheckUpdateSync()
@@ -632,40 +541,70 @@ func (a *App) CheckUpdate() string {
 
 func (a *App) UpdateCoreAndWait() bool {
 	if a.core.IsConnected() {
-		a.core.AddLog("[UPDATE] Отключаемся перед обновлением...")
 		a.bridge.Disconnect()
 		time.Sleep(1 * time.Second)
 	}
-
-	remoteVersion := a.core.FetchLatestVersion()
-	if remoteVersion == "" {
-		a.core.AddLog("[UPDATE] Не удалось получить версию")
+	remote := a.core.FetchLatestVersion()
+	if remote == "" {
 		return false
 	}
-
-	a.core.PerformUpdate(remoteVersion)
-	a.core.AddLog("[UPDATE] Обновление завершено")
+	a.core.PerformUpdate(remote)
 	return true
 }
 
-func (a *App) Connect(configId int64) bool {
-	remoteVersion, hasUpdate, err := a.core.CheckUpdateSync()
-	if err == nil && hasUpdate {
-		a.core.AddLog(fmt.Sprintf("[UPDATE] Доступна версия %s. Обновитесь перед подключением.", remoteVersion))
-		return false
+func (a *App) CheckLaLuneUpdate() libs.LaLuneUpdateResult {
+	return a.core.CheckLaLuneUpdate()
+}
+
+func (a *App) OpenLaLuneReleasesURL() string {
+	return a.core.OpenLaLuneReleasesURL()
+}
+
+func (a *App) GetVKTokenState() libs.VkTokenState {
+	return a.core.GetVKTokenState()
+}
+
+func (a *App) LoginVK() bool {
+	ch := a.core.StartVKTokenFetcher()
+	go func() {
+		for st := range ch {
+			if st.Message != "" {
+				a.core.AddLog("[VK] " + st.Message)
+			}
+		}
+	}()
+	return true
+}
+
+func (a *App) DeleteVKToken() bool { return a.core.DeleteVKToken() }
+
+func (a *App) RunVkAutoApiCalls() string {
+	hashes, callIds, err := a.core.RunVkAutoApiCalls(func(s string) {
+		a.core.AddLog(s)
+	})
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
-
-	return a.bridge.Connect(configId)
+	return fmt.Sprintf(`{"hashes":%s,"callIds":%s}`,
+		jsonStringArrayWin(hashes), jsonStringArrayWin(callIds))
 }
 
-func (a *App) Disconnect() bool {
-	return a.bridge.Disconnect()
+func (a *App) PollAutoApiResult() string { return `{"pending":false}` }
+
+func (a *App) FinishVkCalls(callIds []string) bool {
+	a.core.FinishVkCalls(callIds)
+	return true
 }
 
-func (a *App) ClearLogs() bool {
-	return a.core.ClearLogs()
-}
-
-func (a *App) UpdateCore() bool {
-	return a.core.UpdateCore()
+func jsonStringArrayWin(items []string) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	q := make([]string, len(items))
+	for i, s := range items {
+		s = strings.ReplaceAll(s, `\`, `\\`)
+		s = strings.ReplaceAll(s, `"`, `\"`)
+		q[i] = `"` + s + `"`
+	}
+	return "[" + strings.Join(q, ",") + "]"
 }

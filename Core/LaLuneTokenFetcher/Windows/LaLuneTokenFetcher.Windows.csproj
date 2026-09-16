@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>LaLuneTokenFetcher.Windows</RootNamespace>
+    <AssemblyName>LaLuneTokenFetcher</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!--
+      High DPI настраивается через свойство проекта, а не через app.manifest —
+      это устраняет предупреждение WFAC010.
+    -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <!--
+      MSB3277 (WindowsBase 4.0 vs 5.0) — шумный конфликт, вызванный WPF-сборкой
+      внутри пакета WebView2. Для WinForms-сборки безвреден: WPF-часть не грузится.
+    -->
+    <NoWarn>$(NoWarn);MSB3277;WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Libs\LaLuneTokenFetcher.Core\LaLuneTokenFetcher.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,30 +1,22 @@
 /*
- * Frontend/Api/openwrt.js
- *
- * Мост Dart → HTTP API на роутере (go-бинарь OpenWRT-версии).
- * Пока заглушка: возвращает пустые данные. Когда появится HTTP-API —
- * перепишем на fetch('/cgi-bin/lalune/...').
+ * Frontend/Api/openwrt.js — заглушка. OpenWRT пока не использует Dart-фронтенд.
  */
 (function () {
     'use strict';
-
-    console.warn('[api/openwrt] OpenWRT bridge is a stub — no backend yet');
-
+    console.warn('[api/openwrt] OpenWRT bridge is a stub');
+    const EMPTY_TOKEN = '{"hasToken":false,"fetching":false,"message":"","progress":0}';
+    const EMPTY_UPDATE = '{"update":false,"version":""}';
     window.api = {
-        GetConfigsJson: () => '[]',
-        SaveConfig: () => false,
-        DeleteConfig: () => false,
-        GetSettingsJson: () => '{}',
-        SaveSettings: () => false,
-        GetLogsJson: () => '[]',
-        ClearLogs: () => false,
+        GetConfigsJson: () => '[]', SaveConfig: () => false, DeleteConfig: () => false,
+        GetSettingsJson: () => '{}', SaveSettings: () => false,
+        GetLogsJson: () => '[]', ClearLogs: () => false,
         GetStatusJson: () => '{"connected":false}',
-        Connect: () => false,
-        Disconnect: () => false,
-        CheckUpdate: () => '{"update":false,"version":""}',
-        UpdateCore: () => false,
-        UpdateCoreAndWait: () => false,
-        GetDeviceId: () => '',
-        RegenerateDeviceId: () => '',
+        Connect: () => false, Disconnect: () => false,
+        CheckCoreUpdate: () => EMPTY_UPDATE, UpdateCore: () => false, UpdateCoreAndWait: () => false,
+        CheckLaLuneUpdate: () => EMPTY_UPDATE, OpenLaLuneReleases: () => false,
+        GetVKTokenState: () => EMPTY_TOKEN, LoginVK: () => false, DeleteVKToken: () => false,
+        RunVkAutoApiCalls: () => '{"error":"not supported"}',
+        PollAutoApiResult: () => '{"pending":true}', FinishVkCalls: () => false,
+        GetDeviceId: () => '', RegenerateDeviceId: () => '',
     };
 })();
