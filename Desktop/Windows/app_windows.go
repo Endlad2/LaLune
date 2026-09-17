@@ -315,6 +315,69 @@ func getPhysicalGateway() string {
 	return ""
 }
 
+// ============ Ядро CSQTT: kill по имени процесса ============
+
+// CoreProcessNames — имена процессов ядра CSQTT на Windows.
+// Их может быть несколько вариантов в зависимости от сборки.
+var CoreProcessNames = []string{
+	"client-windows-x86_64.exe",
+	"client-windows-x86_64",
+	"client-windows-amd64.exe",
+	"csqtt-client.exe",
+}
+
+// KillCoreProcesses ищет процессы ядра по имени через tasklist и убивает
+// через taskkill. Возвращает количество убитых процессов.
+//
+// Нужен потому, что ядро на Windows запускается через ShellExecuteEx с
+// runas (UAC) — handle процесса не сохраняется в cmd.Process, и обычный
+// Process.Kill() не работает. Приходится искать по имени.
+func KillCoreProcesses(log func(string)) int {
+	killed := 0
+
+	for _, name := range CoreProcessNames {
+		// tasklist /FI "IMAGENAME eq <name>" /FO CSV /NH
+		// Ищем точное совпадение по имени файла.
+		out, err := exec.Command(
+			"tasklist",
+			"/FI", "IMAGENAME eq "+name,
+			"/FO", "CSV",
+			"/NH",
+		).Output()
+		if err != nil {
+			// tasklist может ругаться, если процессов нет — это норма.
+			continue
+		}
+
+		output := string(out)
+		if !strings.Contains(strings.ToLower(output), strings.ToLower(name)) {
+			continue
+		}
+
+		if log != nil {
+			log(fmt.Sprintf("[KILL] Найден процесс ядра: %s", name))
+		}
+
+		// taskkill /F /IM <name> /T — /T убивает дочерние процессы.
+		killCmd := exec.Command("taskkill", "/F", "/T", "/IM", name)
+		killOut, killErr := killCmd.CombinedOutput()
+		if killErr != nil {
+			if log != nil {
+				log(fmt.Sprintf("[KILL] taskkill %s: %v (%s)",
+					name, killErr, strings.TrimSpace(string(killOut))))
+			}
+			continue
+		}
+
+		killed++
+		if log != nil {
+			log(fmt.Sprintf("[KILL] Процесс убит: %s", name))
+		}
+	}
+
+	return killed
+}
+
 // ============ Runner ============
 
 type WindowsRunner struct {
@@ -482,7 +545,11 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func isAdmin() bool {
-	_, err := os.Open("\\\\.\\PHYSICALDRIVE0")
+	_, err := os.Open("\\\\.\\PHYSICALDRIVE1")
+	if err == nil {
+		return true
+	}
+	_, err = os.Open("\\\\.\\PHYSICALDRIVE0")
 	return err == nil
 }
 
@@ -527,10 +594,33 @@ func (a *App) SaveSettings(j string) bool  { return a.core.SaveSettings(j) }
 func (a *App) ClearLogs() bool             { return a.core.ClearLogs() }
 func (a *App) UpdateCore() bool            { return a.core.UpdateCore() }
 func (a *App) Connect(id int64) bool       { return a.bridge.Connect(id) }
-func (a *App) Disconnect() bool            { return a.bridge.Disconnect() }
+
+// Disconnect — останавливает туннель, TUN и убивает процесс ядра.
+// На Windows ядро запускается через UAC (ShellExecuteEx), поэтому
+// handle процесса недоступен — ищем по имени через tasklist/taskkill.
+func (a *App) Disconnect() bool {
+	a.core.AddLog("[INFO] Отключение...")
+
+	// 1) Сначала помечаем, что мы отключены — это остановит логгеры и watcher'ы.
+	a.core.SetConnected(false)
+
+	// 2) Убиваем процесс ядра по имени (до остановки TUN, чтобы
+	//    ядро не успело ничего дописать в лог).
+	killed := KillCoreProcesses(func(s string) {
+		a.core.AddLog(s)
+	})
+	if killed == 0 {
+		a.core.AddLog("[KILL] Процессы ядра не найдены (возможно, уже остановлены)")
+	}
+
+	// 3) Останавливаем TUN и мост, чистим маршруты.
+	result := a.bridge.Disconnect()
+
+	return result
+}
 
 // Глобальный конфиг (для вкладки Настройки).
-func (a *App) GetSelectedConfigJson() string   { return a.core.GetSelectedConfigJson() }
+func (a *App) GetSelectedConfigJson() string       { return a.core.GetSelectedConfigJson() }
 func (a *App) SetSelectedConfigJson(j string) bool { return a.core.SetSelectedConfigJson(j) }
 
 // Флаг «ядро скачивается».
@@ -546,7 +636,7 @@ func (a *App) CheckUpdate() string {
 
 func (a *App) UpdateCoreAndWait() bool {
 	if a.core.IsConnected() {
-		a.bridge.Disconnect()
+		a.Disconnect()
 		time.Sleep(1 * time.Second)
 	}
 	remote := a.core.FetchLatestVersion()

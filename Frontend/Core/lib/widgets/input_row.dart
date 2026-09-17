@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 
-/// Универсальное поле "label — значение" с прозрачным фоном и рамкой,
-/// как в основном стиле LaLune.
+/// Универсальное поле "label — значение" с прозрачным фоном и рамкой.
 class InputRow extends StatelessWidget {
   final String label;
   final TextEditingController controller;
   final TextInputType? keyboardType;
   final bool readOnly;
   final int labelWidth;
+  final ValueChanged<String>? onChanged;
 
   const InputRow({
     super.key,
@@ -16,6 +16,7 @@ class InputRow extends StatelessWidget {
     this.keyboardType,
     this.readOnly = false,
     this.labelWidth = 130,
+    this.onChanged,
   });
 
   @override
@@ -37,6 +38,7 @@ class InputRow extends StatelessWidget {
               keyboardType: keyboardType,
               readOnly: readOnly,
               style: const TextStyle(fontSize: 13.5),
+              onChanged: onChanged,
             ),
           ),
         ],

@@ -1,10 +1,13 @@
 /*
- * Frontend/Api/ios.js — заглушка. iOS пока не поддерживает VK-авторизацию
- * и Auto API, но функции обязаны существовать, чтобы Dart-код компилировался.
+ * Frontend/Api/ios.js — мост Dart → Swift (WKWebView).
+ *
+ * ВАЖНО: на iOS обновление ядра недоступно — ядро уже вкомпилировано.
+ * Все методы апдейта — заглушки.
  */
 (function () {
     'use strict';
-    console.warn('[api/ios] iOS bridge is a stub');
+
+    console.warn('[api/ios] iOS bridge (update disabled)');
 
     const EMPTY_TOKEN_STATE = '{"hasToken":false,"fetching":false,"message":"","progress":0}';
     const EMPTY_UPDATE = '{"update":false,"version":""}';
@@ -38,12 +41,14 @@
     let cachedSettings = '{}';
     let cachedLogs = '[]';
     let cachedStatus = '{"connected":false}';
+    let cachedSelectedConfig = '{}';
 
     function refreshAll() {
         send('getConfigs', null, (r) => { if (r) cachedConfigs = r; });
         send('getSettings', null, (r) => { if (r) cachedSettings = r; });
         send('getLogs', null, (r) => { if (r) cachedLogs = r; });
         send('getStatus', null, (r) => { if (r) cachedStatus = r; });
+        send('getSelectedConfigJson', null, (r) => { if (r) cachedSelectedConfig = r; });
     }
     setTimeout(refreshAll, 200);
     setInterval(refreshAll, 800);
@@ -53,6 +58,7 @@
         GetSettingsJson: () => cachedSettings,
         GetLogsJson: () => cachedLogs,
         GetStatusJson: () => cachedStatus,
+
         SaveConfig: (link) => { send('saveConfig', { link: String(link) }); setTimeout(refreshAll, 300); return true; },
         DeleteConfig: (id) => { send('deleteConfig', { id: Number(id) }); setTimeout(refreshAll, 300); return true; },
         SaveSettings: (json) => { send('saveSettings', { settings: String(json) }); setTimeout(refreshAll, 300); return true; },
@@ -60,25 +66,65 @@
         Connect: (id) => { send('connect', { configId: Number(id) }); setTimeout(refreshAll, 500); return true; },
         Disconnect: () => { send('disconnect'); setTimeout(refreshAll, 500); return true; },
 
-        // iOS пока не умеет обновление ядра — заглушки
+        // ---------- глобально выбранный конфиг ----------
+        SetSelectedConfigJson: (json) => {
+            send('setSelectedConfigJson', { json: String(json) });
+            try { cachedSelectedConfig = json; } catch (_) {}
+            return true;
+        },
+        GetSelectedConfigJson: () => cachedSelectedConfig,
+
+        // ---------- флаг «ядро скачивается» ----------
+        IsCoreDownloading: () => false,
+
+        // ---------- ядро: на iOS update НЕ поддерживается ----------
         CheckCoreUpdate: () => EMPTY_UPDATE,
         UpdateCore: () => false,
         UpdateCoreAndWait: () => false,
-        CheckLaLuneUpdate: () => EMPTY_UPDATE,
+
+        // ---------- LaLune ----------
+        CheckLaLuneUpdate: () => {
+            // iOS: заглушка — реальная проверка не реализована.
+            return EMPTY_UPDATE;
+        },
         OpenLaLuneReleases: () => {
-            try { window.open('https://github.com/Endlad2/LaLune/releases/latest', '_blank'); return true; }
-            catch (_) { return false; }
+            try {
+                window.open('https://github.com/Endlad2/LaLune/releases/latest', '_blank');
+                return true;
+            } catch (_) { return false; }
         },
 
-        // iOS: VK-авторизация и Auto API не реализованы
-        GetVKTokenState: () => EMPTY_TOKEN_STATE,
-        LoginVK: () => false,
-        DeleteVKToken: () => false,
+        // ---------- VK авторизация ----------
+        GetVKTokenState: () => {
+            let result = EMPTY_TOKEN_STATE;
+            send('getVKTokenState', null, (r) => { if (r) result = r; });
+            return result;
+        },
+        LoginVK: () => {
+            send('loginVK');
+            return true;
+        },
+        DeleteVKToken: () => {
+            send('deleteVKToken');
+            return true;
+        },
+        ValidateVKToken: () => {
+            let result = EMPTY_TOKEN_STATE;
+            send('validateVKToken', null, (r) => { if (r) result = r; });
+            return result;
+        },
+
+        // ---------- Auto API ----------
         RunVkAutoApiCalls: () => '{"error":"ios not supported"}',
         PollAutoApiResult: () => '{"pending":true}',
         FinishVkCalls: () => false,
 
-        GetDeviceId: () => { try { const s = JSON.parse(cachedSettings); return s.deviceId || ''; } catch (_) { return ''; } },
+        GetDeviceId: () => {
+            try {
+                const s = JSON.parse(cachedSettings);
+                return s.deviceId || '';
+            } catch (_) { return ''; }
+        },
         RegenerateDeviceId: () => '',
     };
 })();

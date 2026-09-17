@@ -17,7 +17,7 @@ import 'dart:js_interop';
 @JS('window.api.CheckLaLuneUpdate') external String _checkLaLuneUpdate();
 @JS('window.api.OpenLaLuneReleases') external bool _openLaLuneReleases();
 @JS('window.api.GetVKTokenState') external String _getVKTokenState();
-@JS('window.api.LoginVK') external bool _loginVK();
+@JS('window.api.VkLogin') external bool _vkLogin();
 @JS('window.api.DeleteVKToken') external bool _deleteVKToken();
 @JS('window.api.ValidateVKToken') external String _validateVKToken();
 @JS('window.api.RunVkAutoApiCalls') external String _runVkAutoApiCalls();
@@ -29,16 +29,19 @@ import 'dart:js_interop';
 @JS('window.api.GetSelectedConfigJson') external String _getSelectedConfigJson();
 @JS('window.api.IsCoreDownloading') external bool _isCoreDownloading();
 
-/// Глобальная переменная выбранного конфига.
-/// Заполняется во вкладке «Подключение», читается во вкладке «Настройки».
+const int kDefaultWorkers = 9;
+const int kMinWorkers = 1;
+const int kMaxWorkers = 127;
+const int kDefaultAutoApiWorkers = 9;
+const int kMinAutoApiWorkers = 9;
+const int kMaxAutoApiWorkers = 27;
+
 class SelectedConfig {
   static ConfigItem? _current;
-
   static ConfigItem? get current => _current;
 
   static void set(ConfigItem? cfg) {
     _current = cfg;
-    // Дублируем в JS-мост — на случай пересоздания Dart-страниц.
     try {
       if (cfg == null) {
         _setSelectedConfigJson('{}');
@@ -95,8 +98,9 @@ class Settings {
   final String peer;
   final String vkHashes;
   final String vkJsToken;
+  final int workers;
+  final int autoApiWorkers;
   final String password;
-  final int workersPerHash;
   final String obfs;
   final String fingerprint;
   final String clientIds;
@@ -114,8 +118,9 @@ class Settings {
     this.peer = '',
     this.vkHashes = '',
     this.vkJsToken = '',
+    this.workers = kDefaultWorkers,
+    this.autoApiWorkers = kDefaultAutoApiWorkers,
     this.password = '',
-    this.workersPerHash = 9,
     this.obfs = 'audio',
     this.fingerprint = 'chrome',
     this.clientIds = '8202606,6287487',
@@ -130,32 +135,44 @@ class Settings {
     this.validateVkHashes = false,
   });
 
-  factory Settings.fromJson(Map<String, dynamic> j) => Settings(
-    peer: (j['peer'] ?? '') as String,
-    vkHashes: (j['vkHashes'] ?? '') as String,
-    vkJsToken: (j['vkJsToken'] ?? '') as String,
-    password: (j['password'] ?? '') as String,
-    workersPerHash: ((j['workersPerHash'] ?? 9) as num).toInt(),
-    obfs: (j['obfs'] ?? 'audio') as String,
-    fingerprint: (j['fingerprint'] ?? 'chrome') as String,
-    clientIds: (j['clientIds'] ?? '8202606,6287487') as String,
-    deviceId: (j['deviceId'] ?? '') as String,
-    authMode: (j['authMode'] ?? 'manual') as String,
-    turnTransport: (j['turnTransport'] ?? 'udp') as String,
-    turnHost: (j['turnHost'] ?? '') as String,
-    turnPort: (j['turnPort'] ?? '') as String,
-    captchaMode: (j['captchaMode'] ?? 'auto') as String,
-    vkAuthMode: (j['vkAuthMode'] ?? 'vkcalls') as String,
-    allowHashRedistribution: (j['allowHashRedistribution'] ?? false) as bool,
-    validateVkHashes: (j['validateVkHashes'] ?? false) as bool,
-  );
+  factory Settings.fromJson(Map<String, dynamic> j) {
+    var w = ((j['workers'] ?? kDefaultWorkers) as num).toInt();
+    if (w < kMinWorkers) w = kMinWorkers;
+    if (w > kMaxWorkers) w = kMaxWorkers;
+
+    var aw = ((j['autoApiWorkers'] ?? kDefaultAutoApiWorkers) as num).toInt();
+    if (aw < kMinAutoApiWorkers) aw = kMinAutoApiWorkers;
+    if (aw > kMaxAutoApiWorkers) aw = kMaxAutoApiWorkers;
+
+    return Settings(
+      peer: (j['peer'] ?? '') as String,
+      vkHashes: (j['vkHashes'] ?? '') as String,
+      vkJsToken: (j['vkJsToken'] ?? '') as String,
+      workers: w,
+      autoApiWorkers: aw,
+      password: (j['password'] ?? '') as String,
+      obfs: (j['obfs'] ?? 'audio') as String,
+      fingerprint: (j['fingerprint'] ?? 'chrome') as String,
+      clientIds: (j['clientIds'] ?? '8202606,6287487') as String,
+      deviceId: (j['deviceId'] ?? '') as String,
+      authMode: (j['authMode'] ?? 'manual') as String,
+      turnTransport: (j['turnTransport'] ?? 'udp') as String,
+      turnHost: (j['turnHost'] ?? '') as String,
+      turnPort: (j['turnPort'] ?? '') as String,
+      captchaMode: (j['captchaMode'] ?? 'auto') as String,
+      vkAuthMode: (j['vkAuthMode'] ?? 'vkcalls') as String,
+      allowHashRedistribution: (j['allowHashRedistribution'] ?? false) as bool,
+      validateVkHashes: (j['validateVkHashes'] ?? false) as bool,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'peer': peer,
     'vkHashes': vkHashes,
     'vkJsToken': vkJsToken,
+    'workers': workers,
+    'autoApiWorkers': autoApiWorkers,
     'password': password,
-    'workersPerHash': workersPerHash,
     'obfs': obfs,
     'fingerprint': fingerprint,
     'clientIds': clientIds,
@@ -171,8 +188,9 @@ class Settings {
   };
 
   Settings copyWith({
-    String? peer, String? vkHashes, String? vkJsToken, String? password,
-    int? workersPerHash, String? obfs, String? fingerprint, String? clientIds,
+    String? peer, String? vkHashes, String? vkJsToken,
+    int? workers, int? autoApiWorkers,
+    String? password, String? obfs, String? fingerprint, String? clientIds,
     String? deviceId, String? authMode, String? turnTransport,
     String? turnHost, String? turnPort, String? captchaMode,
     String? vkAuthMode, bool? allowHashRedistribution, bool? validateVkHashes,
@@ -180,8 +198,9 @@ class Settings {
     peer: peer ?? this.peer,
     vkHashes: vkHashes ?? this.vkHashes,
     vkJsToken: vkJsToken ?? this.vkJsToken,
+    workers: workers ?? this.workers,
+    autoApiWorkers: autoApiWorkers ?? this.autoApiWorkers,
     password: password ?? this.password,
-    workersPerHash: workersPerHash ?? this.workersPerHash,
     obfs: obfs ?? this.obfs,
     fingerprint: fingerprint ?? this.fingerprint,
     clientIds: clientIds ?? this.clientIds,
@@ -325,11 +344,14 @@ class Api {
     try { return VkTokenState.fromJsonString(_getVKTokenState()); }
     catch (_) { return VkTokenState.empty; }
   }
-  static bool loginVK() { try { return _loginVK(); } catch (_) { return false; } }
+
+  /// VK login — открывает окно авторизации:
+  ///   Desktop: запускает LaLuneTokenFetcher.exe
+  ///   Android: открывает WebView с VK OAuth
+  static bool vkLogin() { try { return _vkLogin(); } catch (_) { return false; } }
+
   static bool deleteVKToken() { try { return _deleteVKToken(); } catch (_) { return false; } }
 
-  /// Проверяет файл token.json (Windows: %APPDATA%\.la-lune\token.json,
-  /// Linux: ~/.la-lune/token.json, Android: settings.json/SharedPreferences).
   static VkTokenState validateVKToken() {
     try { return VkTokenState.fromJsonString(_validateVKToken()); }
     catch (_) { return VkTokenState.empty; }
@@ -350,12 +372,10 @@ class Api {
   static String getDeviceId() { try { return _getDeviceId(); } catch (_) { return ''; } }
   static String regenerateDeviceId() { try { return _regenerateDeviceId(); } catch (_) { return ''; } }
 
-  /// Флаг «ядро скачивается» — UI показывает тост.
   static bool isCoreDownloading() {
     try { return _isCoreDownloading(); } catch (_) { return false; }
   }
 
-  /// Читает выбранный конфиг из JS-моста (когда Dart-страница пересоздалась).
   static ConfigItem? loadSelectedConfigFromJs() {
     try {
       final raw = _getSelectedConfigJson();

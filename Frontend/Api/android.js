@@ -1,6 +1,8 @@
 /*
  * Frontend/Api/android.js — мост Dart → Kotlin AndroidBridge.
- * Работает через https://appassets.androidplatform.net/assets/app.html
+ *
+ * VkLogin — открывает WebView с OAuth ВК через LaLuneTokenFetcherAndroid.
+ * Токен сохраняется в token.json (ключ Token) — единый формат с Desktop.
  */
 (function () {
     'use strict';
@@ -25,7 +27,6 @@
         Connect: (id) => { const l = lalune(); if (!l) return false; try { return l.connect(id); } catch (_) { return false; } },
         Disconnect: () => { const l = lalune(); if (!l) return false; try { return l.disconnect(); } catch (_) { return false; } },
 
-        // ---------- глобально выбранный конфиг ----------
         SetSelectedConfigJson: (json) => {
             const l = lalune();
             if (l && typeof l.setSelectedConfigJson === 'function') {
@@ -46,7 +47,6 @@
             return cachedSelectedConfig;
         },
 
-        // ---------- флаг «ядро скачивается» ----------
         IsCoreDownloading: () => {
             const l = lalune();
             if (l && typeof l.isCoreDownloading === 'function') {
@@ -55,16 +55,10 @@
             return false;
         },
 
-        CheckCoreUpdate: () => {
-            const l = lalune(); if (!l) return '{"update":false,"version":""}';
-            try {
-                if (typeof l.checkCoreUpdate === 'function') return l.checkCoreUpdate();
-                if (typeof l.checkUpdate === 'function') return l.checkUpdate();
-            } catch (_) {}
-            return '{"update":false,"version":""}';
-        },
-        UpdateCore: () => { const l = lalune(); if (!l) return false; try { return l.updateCore(); } catch (_) { return false; } },
-        UpdateCoreAndWait: () => { const l = lalune(); if (!l) return false; try { return l.updateCoreAndWait(); } catch (_) { return false; } },
+        // ---------- ядро: на Android update НЕ поддерживается ----------
+        CheckCoreUpdate: () => '{"update":false,"version":""}',
+        UpdateCore: () => false,
+        UpdateCoreAndWait: () => false,
 
         CheckLaLuneUpdate: () => {
             const l = lalune(); if (!l) return '{"update":false,"version":"0.5.0"}';
@@ -86,7 +80,7 @@
 
         // ---------- VK авторизация ----------
         GetVKTokenState: () => {
-            const l = lalune(); if (!l) return '{"hasToken":false,"fetching":false,"message":"","progress":0}';
+            const l = lalune(); if (!l) return cachedVKTokenState;
             try {
                 if (typeof l.getVKTokenState === 'function') {
                     const result = l.getVKTokenState();
@@ -96,13 +90,21 @@
             } catch (_) {}
             return cachedVKTokenState;
         },
-        LoginVK: () => {
-            const l = lalune(); if (!l) return false;
+
+        // VkLogin — открывает нативный WebView с OAuth ВК.
+        // После успеха Kotlin сохраняет токен в token.json и вызывает
+        // window._vkLoginCallback(true, token) через evaluateJavascript.
+        VkLogin: () => {
+            const l = lalune();
+            if (!l) return false;
             try {
-                if (typeof l.loginVK === 'function') return l.loginVK();
+                if (typeof l.vkLogin === 'function') {
+                    return l.vkLogin();
+                }
             } catch (_) {}
             return false;
         },
+
         DeleteVKToken: () => {
             const l = lalune(); if (!l) return false;
             try {
@@ -110,7 +112,7 @@
             } catch (_) {}
             return false;
         },
-        // Проверка token.json / settings.json на Android
+
         ValidateVKToken: () => {
             const l = lalune(); if (!l) return cachedVKTokenState;
             try {
@@ -126,7 +128,6 @@
             return cachedVKTokenState;
         },
 
-        // ---------- Auto API ----------
         RunVkAutoApiCalls: () => {
             const l = lalune(); if (!l) return '{"error":"not supported"}';
             try {
@@ -153,5 +154,11 @@
         RegenerateDeviceId: () => { const l = lalune(); if (!l) return ''; try { return l.regenerateDeviceId(); } catch (_) { return ''; } },
     };
 
-    console.log('[api/android] AndroidBridge ready (https origin)');
+    // Callback из Kotlin — вызывается после успешной авторизации.
+    window._vkLoginCallback = function (success, payload) {
+        console.log('[vk-login] callback success=' + success + ' payload=' + payload);
+        // Dart поллит ValidateVKToken — здесь только логируем.
+    };
+
+    console.log('[api/android] AndroidBridge ready (VkLogin → native WebView)');
 })();

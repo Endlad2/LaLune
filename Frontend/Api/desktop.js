@@ -1,6 +1,7 @@
 /*
  * Frontend/Api/desktop.js — мост Dart → Wails (Go).
- * Все методы с одинаковыми именами во всех Api/*.js.
+ *
+ * VkLogin — запускает LaLuneTokenFetcher.exe через Go-биндинг LoginVK.
  */
 (function () {
     'use strict';
@@ -73,8 +74,6 @@
             return true;
         },
 
-        // ---------- глобально выбранный конфиг ----------
-        // Dart при выборе во вкладке «Подключение» кладёт сюда весь ConfigItem.
         SetSelectedConfigJson: (json) => {
             const api = go();
             if (api && api.SetSelectedConfigJson) {
@@ -83,7 +82,6 @@
             try { cachedSelectedConfig = json; } catch (_) {}
             return true;
         },
-        // Настройки читают этот JSON.
         GetSelectedConfigJson: () => {
             const api = go();
             if (api && api.GetSelectedConfigJson) {
@@ -96,7 +94,6 @@
             return cachedSelectedConfig;
         },
 
-        // ---------- флаг «ядро скачивается» ----------
         IsCoreDownloading: () => {
             const api = go();
             if (api && api.IsCoreDownloading) {
@@ -107,7 +104,6 @@
             return cachedCoreDownloading;
         },
 
-        // ---------- обновление ядра ----------
         CheckCoreUpdate: () => {
             const api = go();
             if (api && api.CheckUpdate) {
@@ -130,7 +126,6 @@
             return true;
         },
 
-        // ---------- обновление LaLune ----------
         CheckLaLuneUpdate: () => {
             const api = go();
             if (api && api.CheckLaLuneUpdate) {
@@ -176,7 +171,10 @@
             }
             return cachedVKTokenState;
         },
-        LoginVK: () => {
+
+        // VkLogin — открывает LaLuneTokenFetcher.exe (Desktop).
+        // На Android это же имя открывает WebView.
+        VkLogin: () => {
             const api = go();
             if (api && api.LoginVK) {
                 api.LoginVK().then(() => {}).catch(() => {});
@@ -184,6 +182,7 @@
             }
             return false;
         },
+
         DeleteVKToken: () => {
             const api = go();
             if (api && api.DeleteVKToken) {
@@ -192,8 +191,6 @@
             }
             return false;
         },
-        // Проверяет файл token.json (%APPDATA%\.la-lune\token.json или ~/.la-lune/token.json)
-        // и возвращает актуальное состояние.
         ValidateVKToken: () => {
             const api = go();
             if (api && api.ValidateVKToken) {
@@ -206,7 +203,6 @@
             return cachedVKTokenState;
         },
 
-        // ---------- Auto API ----------
         RunVkAutoApiCalls: () => {
             const api = go();
             if (api && api.RunVkAutoApiCalls) {
@@ -241,7 +237,6 @@
             return false;
         },
 
-        // ---------- Device ID ----------
         GetDeviceId: () => {
             try {
                 const s = JSON.parse(cachedSettings);

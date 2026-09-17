@@ -7,7 +7,6 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -25,6 +24,10 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 class MainActivity : AppCompatActivity() {
 
@@ -38,6 +41,13 @@ class MainActivity : AppCompatActivity() {
 
         private const val ASSET_HOST = "appassets.androidplatform.net"
         private const val ASSET_URL = "https://$ASSET_HOST/assets/app.html"
+
+        private const val DEFAULT_WORKERS = 9
+        private const val MIN_WORKERS = 1
+        private const val MAX_WORKERS = 127
+        private const val DEFAULT_AUTO_API_WORKERS = 9
+        private const val MIN_AUTO_API_WORKERS = 9
+        private const val MAX_AUTO_API_WORKERS = 27
     }
 
     private lateinit var webView: WebView
@@ -55,8 +65,8 @@ class MainActivity : AppCompatActivity() {
     private var isConnected = false
     private var isCoreReady = false
 
-    // Глобально выбранный конфиг — общий для ConnectionPage и SettingsPage.
     private var selectedConfigJson: String = "{}"
+    private var vkLoginInProgress = false
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -123,13 +133,9 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(AndroidBridge(), "lalune")
     }
 
-    // ============ Онбординг ============
-
     private fun startOnboarding() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val done = prefs.getBoolean(PREF_ONBOARDING_DONE, false)
-        Log.d(TAG, "startOnboarding: done=$done, sdk=${Build.VERSION.SDK_INT}")
-
         if (done) return
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -233,8 +239,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ============ Вспомогательное ============
-
     private fun loadConfigs() {
         if (configsFile.exists()) {
             try {
@@ -254,41 +258,70 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, message)
     }
 
-    // ============ Проверка токена ВК ============
+    // ============================================================
+    //  VK token
+    // ============================================================
 
     /**
-     * Проверяет файл token.json и settings.json на наличие непустого токена.
-     * Возвращает JSON в формате VkTokenState.
+     * Пишет токен в token.json (ключ Token) — единый формат с Desktop.
+     * Читает его же ReadTokenFromFile() / VkToken fetcher.
      */
+    private fun saveTokenToFile(token: String) {
+        try {
+            val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(Date())
+
+            val j = JSONObject()
+            j.put("Token", token)
+            j.put("SavedAt", iso)
+
+            tokenFile.writeText(j.toString())
+            writeLog("[VK] Токен сохранён в token.json")
+        } catch (e: Exception) {
+            writeLog("[VK] Ошибка сохранения токена: ${e.message}")
+        }
+    }
+
     private fun computeVkTokenState(): String {
         var hasToken = false
 
-        // 1) settings.json — ключ vkJsToken
-        try {
-            if (settingsFile.exists()) {
-                val j = JSONObject(settingsFile.readText())
-                if (j.optString("vkJsToken", "").isNotBlank()) hasToken = true
-            }
-        } catch (_: Exception) {}
-
-        // 2) token.json — ключ Token (его пишет LaLuneTokenFetcher)
-        if (!hasToken && tokenFile.exists()) {
+        if (tokenFile.exists()) {
             try {
                 val j = JSONObject(tokenFile.readText())
                 if (j.optString("Token", "").isNotBlank()) hasToken = true
             } catch (_: Exception) {}
         }
 
+        if (!hasToken && settingsFile.exists()) {
+            try {
+                val j = JSONObject(settingsFile.readText())
+                if (j.optString("vkJsToken", "").isNotBlank()) hasToken = true
+            } catch (_: Exception) {}
+        }
+
         val o = JSONObject()
         o.put("hasToken", hasToken)
         o.put("fetcherOk", true)
-        o.put("fetching", false)
+        o.put("fetching", vkLoginInProgress)
         o.put("message", if (hasToken) "Токен ВК активен" else "")
         o.put("progress", if (hasToken) 100 else 0)
         return o.toString()
     }
 
-    // ============ JS Bridge ============
+    private fun notifyJsTokenReceived(success: Boolean, payload: String) {
+        val jsPayload = payload.replace("\\", "\\\\").replace("'", "\\'")
+        val js = "if(window._vkLoginCallback){window._vkLoginCallback($success,'$jsPayload');}"
+        runOnUiThread {
+            try {
+                webView.evaluateJavaScript(js, null)
+            } catch (_: Exception) {}
+        }
+    }
+
+    // ============================================================
+    //  JS Bridge
+    // ============================================================
 
     inner class AndroidBridge {
         @JavascriptInterface
@@ -306,7 +339,8 @@ class MainActivity : AppCompatActivity() {
                 JSONObject()
             }
 
-            if (!json.has("workersPerHash")) json.put("workersPerHash", 9)
+            if (!json.has("workers")) json.put("workers", DEFAULT_WORKERS)
+            if (!json.has("autoApiWorkers")) json.put("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
             if (!json.has("obfs")) json.put("obfs", "video")
             if (!json.has("fingerprint")) json.put("fingerprint", "firefox")
             if (!json.has("clientIds")) json.put("clientIds", "8202606,6287487")
@@ -367,8 +401,20 @@ class MainActivity : AppCompatActivity() {
         fun saveSettings(settingsJson: String): Boolean {
             return try {
                 val incoming = JSONObject(settingsJson)
+
+                var w = incoming.optInt("workers", DEFAULT_WORKERS)
+                if (w < MIN_WORKERS) w = MIN_WORKERS
+                if (w > MAX_WORKERS) w = MAX_WORKERS
+                incoming.put("workers", w)
+
+                var aw = incoming.optInt("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
+                if (aw < MIN_AUTO_API_WORKERS) aw = MIN_AUTO_API_WORKERS
+                if (aw > MAX_AUTO_API_WORKERS) aw = MAX_AUTO_API_WORKERS
+                incoming.put("autoApiWorkers", aw)
+
                 val currentDeviceId = DeviceId.getOrCreate(this@MainActivity)
                 incoming.put("deviceId", currentDeviceId)
+
                 settingsFile.writeText(incoming.toString())
                 true
             } catch (e: Exception) {
@@ -376,7 +422,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ---------- глобальный выбранный конфиг ----------
         @JavascriptInterface
         fun setSelectedConfigJson(json: String): Boolean {
             selectedConfigJson = json
@@ -386,21 +431,54 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun getSelectedConfigJson(): String = selectedConfigJson
 
-        // ---------- флаг «ядро скачивается» ----------
         @JavascriptInterface
         fun isCoreDownloading(): Boolean = false
 
-        // ---------- VK ----------
         @JavascriptInterface
         fun getVKTokenState(): String = computeVkTokenState()
 
         @JavascriptInterface
         fun validateVKToken(): String = computeVkTokenState()
 
+        /**
+         * VkLogin — открывает WebView с OAuth ВК через LaLuneTokenFetcherAndroid.
+         * После успеха сохраняет токен в token.json и вызывает JS-callback.
+         */
         @JavascriptInterface
-        fun loginVK(): Boolean {
-            // Android: токен обычно уже лежит в settings.json;
-            // если нет — считаем, что пользователь не авторизован.
+        fun vkLogin(): Boolean {
+            if (vkLoginInProgress) {
+                Log.d(TAG, "[VK] Login уже в процессе")
+                return false
+            }
+
+            runOnUiThread {
+                try {
+                    vkLoginInProgress = true
+                    writeLog("[VK] Открываю окно авторизации ВК...")
+
+                    LaLuneTokenFetcherAndroid.fetchToken(
+                        this@MainActivity,
+                        object : LaLuneTokenFetcherAndroid.Callback {
+                            override fun onSuccess(token: String) {
+                                vkLoginInProgress = false
+                                saveTokenToFile(token)
+                                writeLog("[VK] Токен получен успешно")
+                                notifyJsTokenReceived(true, token)
+                            }
+
+                            override fun onError(message: String) {
+                                vkLoginInProgress = false
+                                writeLog("[VK] Ошибка авторизации: $message")
+                                notifyJsTokenReceived(false, message)
+                            }
+                        }
+                    )
+                } catch (e: Exception) {
+                    vkLoginInProgress = false
+                    writeLog("[VK] Не удалось открыть WebView: ${e.message}")
+                    notifyJsTokenReceived(false, e.message ?: "unknown error")
+                }
+            }
             return true
         }
 
@@ -543,8 +621,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         scope.cancel()
     }
-
-    // ============ Парсер ссылок ============
 
     data class ParsedConfig(val peer: String, val password: String, val hashes: String)
 

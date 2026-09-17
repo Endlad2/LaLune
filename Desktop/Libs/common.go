@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 luminescq
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 package libs
 
 import (
@@ -27,6 +30,14 @@ const (
 	HTTP_TIMEOUT        = 30 * time.Second
 
 	LaLuneVersion = "0.5.0"
+
+	// Дефолты и границы для workers.
+	DefaultWorkers        = 9
+	MinWorkers            = 1
+	MaxWorkers            = 127
+	DefaultAutoApiWorkers = 9
+	MinAutoApiWorkers     = 9
+	MaxAutoApiWorkers     = 27
 )
 
 type Config struct {
@@ -42,11 +53,21 @@ type Config struct {
 type Settings struct {
 	Peer                    string `json:"peer"`
 	VkHashes                string `json:"vkHashes"`
-	VkJsToken               string `json:"vkJsToken"`
+	VkJsToken               string `json:"vkJsToken"` // legacy, не используется
 	TurnHost                string `json:"turnHost"`
 	TurnPort                string `json:"turnPort"`
 	TurnTransport           string `json:"turnTransport"`
-	WorkersPerHash          int    `json:"workersPerHash"`
+
+	// Workers — общее число воркеров ядра (идёт в -n напрямую).
+	// Диапазон: 1..127.
+	Workers                 int    `json:"workers"`
+
+	// AutoApiWorkers — сколько воркеров "влезает" в один звонок VK
+	// в режиме Авто API. Используется только для расчёта количества
+	// звонков: callsCount = ceil(Workers / AutoApiWorkers).
+	// Диапазон: 9..27, дефолт 9.
+	AutoApiWorkers          int    `json:"autoApiWorkers"`
+
 	Obfs                    string `json:"obfs"`
 	Fingerprint             string `json:"fingerprint"`
 	ClientIds               string `json:"clientIds"`
@@ -77,14 +98,12 @@ type AppCore struct {
 	updateCallback  func(string)
 	isDownloading   bool
 
-	// Глобально выбранный конфиг (для SettingsPage).
 	selectedConfig *Config
 	selMu          sync.RWMutex
 
-	// Флаг «ядро скачивается» — для показа тоста в UI.
-	coreDownloading    bool
-	coreDownloadingMu  sync.RWMutex
-	coreDownloadingCb  func(bool)
+	coreDownloading   bool
+	coreDownloadingMu sync.RWMutex
+	coreDownloadingCb func(bool)
 
 	activeCallIds []string
 	activeCallMux sync.Mutex
@@ -170,7 +189,8 @@ func (a *AppCore) LoadSettings() {
 	data, err := os.ReadFile(a.settingsFile)
 	if err != nil {
 		a.settings = Settings{
-			WorkersPerHash: 9,
+			Workers:        DefaultWorkers,
+			AutoApiWorkers: DefaultAutoApiWorkers,
 			Obfs:           "audio",
 			Fingerprint:    "chrome",
 			ClientIds:      "8202606,6287487",
@@ -189,6 +209,7 @@ func (a *AppCore) LoadSettings() {
 		return
 	}
 
+	// Нормализуем значения (миграция со старого settings.json).
 	if a.settings.DeviceId == "" {
 		a.settings.DeviceId = uuid.New().String()
 		a.SaveSettingsFile()
@@ -199,6 +220,29 @@ func (a *AppCore) LoadSettings() {
 	if a.settings.TurnTransport == "" {
 		a.settings.TurnTransport = "udp"
 	}
+
+	// Workers: clamp в [1, 127]. Если 0 (старый settings.json) — дефолт.
+	if a.settings.Workers <= 0 {
+		a.settings.Workers = DefaultWorkers
+	}
+	if a.settings.Workers < MinWorkers {
+		a.settings.Workers = MinWorkers
+	}
+	if a.settings.Workers > MaxWorkers {
+		a.settings.Workers = MaxWorkers
+	}
+
+	// AutoApiWorkers: clamp в [9, 27]. Если 0 — дефолт.
+	if a.settings.AutoApiWorkers <= 0 {
+		a.settings.AutoApiWorkers = DefaultAutoApiWorkers
+	}
+	if a.settings.AutoApiWorkers < MinAutoApiWorkers {
+		a.settings.AutoApiWorkers = MinAutoApiWorkers
+	}
+	if a.settings.AutoApiWorkers > MaxAutoApiWorkers {
+		a.settings.AutoApiWorkers = MaxAutoApiWorkers
+	}
+
 	a.AddLog("[SETTINGS] Настройки загружены")
 }
 
@@ -317,6 +361,22 @@ func (a *AppCore) SaveSettings(settingsJson string) bool {
 		newSettings.TurnTransport = "udp"
 	}
 
+	// Клэмпим workers.
+	if newSettings.Workers < MinWorkers {
+		newSettings.Workers = MinWorkers
+	}
+	if newSettings.Workers > MaxWorkers {
+		newSettings.Workers = MaxWorkers
+	}
+
+	// Клэмпим autoApiWorkers.
+	if newSettings.AutoApiWorkers < MinAutoApiWorkers {
+		newSettings.AutoApiWorkers = MinAutoApiWorkers
+	}
+	if newSettings.AutoApiWorkers > MaxAutoApiWorkers {
+		newSettings.AutoApiWorkers = MaxAutoApiWorkers
+	}
+
 	a.mu.Lock()
 	a.settings = newSettings
 	data, _ := json.MarshalIndent(a.settings, "", "  ")
@@ -340,15 +400,12 @@ func (a *AppCore) SetStatusCallback(cb func(bool))    { a.statusCallback = cb }
 func (a *AppCore) SetConfigsCallback(cb func(string)) { a.configsCallback = cb }
 func (a *AppCore) SetUpdateCallback(cb func(string))  { a.updateCallback = cb }
 
-// SetCoreDownloadingCallback — регистрирует колбэк, который дёргается,
-// когда ядро начинает/перестаёт скачиваться. UI показывает тост.
 func (a *AppCore) SetCoreDownloadingCallback(cb func(bool)) {
 	a.coreDownloadingMu.Lock()
 	a.coreDownloadingCb = cb
 	a.coreDownloadingMu.Unlock()
 }
 
-// NotifyCoreDownloading — вызывается из bridge.Connect при скачивании ядра.
 func (a *AppCore) NotifyCoreDownloading(downloading bool) {
 	a.coreDownloadingMu.Lock()
 	a.coreDownloading = downloading
@@ -359,7 +416,6 @@ func (a *AppCore) NotifyCoreDownloading(downloading bool) {
 	}
 }
 
-// IsCoreDownloading — JS-биндинг, чтобы фронт мог проверить статус.
 func (a *AppCore) IsCoreDownloading() bool {
 	a.coreDownloadingMu.RLock()
 	defer a.coreDownloadingMu.RUnlock()
@@ -368,21 +424,18 @@ func (a *AppCore) IsCoreDownloading() bool {
 
 // ============ Глобально выбранный конфиг ============
 
-// SetSelectedConfig — сохраняет конфиг в глобальной переменной.
 func (a *AppCore) SetSelectedConfig(config *Config) {
 	a.selMu.Lock()
 	a.selectedConfig = config
 	a.selMu.Unlock()
 }
 
-// GetSelectedConfig — возвращает глобально выбранный конфиг (или nil).
 func (a *AppCore) GetSelectedConfig() *Config {
 	a.selMu.RLock()
 	defer a.selMu.RUnlock()
 	return a.selectedConfig
 }
 
-// GetSelectedConfigJson — JS-биндинг: JSON выбранного конфига или "{}".
 func (a *AppCore) GetSelectedConfigJson() string {
 	c := a.GetSelectedConfig()
 	if c == nil {
@@ -392,8 +445,6 @@ func (a *AppCore) GetSelectedConfigJson() string {
 	return string(data)
 }
 
-// SetSelectedConfigJson — JS-биндинг: сохранить конфиг из JSON.
-// Dart при выборе во вкладке «Подключение» шлёт сюда весь объект.
 func (a *AppCore) SetSelectedConfigJson(jsonStr string) bool {
 	var c Config
 	if err := json.Unmarshal([]byte(jsonStr), &c); err != nil {
@@ -510,44 +561,4 @@ func (a *AppCore) GetConfigByID(id int64) *Config {
 		return nil
 	}
 	return &c
-}
-
-// ============ Проверка токена ВК ============
-
-// HasValidVKToken — проверяет файл token.json на наличие непустого токена.
-//   Windows: %APPDATA%\.la-lune\token.json
-//   Linux:   ~/.la-lune/token.json
-func (a *AppCore) HasValidVKToken() bool {
-	// Сначала смотрим в settings (там токен после SaveVKToken).
-	a.mu.Lock()
-	tokenFromSettings := strings.TrimSpace(a.settings.VkJsToken)
-	a.mu.Unlock()
-	if tokenFromSettings != "" {
-		return true
-	}
-
-	// Затем — в файле token.json (его пишет LaLuneTokenFetcher).
-	tokenFile := filepath.Join(a.appDir, "token.json")
-	data, err := os.ReadFile(tokenFile)
-	if err != nil {
-		return false
-	}
-	var j struct {
-		Token string `json:"Token"`
-	}
-	if err := json.Unmarshal(data, &j); err != nil {
-		return false
-	}
-	return strings.TrimSpace(j.Token) != ""
-}
-
-// GetVKTokenState — публичный JS-биндинг: возвращает JSON состояния токена.
-func (a *AppCore) GetVKTokenState() VkTokenState {
-	return VkTokenState{
-		HasToken:  a.HasValidVKToken(),
-		FetcherOK: a.IsFetcherInstalled(),
-		Fetching:  a.IsCoreDownloading(),
-		Message:   "",
-		Progress:  0,
-	}
 }

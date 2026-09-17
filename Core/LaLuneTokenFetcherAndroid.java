@@ -1,4 +1,4 @@
-package com.lalune.tokenfetcher;
+package com.lalune.app;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -23,15 +23,25 @@ import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * LaLuneTokenFetcherAndroid — открывает WebView с OAuth ВК и возвращает
+ * access_token через Callback.
+ *
+ * Использование из MainActivity:
+ *   LaLuneTokenFetcherAndroid.fetchToken(activity, new Callback() {
+ *       public void onSuccess(String token) { ... }
+ *       public void onError(String message) { ... }
+ *   });
+ *
+ * Параметры авторизации (client_id, scope, redirect_uri) — точные копии
+ * из Windows/Linux-версии и из Flutter-приложения FOCSQ.
+ */
 public final class LaLuneTokenFetcherAndroid {
 
     private static final String TAG = "LaLuneTokenFetcher";
 
-    // Параметры авторизации VK — точные копии из Windows/Linux-версии
-    // (и из Flutter-приложения FOCSQ: frontend/lib/service/vk/token.dart).
     private static final String CLIENT_ID = "7793118";
     private static final String SCOPE = "1073737727";
     private static final String REDIRECT_URI = "https://oauth.vk.ru/blank.html";
@@ -56,7 +66,7 @@ public final class LaLuneTokenFetcherAndroid {
     }
 
     // ---------------------------------------------------------------------
-    // Публичный API
+    //  Публичный API
     // ---------------------------------------------------------------------
 
     public interface Callback {
@@ -77,27 +87,7 @@ public final class LaLuneTokenFetcherAndroid {
     }
 
     /**
-     * Удобная обёртка на CompletableFuture. Должен вызываться из UI-потока.
-     */
-    @NonNull
-    public static CompletableFuture<String> fetchTokenFuture(@NonNull Activity activity) {
-        CompletableFuture<String> future = new CompletableFuture<>();
-        fetchToken(activity, new Callback() {
-            @Override public void onSuccess(@NonNull String token) {
-                future.complete(token);
-            }
-            @Override public void onError(@NonNull String message) {
-                future.completeExceptionally(new RuntimeException(message));
-            }
-        });
-        return future;
-    }
-
-    /**
      * Извлекает access_token из URL редиректа VK.
-     * Возвращает null, если URL не является редиректом VK на blank.html
-     * или в нём нет access_token. Полезно, если токен приходит не через
-     * WebView (например, из deeplink).
      */
     @Nullable
     public static String extractAccessToken(@Nullable String url) {
@@ -114,9 +104,6 @@ public final class LaLuneTokenFetcherAndroid {
         if (!hostOk) return null;
         if (!BLANK_PATH.equalsIgnoreCase(parsed.getPath())) return null;
 
-        // Фрагмент "#access_token=...&expires_in=0&user_id=..."
-        // В Android Uri.getQueryParameter() работает и с фрагментом,
-        // если передать его как строку запроса.
         String fragment = parsed.getFragment();
         if (fragment == null) return null;
 
@@ -125,7 +112,7 @@ public final class LaLuneTokenFetcherAndroid {
     }
 
     // ---------------------------------------------------------------------
-    // Внутренняя реализация
+    //  Внутренняя реализация
     // ---------------------------------------------------------------------
 
     private static final class Session {
@@ -190,14 +177,12 @@ public final class LaLuneTokenFetcherAndroid {
             settings.setUserAgentString(
                     settings.getUserAgentString().replace("; wv", ""));
 
-            // Куки нужны, чтобы VK видел сессию после первого входа.
             CookieManager.getInstance().setAcceptCookie(true);
             CookieManager.getInstance().setAcceptThirdPartyCookies(view, true);
 
             view.setWebViewClient(new WebViewClient() {
                 @Override
                 public boolean shouldOverrideUrlLoading(WebView wv, String url) {
-                    // Мгновенный перехват — как NavigationStarting в Windows.
                     tryCompleteFromUrl(url, "shouldOverrideUrlLoading");
                     return false;
                 }
@@ -303,7 +288,7 @@ public final class LaLuneTokenFetcherAndroid {
     }
 
     // ---------------------------------------------------------------------
-    // Утилиты
+    //  Утилиты
     // ---------------------------------------------------------------------
 
     @Nullable

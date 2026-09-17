@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../widgets/glass_card.dart';
+import '../widgets/toast.dart';
 
 class ConnectionPage extends StatefulWidget {
   /// Вызывается, когда конфиг добавлен/удалён — родитель должен
@@ -32,22 +33,18 @@ class _ConnectionPageState extends State<ConnectionPage> {
     setState(() {
       _configs = cfgs;
 
-      // Приоритет — глобально выбранный конфиг, если он ещё существует.
       final global = SelectedConfig.current;
       if (global != null && cfgs.any((c) => c.id == global.id)) {
         _selectedId = global.id;
       } else if (cfgs.isNotEmpty &&
           (_selectedId == null || !cfgs.any((c) => c.id == _selectedId))) {
         _selectedId = cfgs.first.id;
-        // Сразу зафиксируем в глобале, чтобы Настройки видели тот же конфиг.
         SelectedConfig.set(cfgs.first);
       }
 
       _connected = Api.isConnected();
     });
 
-    // Если конфиг был выбран ранее, но список только что загрузился —
-    // найдём объект и положим в глобал.
     if (_selectedId != null) {
       final match = cfgs.where((c) => c.id == _selectedId).toList();
       if (match.isNotEmpty) {
@@ -58,7 +55,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   void _selectConfig(ConfigItem cfg) {
     setState(() => _selectedId = cfg.id);
-    // Сохраняем весь объект в глобальную переменную.
     SelectedConfig.set(cfg);
   }
 
@@ -80,14 +76,16 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final downloading = Api.isCoreDownloading();
       if (downloading && !_wasDownloading) {
         _wasDownloading = true;
-        _toast(
+        // Тост в стиле остальных сообщений (жёлтый, снизу).
+        Toast.show(
+          context,
           'Подождите, скачивается ядро. VPN запустится через 10 сек',
-          long: true,
+          duration: const Duration(seconds: 10),
         );
       }
       if (!downloading && _wasDownloading) {
         _wasDownloading = false;
-        return false; // прекращаем поллинг
+        return false;
       }
       return downloading;
     });
@@ -102,28 +100,19 @@ class _ConnectionPageState extends State<ConnectionPage> {
         _toast('Выберите конфиг');
         return;
       }
-      // Перед подключением — убедимся, что глобал актуален.
       final cfg = _configs.where((c) => c.id == _selectedId).toList();
       if (cfg.isNotEmpty) SelectedConfig.set(cfg.first);
 
       final ok = Api.connect(_selectedId!);
       if (ok) {
         setState(() => _connected = true);
-        // Следим за флагом «ядро скачивается» — покажем тост, если нужно.
         _startCoreDownloadWatcher();
       }
     }
   }
 
-  void _toast(String msg, {bool long = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: long ? 12 : 2),
-        backgroundColor: Colors.black.withOpacity(0.85),
-      ),
-    );
+  void _toast(String msg) {
+    Toast.show(context, msg);
   }
 
   Future<void> _showAddDialog() async {
@@ -220,7 +209,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
                     final ok = await _confirmDelete();
                     if (ok == true) {
                       Api.deleteConfig(id);
-                      // Если удалили выбранный — сбросим глобал.
                       if (SelectedConfig.current?.id == id) {
                         SelectedConfig.clear();
                       }

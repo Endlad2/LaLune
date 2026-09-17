@@ -9,13 +9,12 @@ import java.net.URLEncoder
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import kotlin.math.ceil
 
 class CoreManager(private val context: Context) {
     private val appDir: File by lazy { File(context.filesDir, "la-lune") }
     private val coreDir: File by lazy { File(appDir, "core") }
 
-    // Логи ядра — единый файл, который читает и UI, и LaLuneVpnService.
-    // (Публичное поле val автоматически даёт геттер getLogsFile() — ручной не нужен.)
     val logsFile: File by lazy { File(appDir, "logs.log") }
 
     private val latestFile: File by lazy { File(appDir, "LATEST") }
@@ -26,6 +25,13 @@ class CoreManager(private val context: Context) {
     private val CORE_URL_TEMPLATE = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
     private val PROXY_URL = "http://31.77.148.203:8855/?url="
     private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    private val DEFAULT_WORKERS = 9
+    private val MIN_WORKERS = 1
+    private val MAX_WORKERS = 127
+    private val DEFAULT_AUTO_API_WORKERS = 9
+    private val MIN_AUTO_API_WORKERS = 9
+    private val MAX_AUTO_API_WORKERS = 27
 
     fun getCoreName(): String? {
         val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
@@ -203,7 +209,11 @@ class CoreManager(private val context: Context) {
             org.json.JSONObject()
         }
 
-        val workers = settings.optInt("workersPerHash", 9)
+        // Workers — общее число воркеров (напрямую в -n).
+        var workers = settings.optInt("workers", DEFAULT_WORKERS)
+        if (workers < MIN_WORKERS) workers = MIN_WORKERS
+        if (workers > MAX_WORKERS) workers = MAX_WORKERS
+
         val obfs = settings.optString("obfs", "video")
         val fingerprint = settings.optString("fingerprint", "firefox")
         val clientIds = settings.optString("clientIds", "8202606,6287487")
@@ -217,18 +227,12 @@ class CoreManager(private val context: Context) {
             writeLog("[DEVICE] deviceId отсутствовал, восстановлен: $deviceId")
         }
 
-        // total workers = workersPerHash * hashesCount (как на Desktop)
-        val hashesList = hashes.split(",").filter { it.trim().isNotEmpty() }
-        val hashesCount = if (hashesList.isEmpty()) 1 else minOf(hashesList.size, 6)
-        val workersPerHash = if (workers < 9) 9 else workers
-        val totalWorkers = workersPerHash * hashesCount
-
         val args = listOf(
             corePath,
             "-peer", peer,
             "-password", password,
             "-vk", hashes,
-            "-n", totalWorkers.toString(),
+            "-n", workers.toString(),
             "-listen", "127.0.0.1:52230",
             "-obfs", obfs,
             "-fingerprint", fingerprint,
@@ -239,7 +243,6 @@ class CoreManager(private val context: Context) {
         )
 
         try {
-            // Очищаем лог ядра перед новым запуском.
             logsFile.writeText("")
 
             val processBuilder = ProcessBuilder(args)
@@ -263,7 +266,6 @@ class CoreManager(private val context: Context) {
                         }
                     }
                 } catch (e: Exception) {
-                    // Процесс завершён
                 }
             }
 

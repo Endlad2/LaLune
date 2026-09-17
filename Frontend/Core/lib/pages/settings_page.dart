@@ -18,15 +18,15 @@ class _SettingsPageState extends State<SettingsPage> {
   ConfigItem? _selectedConfig;
   bool _loading = true;
   bool _busy = false;
+  bool _dirty = false;
 
   final _peerCtl = TextEditingController();
   final _vkHashesCtl = TextEditingController();
   final _passwordCtl = TextEditingController();
   final _workersCtl = TextEditingController();
+  final _autoApiWorkersCtl = TextEditingController();
   final _clientIdsCtl = TextEditingController();
   final _deviceIdCtl = TextEditingController();
-  final _turnHostCtl = TextEditingController();
-  final _turnPortCtl = TextEditingController();
 
   String _authMode = 'manual';
   VkTokenState _vkState = VkTokenState.empty;
@@ -47,18 +47,15 @@ class _SettingsPageState extends State<SettingsPage> {
     _vkHashesCtl.dispose();
     _passwordCtl.dispose();
     _workersCtl.dispose();
+    _autoApiWorkersCtl.dispose();
     _clientIdsCtl.dispose();
     _deviceIdCtl.dispose();
-    _turnHostCtl.dispose();
-    _turnPortCtl.dispose();
     super.dispose();
   }
 
   void _load() {
     final s = Api.getSettings();
 
-    // Глобальный конфиг — приоритетный источник. Если его нет в Dart,
-    // пробуем вытащить из JS-моста (переживает пересоздание страницы).
     var cfg = SelectedConfig.current;
     if (cfg == null) {
       cfg = Api.loadSelectedConfigFromJs();
@@ -68,8 +65,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
     _s = s;
 
-    // Peer/password/hashes берём из выбранного конфига, а не из settings,
-    // потому что Настройки теперь работают именно с глобальным конфигом.
     if (cfg != null) {
       _peerCtl.text = cfg.peer;
       _passwordCtl.text = cfg.password;
@@ -80,44 +75,28 @@ class _SettingsPageState extends State<SettingsPage> {
       _vkHashesCtl.text = s.vkHashes;
     }
 
-    _workersCtl.text = s.workersPerHash.toString();
+    _workersCtl.text = s.workers.toString();
+    _autoApiWorkersCtl.text = s.autoApiWorkers.toString();
     _clientIdsCtl.text = s.clientIds;
     _deviceIdCtl.text = s.deviceId;
-    _turnHostCtl.text = s.turnHost;
-    _turnPortCtl.text = s.turnPort;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
 
-    // Сразу проверяем токен — вдруг он уже лежит в token.json.
     _vkState = Api.validateVKToken();
-    setState(() => _loading = false);
+    setState(() {
+      _loading = false;
+      _dirty = false;
+    });
   }
 
-  /// Перезагрузка блока «Основные настройки» — вызывается при возврате
-  /// на вкладку, если страница не пересоздалась.
-  void _reloadBasics() {
-    final s = Api.getSettings();
-    var cfg = SelectedConfig.current ?? Api.loadSelectedConfigFromJs();
-    if (cfg != null) SelectedConfig.set(cfg);
-
-    setState(() {
-      _selectedConfig = cfg;
-      _s = s;
-      if (cfg != null) {
-        _peerCtl.text = cfg.peer;
-        _passwordCtl.text = cfg.password;
-        _vkHashesCtl.text = cfg.hashes;
-      } else {
-        _peerCtl.text = s.peer;
-        _passwordCtl.text = s.password;
-        _vkHashesCtl.text = s.vkHashes;
-      }
-      _workersCtl.text = s.workersPerHash.toString();
-      _clientIdsCtl.text = s.clientIds;
-      _deviceIdCtl.text = s.deviceId;
-      _turnHostCtl.text = s.turnHost;
-      _turnPortCtl.text = s.turnPort;
-      _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
-    });
+  void _markDirty() {
+    _dirty = true;
+    if (!mounted) return;
+    Toast.show(
+      context,
+      'Сохраните настройки!',
+      isError: true,
+      duration: const Duration(seconds: 2),
+    );
   }
 
   void _startVkPolling() {
@@ -136,25 +115,37 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _save() async {
     setState(() => _busy = true);
 
-    // Peer/password/hashes пишем в settings из контроллеров — но если
-    // есть глобальный конфиг, лучше синхронизировать его с настройками.
     final cfg = _selectedConfig;
+
+    var w = int.tryParse(_workersCtl.text) ?? kDefaultWorkers;
+    if (w < kMinWorkers) w = kMinWorkers;
+    if (w > kMaxWorkers) w = kMaxWorkers;
+
+    var aw = int.tryParse(_autoApiWorkersCtl.text) ?? kDefaultAutoApiWorkers;
+    if (aw < kMinAutoApiWorkers) aw = kMinAutoApiWorkers;
+    if (aw > kMaxAutoApiWorkers) aw = kMaxAutoApiWorkers;
+
+    _workersCtl.text = w.toString();
+    _autoApiWorkersCtl.text = aw.toString();
+
     final s = _s.copyWith(
       peer: cfg?.peer ?? _peerCtl.text.trim(),
       vkHashes: cfg?.hashes ?? _vkHashesCtl.text.trim(),
       password: cfg?.password ?? _passwordCtl.text,
-      vkJsToken: _s.vkJsToken,
-      workersPerHash: int.tryParse(_workersCtl.text) ?? 9,
+      workers: w,
+      autoApiWorkers: aw,
       clientIds: _clientIdsCtl.text.trim(),
       deviceId: _s.deviceId,
       authMode: _authMode,
-      turnHost: _turnHostCtl.text.trim(),
-      turnPort: _turnPortCtl.text.trim(),
     );
 
     final ok = Api.saveSettings(s);
     if (!mounted) return;
-    setState(() { _busy = false; _s = s; });
+    setState(() {
+      _busy = false;
+      _s = s;
+      _dirty = false;
+    });
 
     Toast.show(context,
         ok ? 'Настройки сохранены' : 'Ошибка сохранения настроек',
@@ -167,6 +158,7 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _deviceIdCtl.text = id;
         _s = _s.copyWith(deviceId: id);
+        _dirty = true;
       });
     }
   }
@@ -176,7 +168,6 @@ class _SettingsPageState extends State<SettingsPage> {
   // ============================================================
 
   void _setAuthMode(String mode) {
-    // Авто-режимы требуют валидного токена.
     if (mode == 'autoApi' || mode == 'autoVk') {
       final st = Api.validateVKToken();
       setState(() => _vkState = st);
@@ -186,12 +177,13 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
     setState(() => _authMode = mode);
+    _markDirty();
   }
 
   Future<void> _onLoginTap() async {
     if (_vkLoginInProgress) return;
 
-    // Кнопка «Войти» сначала проверяет token.json — вдруг токен уже есть.
+    // Сначала проверяем — вдруг токен уже есть.
     final st = Api.validateVKToken();
     setState(() => _vkState = st);
     if (st.hasToken) {
@@ -200,15 +192,19 @@ class _SettingsPageState extends State<SettingsPage> {
     }
 
     _vkLoginInProgress = true;
-    Toast.show(context, 'Запускаю LaLuneTokenFetcher...');
+    Toast.show(context, 'Открываю авторизацию ВК...');
 
-    final started = Api.loginVK();
+    // Api.vkLogin() → window.api.VkLogin().
+    //   Desktop: запускает LaLuneTokenFetcher.exe.
+    //   Android: открывает WebView с OAuth.
+    final started = Api.vkLogin();
     if (!started) {
       _vkLoginInProgress = false;
-      Toast.show(context, 'Не удалось запустить fetcher', isError: true);
+      Toast.show(context, 'Не удалось запустить авторизацию', isError: true);
       return;
     }
 
+    // Поллим состояние токена (и callback из Kotlin, и polling — оба работают).
     for (var i = 0; i < 600; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
@@ -230,55 +226,105 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildAuthBlock() {
     final hasToken = _vkState.hasToken;
+    final isAutoApi = _authMode == 'autoApi';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        GlassCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('РЕЖИМ АВТОРИЗАЦИИ',
+                style: TextStyle(fontSize: 10.5, letterSpacing: 0.7,
+                  fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
+              const SizedBox(height: 10),
+
+              _authOption('manual', 'Ручной', 'Ввести хеши вручную', enabled: true),
+              _authOption('autoApi', 'Авто API', 'Создавать звонки через VK API',
+                  enabled: hasToken),
+              _authOption('autoVk', 'Авто ВК', 'Ядро само авторизуется через VK',
+                  enabled: hasToken),
+
+              const SizedBox(height: 12),
+
+              if (!hasToken)
+                _buildLoginButton()
+              else
+                _buildTokenActiveBadge(),
+
+              if (_vkState.fetching) ...[
+                const SizedBox(height: 10),
+                LinearProgressIndicator(
+                  value: _vkState.progress / 100.0,
+                  backgroundColor: Colors.white.withOpacity(0.1),
+                  valueColor: const AlwaysStoppedAnimation(Color(0xFFF7E84E)),
+                  minHeight: 4,
+                ),
+                const SizedBox(height: 6),
+                Text(_vkState.message,
+                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
+              ],
+
+              if (_authMode == 'manual') ...[
+                const SizedBox(height: 14),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text('Хеши (через запятую или +)',
+                    style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65))),
+                ),
+                TextField(
+                  controller: _vkHashesCtl,
+                  minLines: 2, maxLines: 4,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: const InputDecoration(hintText: 'hash1,hash2,hash3'),
+                  onChanged: (_) => _markDirty(),
+                ),
+              ],
+            ],
+          ),
+        ),
+
+        if (isAutoApi) ...[
+          const SizedBox(height: 14),
+          _buildAutoApiBlock(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildAutoApiBlock() {
     return GlassCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('РЕЖИМ АВТОРИЗАЦИИ',
+          Text('АВТО API',
             style: TextStyle(fontSize: 10.5, letterSpacing: 0.7,
               fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
           const SizedBox(height: 10),
 
-          _authOption('manual', 'Ручной', 'Ввести хеши вручную', enabled: true),
-          _authOption('autoApi', 'Авто API', 'Создавать звонки через VK API',
-              enabled: hasToken),
-          _authOption('autoVk', 'Авто ВК', 'Ядро само авторизуется через VK',
-              enabled: hasToken),
-
-          const SizedBox(height: 12),
-
-          if (!hasToken)
-            _buildLoginButton()
-          else
-            _buildTokenActiveBadge(),
-
-          if (_vkState.fetching) ...[
-            const SizedBox(height: 10),
-            LinearProgressIndicator(
-              value: _vkState.progress / 100.0,
-              backgroundColor: Colors.white.withOpacity(0.1),
-              valueColor: const AlwaysStoppedAnimation(Color(0xFFF7E84E)),
-              minHeight: 4,
-            ),
-            const SizedBox(height: 6),
-            Text(_vkState.message,
-              style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
-          ],
-
-          if (_authMode == 'manual') ...[
-            const SizedBox(height: 14),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text('Хеши (через запятую или +)',
-                style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65))),
-            ),
-            TextField(
-              controller: _vkHashesCtl,
-              minLines: 2, maxLines: 4,
-              style: const TextStyle(fontSize: 13),
-              decoration: const InputDecoration(hintText: 'hash1,hash2,hash3'),
-            ),
-          ],
+          Row(
+            children: [
+              SizedBox(
+                width: 170,
+                child: Text('Воркеров на хеш',
+                  style: TextStyle(color: Colors.white.withOpacity(0.7))),
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _autoApiWorkersCtl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 13.5),
+                  decoration: const InputDecoration(
+                    hintText: '9',
+                    helperText: 'От 9 до 27',
+                    helperStyle: TextStyle(fontSize: 10.5),
+                  ),
+                  onChanged: (_) => _markDirty(),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -323,8 +369,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  /// После успешной авторизации: «Активно», некликабельно, без галочки,
-  /// но с крестиком для сброса токена (чтобы можно было выйти).
   Widget _buildTokenActiveBadge() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -435,11 +479,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Селектор конфига убран — источник истины теперь
-                    // глобальная переменная SelectedConfig, заполняемая
-                    // во вкладке «Подключение». Показываем только
-                    // информационную строку, чтобы пользователь понимал,
-                    // какой конфиг сейчас редактируется.
                     if (_selectedConfig != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 10),
@@ -475,8 +514,32 @@ class _SettingsPageState extends State<SettingsPage> {
 
                     InputRow(label: 'Peer', controller: _peerCtl, readOnly: true),
                     InputRow(label: 'Password', controller: _passwordCtl, readOnly: true),
-                    InputRow(label: 'Workers on hash', controller: _workersCtl,
-                      keyboardType: TextInputType.number),
+
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 130,
+                            child: Text('Workers',
+                              style: TextStyle(color: Colors.white.withOpacity(0.7))),
+                          ),
+                          Expanded(
+                            child: TextField(
+                              controller: _workersCtl,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 13.5),
+                              decoration: const InputDecoration(
+                                hintText: '9',
+                                helperText: 'От 1 до 127',
+                                helperStyle: TextStyle(fontSize: 10.5),
+                              ),
+                              onChanged: (_) => _markDirty(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -491,23 +554,40 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: Column(
                   children: [
                     _rowDropdown('Obfs', _s.obfs, const ['video', 'audio'],
-                      (v) => setState(() => _s = _s.copyWith(obfs: v))),
+                      (v) {
+                        setState(() => _s = _s.copyWith(obfs: v));
+                        _markDirty();
+                      }),
                     _rowDropdown('Fingerprint', _s.fingerprint,
                       const ['firefox', 'chrome', 'edge'],
-                      (v) => setState(() => _s = _s.copyWith(fingerprint: v))),
+                      (v) {
+                        setState(() => _s = _s.copyWith(fingerprint: v));
+                        _markDirty();
+                      }),
                     _rowDropdown('Captcha Mode', _s.captchaMode,
                       const ['auto', 'wv', 'rjs'],
-                      (v) => setState(() => _s = _s.copyWith(captchaMode: v))),
+                      (v) {
+                        setState(() => _s = _s.copyWith(captchaMode: v));
+                        _markDirty();
+                      }),
                     _rowDropdown('Turn Transport', _s.turnTransport,
                       const ['udp', 'tcp'],
-                      (v) => setState(() => _s = _s.copyWith(turnTransport: v))),
-                    InputRow(label: 'Turn Host', controller: _turnHostCtl),
-                    InputRow(label: 'Turn Port', controller: _turnPortCtl),
-                    InputRow(label: 'Client IDs', controller: _clientIdsCtl),
+                      (v) {
+                        setState(() => _s = _s.copyWith(turnTransport: v));
+                        _markDirty();
+                      }),
+                    InputRow(label: 'Client IDs', controller: _clientIdsCtl,
+                      onChanged: (_) => _markDirty()),
                     _toggleRow('Allow hash redistribution', _s.allowHashRedistribution,
-                      (v) => setState(() => _s = _s.copyWith(allowHashRedistribution: v))),
+                      (v) {
+                        setState(() => _s = _s.copyWith(allowHashRedistribution: v));
+                        _markDirty();
+                      }),
                     _toggleRow('Validate VK hashes', _s.validateVkHashes,
-                      (v) => setState(() => _s = _s.copyWith(validateVkHashes: v))),
+                      (v) {
+                        setState(() => _s = _s.copyWith(validateVkHashes: v));
+                        _markDirty();
+                      }),
                   ],
                 ),
               ),

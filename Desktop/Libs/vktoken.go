@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 luminescq
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// vktoken.go — установка/запуск LaLuneTokenFetcher, проверка состояния токена.
+// Токен читается/пишется через token.json (единственный источник).
+
 package libs
 
 import (
@@ -51,15 +57,13 @@ func (a *AppCore) vkFetcherExePath() string {
 	return filepath.Join(a.vkFetcherDir(), name)
 }
 
+// HasVKToken — есть ли непустой токен в token.json.
 func (a *AppCore) HasVKToken() bool {
-	token, err := a.ReadVKToken()
-	if err != nil {
-		return false
-	}
-	return token != ""
+	return a.ReadTokenFromFile() != ""
 }
 
-func (a *AppCore) ReadVKToken() (string, error) {
+// ReadVKTokenRaw — сырое чтение token.json (для диагностики).
+func (a *AppCore) ReadVKTokenRaw() (string, error) {
 	data, err := os.ReadFile(a.vkTokenFile())
 	if err != nil {
 		return "", err
@@ -71,12 +75,20 @@ func (a *AppCore) ReadVKToken() (string, error) {
 	return strings.TrimSpace(j.Token), nil
 }
 
+// IsFetcherInstalled — установлен ли LaLuneTokenFetcher.
 func (a *AppCore) IsFetcherInstalled() bool {
 	exe := a.vkFetcherExePath()
 	_, err := os.Stat(exe)
 	return err == nil
 }
 
+// HasValidVKToken — для UI: есть ли валидный токен.
+// Используется в ValidateVKToken и GetVKTokenState.
+func (a *AppCore) HasValidVKToken() bool {
+	return a.ReadTokenFromFile() != ""
+}
+
+// EnsureVKTokenFetcher — скачивает и устанавливает LaLuneTokenFetcher.
 func (a *AppCore) EnsureVKTokenFetcher() (bool, error) {
 	if a.IsFetcherInstalled() {
 		a.AddLog("[VK] Token fetcher уже установлен")
@@ -121,6 +133,7 @@ func (a *AppCore) EnsureVKTokenFetcher() (bool, error) {
 	return true, nil
 }
 
+// StartVKTokenFetcher — запускает fetcher и стримит состояние в канал.
 func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 	ch := make(chan VkTokenState, 16)
 
@@ -197,9 +210,8 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 
 		for time.Now().Before(deadline) {
 			if _, err := os.Stat(a.vkTokenFile()); err == nil {
-				token, err := a.ReadVKToken()
-				if err == nil && token != "" {
-					a.SaveVKToken(token)
+				token := a.ReadTokenFromFile()
+				if token != "" {
 					send(VkTokenState{
 						HasToken:  true,
 						FetcherOK: true,
@@ -234,34 +246,28 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 	return ch
 }
 
-func (a *AppCore) SaveVKToken(token string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	a.settings.VkJsToken = token
-	data, _ := json.MarshalIndent(a.settings, "", "  ")
-	_ = os.WriteFile(a.settingsFile, data, 0644)
-
-	a.AddLog("[VK] Токен сохранён в настройках")
-}
-
+// DeleteVKToken — удаляет token.json.
 func (a *AppCore) DeleteVKToken() bool {
 	_ = os.Remove(a.vkTokenFile())
-	a.mu.Lock()
-	a.settings.VkJsToken = ""
-	data, _ := json.MarshalIndent(a.settings, "", "  ")
-	_ = os.WriteFile(a.settingsFile, data, 0644)
-	a.mu.Unlock()
 	a.AddLog("[VK] Токен удалён")
 	return true
 }
 
-// ValidateVKToken — JS-биндинг. Проверяет наличие валидного токена
-// и возвращает состояние в формате VkTokenState.
-func (a *AppCore) ValidateVKToken() VkTokenState {
-	hasToken := a.HasValidVKToken()
+// GetVKTokenState — публичный JS-биндинг: JSON состояния токена.
+func (a *AppCore) GetVKTokenState() VkTokenState {
 	return VkTokenState{
-		HasToken:  hasToken,
+		HasToken:  a.HasVKToken(),
+		FetcherOK: a.IsFetcherInstalled(),
+		Fetching:  false,
+		Message:   "",
+		Progress:  0,
+	}
+}
+
+// ValidateVKToken — проверяет token.json и возвращает состояние.
+func (a *AppCore) ValidateVKToken() VkTokenState {
+	return VkTokenState{
+		HasToken:  a.HasVKToken(),
 		FetcherOK: a.IsFetcherInstalled(),
 		Fetching:  false,
 		Message:   "",

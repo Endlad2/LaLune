@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 luminescq
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 package libs
 
 import (
@@ -45,23 +48,22 @@ func (b *Bridge) Connect(configId int64) bool {
 		return false
 	}
 
-	// Запоминаем выбранный конфиг глобально — пригодится в SettingsPage.
 	b.Core.SetSelectedConfig(config)
 
 	settings := b.Core.GetSettings()
 
 	if settings.AuthMode == "autoApi" {
-		b.Core.AddLog("[AUTO API] Создаю звонки через VK API...")
+		b.Core.AddLog("[АВТО API] Создаю звонки через VK API...")
 		hashes, callIds, err := b.Core.RunVkAutoApiCalls(func(s string) {
 			b.Core.AddLog(s)
 		})
 		if err != nil {
-			b.Core.AddLog(fmt.Sprintf("[AUTO API] Ошибка: %v", err))
+			b.Core.AddLog(fmt.Sprintf("[АВТО API] Ошибка: %v", err))
 			return false
 		}
 		config.Hashes = strings.Join(hashes, ",")
 		b.activeCallIds = callIds
-		b.Core.AddLog(fmt.Sprintf("[AUTO API] Создано звонков: %d", len(callIds)))
+		b.Core.AddLog(fmt.Sprintf("[АВТО API] Создано звонков: %d", len(callIds)))
 	}
 
 	b.Core.AddLog(fmt.Sprintf("[INFO] Подключаюсь к: %s", config.Name))
@@ -82,7 +84,7 @@ func (b *Bridge) Disconnect() bool {
 	}
 
 	if len(b.activeCallIds) > 0 {
-		b.Core.AddLog(fmt.Sprintf("[AUTO API] Завершаю %d звонков...", len(b.activeCallIds)))
+		b.Core.AddLog(fmt.Sprintf("[АВТО API] Завершаю %d звонков...", len(b.activeCallIds)))
 		b.Core.FinishVkCalls(b.activeCallIds)
 		b.activeCallIds = nil
 	}
@@ -94,7 +96,6 @@ func (b *Bridge) Disconnect() bool {
 func (b *Bridge) connectWorker(config Config, settings Settings) {
 	if _, err := os.Stat(b.Core.GetCorePath()); os.IsNotExist(err) {
 		b.Core.AddLog("[API] Ядро не найдено, скачиваю...")
-		// Сообщаем UI, что ядро скачивается — тост «Подождите, скачивается ядро...»
 		b.Core.NotifyCoreDownloading(true)
 		defer b.Core.NotifyCoreDownloading(false)
 
@@ -110,14 +111,11 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 			return
 		}
 
-		// Небольшая пауза, чтобы ядро успело «осесть» и UI показал сообщение
-		// ровно те 10 секунд, о которых говорит тост.
 		b.Core.AddLog("[API] Ядро скачано, запускаю через ~10 сек...")
 		select {
 		case <-b.Core.ctx.Done():
 			return
 		case <-timeAfterSeconds(10):
-			// продолжаем
 		}
 	}
 
@@ -138,6 +136,14 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 }
 
 // buildCommand — CLI-флаги ядра CSQTT.
+//
+// Режимы:
+//   manual  → --vk <hashes> --vk-hash-mode manual --vk-auth-mode vkcalls
+//   autoApi → --vk <hashes из calls.start> --vk-hash-mode manual
+//   autoVk  → БЕЗ --vk; --vk-hash-mode auto_js --vk-auth-mode auto_js
+//             + --token "<Token из token.json>"
+//
+// -n = settings.Workers напрямую (без умножения на количество хешей).
 func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int) []string {
 	normalizedHashes := strings.ReplaceAll(config.Hashes, " ", ",")
 	normalizedHashes = strings.ReplaceAll(normalizedHashes, "\t", ",")
@@ -167,19 +173,24 @@ func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int)
 		authMode = "vkcalls"
 	}
 
-	switch settings.AuthMode {
-	case "autoVk":
+	isAutoVk := settings.AuthMode == "autoVk"
+	isAutoApi := settings.AuthMode == "autoApi"
+
+	if isAutoVk {
 		hashMode = "auto_js"
 		authMode = "auto_js"
-	case "autoApi":
+	} else if isAutoApi {
 		hashMode = "manual"
 	}
 
-	workersPerHash := settings.WorkersPerHash
-	if workersPerHash < 9 {
-		workersPerHash = 9
+	// -n = Workers напрямую.
+	workers := settings.Workers
+	if workers < MinWorkers {
+		workers = DefaultWorkers
 	}
-	totalWorkers := workersPerHash * hashesCount
+	if workers > MaxWorkers {
+		workers = MaxWorkers
+	}
 
 	captchaMode := settings.CaptchaMode
 	if captchaMode == "" {
@@ -195,11 +206,11 @@ func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int)
 
 		"--peer", config.Peer,
 		"--password", config.Password,
-		"--vk", hashesJoined,
+
 		"--vk-hash-mode", hashMode,
 		"--vk-auth-mode", authMode,
 		"--listen", fmt.Sprintf("127.0.0.1:%d", listenPort),
-		"-n", fmt.Sprintf("%d", totalWorkers),
+		"-n", fmt.Sprintf("%d", workers),
 
 		"--obfs", settings.Obfs,
 		"--fingerprint", settings.Fingerprint,
@@ -210,13 +221,17 @@ func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int)
 		"--device-id", settings.DeviceId,
 	}
 
-	// Токен передаём только в режиме auto_js.
-	if hashMode == "auto_js" {
-		token := b.Core.GetVKToken()
-		if token != "" {
-			cmd = append(cmd, "--token", token)
+	if !isAutoVk {
+		cmd = append(cmd, "--vk", hashesJoined)
+	}
+
+	if isAutoVk {
+		token := b.Core.ReadTokenFromFile()
+		if token == "" {
+			b.Core.AddLog("[АВТО ВК] ПРЕДУПРЕЖДЕНИЕ: token.json не найден или пуст — ядро упадёт")
 		} else {
-			b.Core.AddLog("[AUTO ВК] ПРЕДУПРЕЖДЕНИЕ: токен не задан, ядро упадёт")
+			cmd = append(cmd, "--token", token)
+			b.Core.AddLog("[АВТО ВК] Токен передан из token.json")
 		}
 	}
 

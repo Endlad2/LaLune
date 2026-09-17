@@ -4,7 +4,7 @@ prepare_android_core.py — копирует Java-классы из Core/ в And
 с заменой package на com.lalune.app.
 
 Что делает:
-  1. Читает все .java в Core/.
+  1. Читает все .java в Core/ (включая LaLuneTokenFetcherAndroid.java).
   2. Заменяет `package com.lalune.tokenfetcher;` на `package com.lalune.app;`.
   3. Копирует результат в
      Mobile/Android/app/src/main/java/com/lalune/app/
@@ -45,13 +45,19 @@ def package_to_dir(pkg: str) -> Path:
     return Path(*pkg.split("."))
 
 def rewrite_package(content: str, src_pkg: str, dst_pkg: str) -> str:
+    """
+    Заменяет package-декларацию.
+    Поддерживает два варианта:
+      - package com.lalune.tokenfetcher;   (дефолт)
+      - package com.lalune.app;            (если файл уже в целевом пакете)
+    """
     pattern = re.compile(
-        r"^(\s*package\s+)" + re.escape(src_pkg) + r"(\s*;)",
+        r"^(\s*package\s+)(?:com\.lalune\.tokenfetcher|com\.lalune\.app)(\s*;)",
         re.MULTILINE,
     )
     new_content, n = pattern.subn(r"\g<1>" + dst_pkg + r"\g<2>", content, count=1)
     if n == 0:
-        log(f"  [WARN] package {src_pkg} не найден, копирую без замены")
+        log(f"  [WARN] package-декларация не найдена, копирую без замены")
     return new_content
 
 def main() -> int:
