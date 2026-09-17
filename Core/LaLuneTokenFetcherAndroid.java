@@ -8,17 +8,23 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -29,14 +35,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * LaLuneTokenFetcherAndroid — открывает WebView с OAuth ВК и возвращает
  * access_token через Callback.
  *
- * Использование из MainActivity:
- *   LaLuneTokenFetcherAndroid.fetchToken(activity, new Callback() {
- *       public void onSuccess(String token) { ... }
- *       public void onError(String message) { ... }
- *   });
- *
- * Параметры авторизации (client_id, scope, redirect_uri) — точные копии
- * из Windows/Linux-версии и из Flutter-приложения FOCSQ.
+ * Диагностика: логирует каждый шаг — создание диалога, показ, размеры окна,
+ * загрузку URL, ошибки сети. Если WebView не появился — в логах будет видно,
+ * на каком шаге всё встало.
  */
 public final class LaLuneTokenFetcherAndroid {
 
@@ -58,8 +59,10 @@ public final class LaLuneTokenFetcherAndroid {
     private static final String[] BLANK_HOSTS = {"oauth.vk.ru", "oauth.vk.com"};
     private static final String BLANK_PATH = "/blank.html";
 
-    private static final long POLL_INTERVAL_MS = 3000L;
+    private static final long POLL_INTERVAL_MS = 1000L;
     private static final long TIMEOUT_MS = 5 * 60 * 1000L;
+    /** Если за это время не пришло ни onPageStarted, ни onPageFinished — считаем, что WebView не открылся. */
+    private static final long FIRST_LOAD_TIMEOUT_MS = 15_000L;
 
     private LaLuneTokenFetcherAndroid() {
         // утилитный класс
@@ -74,10 +77,6 @@ public final class LaLuneTokenFetcherAndroid {
         void onError(@NonNull String message);
     }
 
-    /**
-     * Открывает WebView с авторизацией VK и вызывает callback при получении
-     * токена или ошибке. Должен вызываться из UI-потока.
-     */
     public static void fetchToken(@NonNull Activity activity, @NonNull Callback callback) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             throw new IllegalStateException(
@@ -86,9 +85,6 @@ public final class LaLuneTokenFetcherAndroid {
         new Session(activity, callback).start();
     }
 
-    /**
-     * Извлекает access_token из URL редиректа VK.
-     */
     @Nullable
     public static String extractAccessToken(@Nullable String url) {
         if (url == null || url.isEmpty()) return null;
@@ -125,8 +121,11 @@ public final class LaLuneTokenFetcherAndroid {
 
         private Runnable pollRunnable;
         private Runnable timeoutRunnable;
+        private Runnable firstLoadTimeoutRunnable;
 
         private final AtomicBoolean finished = new AtomicBoolean(false);
+        private volatile boolean closingByUs = false;
+        private volatile boolean firstLoadReceived = false;
         private String lastLoggedUrl = "";
 
         Session(Activity activity, Callback callback) {
@@ -137,16 +136,53 @@ public final class LaLuneTokenFetcherAndroid {
         void start() {
             handler = new Handler(Looper.getMainLooper());
 
+            if (activity.isFinishing()) {
+                Log.e(TAG, "Activity is finishing — abort");
+                callback.onError("Activity is finishing");
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1
+                    && activity.isDestroyed()) {
+                Log.e(TAG, "Activity is destroyed — abort");
+                callback.onError("Activity is destroyed");
+                return;
+            }
+
+            Log.d(TAG, "start(): creating dialog");
+
             dialog = new Dialog(activity);
             dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
             Window window = dialog.getWindow();
             if (window != null) {
                 window.setBackgroundDrawable(new ColorDrawable(Color.WHITE));
+                // setLayout здесь не сработает на всех устройствах — сделаем
+                // это ПОСЛЕ show() через post().
             }
+
             dialog.setCancelable(true);
             dialog.setCanceledOnTouchOutside(false);
-            dialog.setOnCancelListener(d -> finishWithError("окно закрыто пользователем"));
 
+            // Игнорируем onCancel — обрабатываем явный back в onKeyListener.
+            dialog.setOnCancelListener(d ->
+                    Log.d(TAG, "onCancel (ignored)"));
+
+            dialog.setOnKeyListener((d, keyCode, event) -> {
+                if (keyCode == KeyEvent.KEYCODE_BACK
+                        && event.getAction() == KeyEvent.ACTION_UP) {
+                    if (!finished.get()) {
+                        Log.d(TAG, "Back pressed — user cancelled");
+                        finishWithError("окно закрыто пользователем");
+                    }
+                    return true;
+                }
+                return false;
+            });
+
+            dialog.setOnDismissListener(d ->
+                    Log.d(TAG, "onDismiss (closingByUs=" + closingByUs + ")"));
+
+            Log.d(TAG, "buildWebView()");
             webView = buildWebView(activity);
 
             FrameLayout container = new FrameLayout(activity);
@@ -156,12 +192,48 @@ public final class LaLuneTokenFetcherAndroid {
             container.addView(webView);
             dialog.setContentView(container);
 
-            dialog.show();
+            if (window != null) {
+                window.setSoftInputMode(
+                        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
 
+            try {
+                dialog.show();
+                Log.d(TAG, "dialog.show() OK, isShowing=" + dialog.isShowing());
+            } catch (Exception e) {
+                Log.e(TAG, "dialog.show() failed: " + e.getMessage(), e);
+                finishWithError("не удалось открыть окно: " + e.getMessage());
+                return;
+            }
+
+            // Применяем размеры ПОСЛЕ show().
+            if (window != null) {
+                window.setLayout(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT);
+            }
+
+            // Ещё раз — на случай, если активити была не foreground.
+            dialog.getWindow().getDecorView().post(() -> {
+                if (dialog != null && dialog.isShowing()) {
+                    Window w = dialog.getWindow();
+                    if (w != null) {
+                        w.setLayout(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT);
+                    }
+                    Log.d(TAG, "post(): sizes applied, decor=" +
+                            dialog.getWindow().getDecorView().getWidth() + "x" +
+                            dialog.getWindow().getDecorView().getHeight());
+                }
+            });
+
+            Log.d(TAG, "loadUrl: " + AUTH_URL);
             webView.loadUrl(AUTH_URL);
 
             schedulePolling();
             scheduleTimeout();
+            scheduleFirstLoadTimeout();
         }
 
         @SuppressLint("SetJavaScriptEnabled")
@@ -196,12 +268,30 @@ public final class LaLuneTokenFetcherAndroid {
 
                 @Override
                 public void onPageStarted(WebView wv, String url, Bitmap favicon) {
+                    firstLoadReceived = true;
+                    Log.d(TAG, "onPageStarted: " + url);
                     tryCompleteFromUrl(url, "onPageStarted");
                 }
 
                 @Override
                 public void onPageFinished(WebView wv, String url) {
+                    firstLoadReceived = true;
+                    Log.d(TAG, "onPageFinished: " + url);
                     tryCompleteFromUrl(url, "onPageFinished");
+                }
+
+                @Override
+                public void onReceivedError(WebView wv, WebResourceRequest request,
+                                            WebResourceError error) {
+                    Log.e(TAG, "onReceivedError: " + request.getUrl() + " -> " +
+                            error.getDescription());
+                }
+
+                @Override
+                public void onReceivedHttpError(WebView wv, WebResourceRequest request,
+                                                android.webkit.WebResourceResponse response) {
+                    Log.w(TAG, "onReceivedHttpError: " + request.getUrl() +
+                            " -> " + response.getStatusCode());
                 }
             });
 
@@ -229,6 +319,24 @@ public final class LaLuneTokenFetcherAndroid {
             handler.postDelayed(timeoutRunnable, TIMEOUT_MS);
         }
 
+        private void scheduleFirstLoadTimeout() {
+            firstLoadTimeoutRunnable = () -> {
+                if (finished.get()) return;
+                if (!firstLoadReceived) {
+                    Log.e(TAG, "WebView did not load anything in " +
+                            FIRST_LOAD_TIMEOUT_MS + "ms");
+                    // Показываем тост — юзер поймёт, что что-то не так.
+                    try {
+                        Toast.makeText(activity,
+                                "WebView не загрузился. Проверьте интернет.",
+                                Toast.LENGTH_LONG).show();
+                    } catch (Exception ignored) {}
+                    finishWithError("страница авторизации не загрузилась");
+                }
+            };
+            handler.postDelayed(firstLoadTimeoutRunnable, FIRST_LOAD_TIMEOUT_MS);
+        }
+
         private void logUrl(String url) {
             if (url == null || url.equals(lastLoggedUrl)) return;
             lastLoggedUrl = url;
@@ -248,12 +356,14 @@ public final class LaLuneTokenFetcherAndroid {
 
         private void finishWithToken(@NonNull String token) {
             if (!finished.compareAndSet(false, true)) return;
+            closingByUs = true;
             cleanup();
             handler.post(() -> callback.onSuccess(token));
         }
 
         private void finishWithError(@NonNull String message) {
             if (!finished.compareAndSet(false, true)) return;
+            closingByUs = true;
             cleanup();
             handler.post(() -> callback.onError(message));
         }
@@ -266,6 +376,10 @@ public final class LaLuneTokenFetcherAndroid {
             if (timeoutRunnable != null) {
                 handler.removeCallbacks(timeoutRunnable);
                 timeoutRunnable = null;
+            }
+            if (firstLoadTimeoutRunnable != null) {
+                handler.removeCallbacks(firstLoadTimeoutRunnable);
+                firstLoadTimeoutRunnable = null;
             }
             if (webView != null) {
                 try {
