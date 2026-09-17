@@ -13,11 +13,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.KeyEvent;
-import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -35,9 +35,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * LaLuneTokenFetcherAndroid — открывает WebView с OAuth ВК и возвращает
  * access_token через Callback.
  *
- * Диагностика: логирует каждый шаг — создание диалога, показ, размеры окна,
- * загрузку URL, ошибки сети. Если WebView не появился — в логах будет видно,
- * на каком шаге всё встало.
+ * Ключевая особенность: VK использует SPA-роутинг (history.pushState),
+ * поэтому onPageStarted/onPageFinished НЕ срабатывают при переходах.
+ * Решение — каждые 3 секунды выполнять JavaScript:
+ *   window.location.href
+ * и проверять его. Это работает для любых переходов, включая fragment-only.
+ *
+ * Дополнительно подключаем onPageCommitVisible и doUpdateVisitedHistory
+ * (API 23+) — они ловят большинство переходов мгновенно.
  */
 public final class LaLuneTokenFetcherAndroid {
 
@@ -59,9 +64,10 @@ public final class LaLuneTokenFetcherAndroid {
     private static final String[] BLANK_HOSTS = {"oauth.vk.ru", "oauth.vk.com"};
     private static final String BLANK_PATH = "/blank.html";
 
-    private static final long POLL_INTERVAL_MS = 1000L;
+    /** Интервал опроса location.href через JS. */
+    private static final long POLL_INTERVAL_MS = 3000L;
     private static final long TIMEOUT_MS = 5 * 60 * 1000L;
-    /** Если за это время не пришло ни onPageStarted, ни onPageFinished — считаем, что WebView не открылся. */
+    /** Если ничего не загрузилось за это время — WebView не открылся. */
     private static final long FIRST_LOAD_TIMEOUT_MS = 15_000L;
 
     private LaLuneTokenFetcherAndroid() {
@@ -156,16 +162,12 @@ public final class LaLuneTokenFetcherAndroid {
             Window window = dialog.getWindow();
             if (window != null) {
                 window.setBackgroundDrawable(new ColorDrawable(Color.WHITE));
-                // setLayout здесь не сработает на всех устройствах — сделаем
-                // это ПОСЛЕ show() через post().
             }
 
             dialog.setCancelable(true);
             dialog.setCanceledOnTouchOutside(false);
 
-            // Игнорируем onCancel — обрабатываем явный back в onKeyListener.
-            dialog.setOnCancelListener(d ->
-                    Log.d(TAG, "onCancel (ignored)"));
+            dialog.setOnCancelListener(d -> Log.d(TAG, "onCancel (ignored)"));
 
             dialog.setOnKeyListener((d, keyCode, event) -> {
                 if (keyCode == KeyEvent.KEYCODE_BACK
@@ -182,7 +184,6 @@ public final class LaLuneTokenFetcherAndroid {
             dialog.setOnDismissListener(d ->
                     Log.d(TAG, "onDismiss (closingByUs=" + closingByUs + ")"));
 
-            Log.d(TAG, "buildWebView()");
             webView = buildWebView(activity);
 
             FrameLayout container = new FrameLayout(activity);
@@ -206,14 +207,12 @@ public final class LaLuneTokenFetcherAndroid {
                 return;
             }
 
-            // Применяем размеры ПОСЛЕ show().
             if (window != null) {
                 window.setLayout(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT);
             }
 
-            // Ещё раз — на случай, если активити была не foreground.
             dialog.getWindow().getDecorView().post(() -> {
                 if (dialog != null && dialog.isShowing()) {
                     Window w = dialog.getWindow();
@@ -222,9 +221,6 @@ public final class LaLuneTokenFetcherAndroid {
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT);
                     }
-                    Log.d(TAG, "post(): sizes applied, decor=" +
-                            dialog.getWindow().getDecorView().getWidth() + "x" +
-                            dialog.getWindow().getDecorView().getHeight());
                 }
             });
 
@@ -281,6 +277,23 @@ public final class LaLuneTokenFetcherAndroid {
                 }
 
                 @Override
+                public void doUpdateVisitedHistory(WebView wv, String url, boolean isReload) {
+                    // API 23+: ловит pushState/replaceState-переходы.
+                    if (url != null && !url.equals(lastLoggedUrl)) {
+                        Log.d(TAG, "doUpdateVisitedHistory: " + url + " (reload=" + isReload + ")");
+                    }
+                    tryCompleteFromUrl(url, "doUpdateVisitedHistory");
+                }
+
+                @Override
+                public void onPageCommitVisible(WebView wv, String url) {
+                    // API 23+: страница стала видимой — можно считать, что загрузилась.
+                    firstLoadReceived = true;
+                    Log.d(TAG, "onPageCommitVisible: " + url);
+                    tryCompleteFromUrl(url, "onPageCommitVisible");
+                }
+
+                @Override
                 public void onReceivedError(WebView wv, WebResourceRequest request,
                                             WebResourceError error) {
                     Log.e(TAG, "onReceivedError: " + request.getUrl() + " -> " +
@@ -298,14 +311,39 @@ public final class LaLuneTokenFetcherAndroid {
             return view;
         }
 
+        /// Опрос текущего URL через JavaScript каждые POLL_INTERVAL_MS.
+        /// Это главный механизм: VK меняет URL через pushState, и никакие
+        /// нативные колбэки это не ловят.
         private void schedulePolling() {
             pollRunnable = new Runnable() {
                 @Override
                 public void run() {
                     if (finished.get()) return;
-                    String url = (webView != null) ? webView.getUrl() : null;
-                    logUrl(url);
-                    tryCompleteFromUrl(url, "poll");
+
+                    WebView wv = webView;
+                    if (wv == null) {
+                        handler.postDelayed(this, POLL_INTERVAL_MS);
+                        return;
+                    }
+
+                    try {
+                        wv.evaluateJavascript(
+                                "(function(){try{return window.location.href;}catch(e){return '';}})()",
+                                new ValueCallback<String>() {
+                                    @Override
+                                    public void onReceiveValue(String value) {
+                                        if (finished.get()) return;
+                                        String url = decodeJsString(value);
+                                        if (url != null && !url.isEmpty()) {
+                                            logUrl(url);
+                                            tryCompleteFromUrl(url, "js-poll");
+                                        }
+                                    }
+                                });
+                    } catch (Exception e) {
+                        Log.w(TAG, "evaluateJavascript failed: " + e.getMessage());
+                    }
+
                     if (!finished.get()) {
                         handler.postDelayed(this, POLL_INTERVAL_MS);
                     }
@@ -325,7 +363,6 @@ public final class LaLuneTokenFetcherAndroid {
                 if (!firstLoadReceived) {
                     Log.e(TAG, "WebView did not load anything in " +
                             FIRST_LOAD_TIMEOUT_MS + "ms");
-                    // Показываем тост — юзер поймёт, что что-то не так.
                     try {
                         Toast.makeText(activity,
                                 "WebView не загрузился. Проверьте интернет.",
@@ -421,5 +458,23 @@ public final class LaLuneTokenFetcherAndroid {
             return Uri.decode(v);
         }
         return null;
+    }
+
+    /// evaluateJavascript возвращает JSON-строку: "https://..." или null.
+    @Nullable
+    private static String decodeJsString(@Nullable String raw) {
+        if (raw == null || raw.isEmpty() || "null".equals(raw)) return null;
+        try {
+            if (raw.startsWith("\"") && raw.endsWith("\"") && raw.length() >= 2) {
+                String inner = raw.substring(1, raw.length() - 1);
+                // Разэкранируем \\ и \" — но URL почти никогда их не содержит,
+                // так что это просто на всякий случай.
+                inner = inner.replace("\\\"", "\"").replace("\\\\", "\\");
+                return inner;
+            }
+            return raw;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }
