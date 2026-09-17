@@ -33,16 +33,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * LaLuneTokenFetcherAndroid — открывает WebView с OAuth ВК и возвращает
- * access_token через Callback.
+ * вечный access_token через Callback.
  *
- * Ключевая особенность: VK использует SPA-роутинг (history.pushState),
- * поэтому onPageStarted/onPageFinished НЕ срабатывают при переходах.
- * Решение — каждые 3 секунды выполнять JavaScript:
- *   window.location.href
- * и проверять его. Это работает для любых переходов, включая fragment-only.
+ * ВАЖНО: используется ДЕСКТОПНЫЙ User-Agent (Chrome on Windows), иначе VK
+ * редиректит на id.vk.ru/auth и отдаёт silent_token с TTL 600 секунд.
+ * Нам нужен вечный access_token — он приходит только в старом flow
+ * (oauth.vk.ru/authorize → blank.html#access_token=...).
  *
- * Дополнительно подключаем onPageCommitVisible и doUpdateVisitedHistory
- * (API 23+) — они ловят большинство переходов мгновенно.
+ * silent_token НЕ обрабатываем: у него TTL = 600 сек, ядру он не подходит.
+ *
+ * Формат редиректа, который понимаем:
+ *   #access_token=vk1.a.xxx&expires_in=0&user_id=...
  */
 public final class LaLuneTokenFetcherAndroid {
 
@@ -61,13 +62,22 @@ public final class LaLuneTokenFetcherAndroid {
             "revoke=1&" +
             "v=5.199";
 
+    /**
+     * Десктопный UA — как у Chrome на Windows.
+     * Тот же самый используется в Desktop/Libs/update.go (USER_AGENT).
+     * Благодаря нему VK не редиректит на id.vk.ru/auth и отдаёт вечный
+     * access_token в fragment, а не silent_token с TTL 600 сек.
+     */
+    private static final String DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/120.0.0.0 Safari/537.36";
+
     private static final String[] BLANK_HOSTS = {"oauth.vk.ru", "oauth.vk.com"};
     private static final String BLANK_PATH = "/blank.html";
 
-    /** Интервал опроса location.href через JS. */
     private static final long POLL_INTERVAL_MS = 3000L;
     private static final long TIMEOUT_MS = 5 * 60 * 1000L;
-    /** Если ничего не загрузилось за это время — WebView не открылся. */
     private static final long FIRST_LOAD_TIMEOUT_MS = 15_000L;
 
     private LaLuneTokenFetcherAndroid() {
@@ -91,6 +101,16 @@ public final class LaLuneTokenFetcherAndroid {
         new Session(activity, callback).start();
     }
 
+    /**
+     * Извлекает вечный access_token из URL редиректа VK.
+     *
+     * Проверки:
+     *   1. Host — oauth.vk.ru или oauth.vk.com
+     *   2. Path — /blank.html
+     *   3. Fragment — access_token=...
+     *
+     * silent_token (payload=...) НЕ обрабатываем — он не вечный.
+     */
     @Nullable
     public static String extractAccessToken(@Nullable String url) {
         if (url == null || url.isEmpty()) return null;
@@ -107,10 +127,20 @@ public final class LaLuneTokenFetcherAndroid {
         if (!BLANK_PATH.equalsIgnoreCase(parsed.getPath())) return null;
 
         String fragment = parsed.getFragment();
-        if (fragment == null) return null;
+        if (fragment == null || fragment.isEmpty()) return null;
 
-        String token = extractQueryParam(fragment, "access_token");
-        return (token == null || token.isEmpty()) ? null : token;
+        String direct = extractQueryParam(fragment, "access_token");
+        if (direct != null && !direct.isEmpty()) {
+            Log.d(TAG, "extractAccessToken: access_token OK");
+            return direct;
+        }
+
+        // silent_token не поддерживаем — у него TTL 600 секунд.
+        if (extractQueryParam(fragment, "payload") != null) {
+            Log.w(TAG, "extractAccessToken: silent_token ignored (TTL 600s)");
+        }
+
+        return null;
     }
 
     // ---------------------------------------------------------------------
@@ -166,7 +196,6 @@ public final class LaLuneTokenFetcherAndroid {
 
             dialog.setCancelable(true);
             dialog.setCanceledOnTouchOutside(false);
-
             dialog.setOnCancelListener(d -> Log.d(TAG, "onCancel (ignored)"));
 
             dialog.setOnKeyListener((d, keyCode, event) -> {
@@ -242,8 +271,10 @@ public final class LaLuneTokenFetcherAndroid {
             settings.setDatabaseEnabled(true);
             settings.setLoadWithOverviewMode(true);
             settings.setUseWideViewPort(true);
-            settings.setUserAgentString(
-                    settings.getUserAgentString().replace("; wv", ""));
+
+            // ДЕСКТОПНЫЙ UA — критично: с мобильным VK включает VK ID
+            // silent_token flow и отдаёт одноразовый token с TTL 600 сек.
+            settings.setUserAgentString(DESKTOP_UA);
 
             CookieManager.getInstance().setAcceptCookie(true);
             CookieManager.getInstance().setAcceptThirdPartyCookies(view, true);
@@ -278,16 +309,11 @@ public final class LaLuneTokenFetcherAndroid {
 
                 @Override
                 public void doUpdateVisitedHistory(WebView wv, String url, boolean isReload) {
-                    // API 23+: ловит pushState/replaceState-переходы.
-                    if (url != null && !url.equals(lastLoggedUrl)) {
-                        Log.d(TAG, "doUpdateVisitedHistory: " + url + " (reload=" + isReload + ")");
-                    }
                     tryCompleteFromUrl(url, "doUpdateVisitedHistory");
                 }
 
                 @Override
                 public void onPageCommitVisible(WebView wv, String url) {
-                    // API 23+: страница стала видимой — можно считать, что загрузилась.
                     firstLoadReceived = true;
                     Log.d(TAG, "onPageCommitVisible: " + url);
                     tryCompleteFromUrl(url, "onPageCommitVisible");
@@ -311,9 +337,6 @@ public final class LaLuneTokenFetcherAndroid {
             return view;
         }
 
-        /// Опрос текущего URL через JavaScript каждые POLL_INTERVAL_MS.
-        /// Это главный механизм: VK меняет URL через pushState, и никакие
-        /// нативные колбэки это не ловят.
         private void schedulePolling() {
             pollRunnable = new Runnable() {
                 @Override
@@ -460,15 +483,12 @@ public final class LaLuneTokenFetcherAndroid {
         return null;
     }
 
-    /// evaluateJavascript возвращает JSON-строку: "https://..." или null.
     @Nullable
     private static String decodeJsString(@Nullable String raw) {
         if (raw == null || raw.isEmpty() || "null".equals(raw)) return null;
         try {
             if (raw.startsWith("\"") && raw.endsWith("\"") && raw.length() >= 2) {
                 String inner = raw.substring(1, raw.length() - 1);
-                // Разэкранируем \\ и \" — но URL почти никогда их не содержит,
-                // так что это просто на всякий случай.
                 inner = inner.replace("\\\"", "\"").replace("\\\\", "\\");
                 return inner;
             }
