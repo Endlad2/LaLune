@@ -35,9 +35,7 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
@@ -47,43 +45,39 @@ import java.util.regex.Pattern;
  * LaLuneTokenFetcherAndroid — открывает WebView с OAuth ВК и возвращает
  * вечный access_token через Callback.
  *
- * Флоу (порт логики CSQTT VkAuthWebViewManager + VkTokenScraper):
- *
- *   1. Открываем WebView на https://vk.ru/. Юзер логинится.
- *   2. Как только видим, что юзер залогинен (URL содержит /feed, /im, /messages
- *      или есть cookie remixsid), запускаем HTTP-скрапер.
- *   3. Скрапер собирает cookies со всех VK-доменов и делает GET на
- *      oauth.vk.com/authorize?...&response_type=token.
- *   4. Вручную обходим до 15 редиректов, вытаскивая access_token из фрагмента
- *      или из location.href = "..." в HTML.
- *   5. Возвращаем вечный access_token (expires_in=0) через Callback.
- *
- * silent_token (VK ID flow) НЕ обрабатываем — у него TTL 600 секунд.
+ * Флоу:
+ *   1. WebView грузит vk.com с ДЕСКТОПНЫМ UA — VK отдаёт классическую
+ *      HTML-форму логина, которая корректно работает в WebView.
+ *   2. Юзер входит. Как только видим cookie remixsid — запускаем
+ *      HTTP-скрапер.
+ *   3. Скрапер собирает cookies и делает GET на oauth.vk.com/authorize
+ *      с response_type=token, обходя до 15 редиректов.
+ *   4. Возвращаем вечный access_token.
  */
 public final class LaLuneTokenFetcherAndroid {
 
     private static final String TAG = "LaLuneTokenFetcher";
 
-    // --- OAuth-параметры VK (те же, что у CSQTT и у Desktop-версии) ---
     private static final String CLIENT_ID = "7793118";
     private static final String SCOPE = "1073737727";
     private static final String REDIRECT_URI = "https://oauth.vk.ru/blank.html";
 
-    /** URL, с которого стартует WebView (логин). */
-    private static final String VK_LOGIN_URL = "https://vk.ru/";
+    /** vk.com — десктопная страница логина. */
+    private static final String VK_LOGIN_URL = "https://vk.com/";
 
-    /** URL, с которого стартует HTTP-скрапер (как у CSQTT). */
+    /**
+     * Скрапер URL: display=page (десктопная форма, надёжнее mobile).
+     */
     private static final String SCRAPER_AUTH_URL =
             "https://oauth.vk.com/authorize?" +
             "client_id=" + CLIENT_ID + "&" +
-            "display=mobile&" +
+            "display=page&" +
             "redirect_uri=" + Uri.encode(REDIRECT_URI) + "&" +
             "response_type=token&" +
             "scope=" + SCOPE + "&" +
             "v=5.199&" +
             "revoke=1";
 
-    /** Домены, с которых собираем cookies перед скрапингом. */
     private static final String[] COOKIE_DOMAINS = {
             "https://vk.com/",
             "https://vk.ru/",
@@ -100,17 +94,18 @@ public final class LaLuneTokenFetcherAndroid {
     private static final long TIMEOUT_MS = 5 * 60 * 1000L;
     private static final long FIRST_LOAD_TIMEOUT_MS = 15_000L;
 
-    /** Как у CSQTT — мобильный UA. */
-    private static final String MOBILE_UA =
-            "Mozilla/5.0 (Linux; Android 13; Mobile) " +
+    /**
+     * ДЕСКТОПНЫЙ User-Agent — тот же, что в Desktop/Libs/update.go.
+     * Критично: VK на десктопный UA отдаёт классическую форму логина,
+     * которая корректно работает в WebView. Мобильный UA даёт SPA,
+     * в которой кнопка «Войти» не срабатывает.
+     */
+    private static final String DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/120.0.0.0 Mobile Safari/537.36";
+            "Chrome/120.0.0.0 Safari/537.36";
 
     private LaLuneTokenFetcherAndroid() {}
-
-    // ---------------------------------------------------------------------
-    //  Публичный API
-    // ---------------------------------------------------------------------
 
     public interface Callback {
         void onSuccess(@NonNull String token);
@@ -125,10 +120,6 @@ public final class LaLuneTokenFetcherAndroid {
         new Session(activity, callback).start();
     }
 
-    // ---------------------------------------------------------------------
-    //  Session
-    // ---------------------------------------------------------------------
-
     private static final class Session {
         private final Activity activity;
         private final Callback callback;
@@ -140,12 +131,14 @@ public final class LaLuneTokenFetcherAndroid {
         private Runnable pollRunnable;
         private Runnable timeoutRunnable;
         private Runnable firstLoadTimeoutRunnable;
+        private Runnable injectFormHelperRunnable;
 
         private final AtomicBoolean finished = new AtomicBoolean(false);
         private volatile boolean closingByUs = false;
         private volatile boolean firstLoadReceived = false;
         private volatile boolean scrapeStarted = false;
         private volatile boolean nonPermanentRetried = false;
+        private volatile boolean formHelperInjected = false;
         private String lastLoggedUrl = "";
 
         Session(Activity activity, Callback callback) {
@@ -217,7 +210,7 @@ public final class LaLuneTokenFetcherAndroid {
                         ViewGroup.LayoutParams.MATCH_PARENT);
             }
 
-            Log.d(TAG, "loadUrl: " + VK_LOGIN_URL);
+            Log.d(TAG, "loadUrl: " + VK_LOGIN_URL + " (desktop UA)");
             webView.loadUrl(VK_LOGIN_URL);
 
             schedulePolling();
@@ -228,6 +221,7 @@ public final class LaLuneTokenFetcherAndroid {
         @SuppressLint("SetJavaScriptEnabled")
         private WebView buildWebView(Context context) {
             WebView view = new WebView(context);
+            view.setBackgroundColor(Color.WHITE);
 
             WebSettings settings = view.getSettings();
             settings.setJavaScriptEnabled(true);
@@ -235,7 +229,11 @@ public final class LaLuneTokenFetcherAndroid {
             settings.setDatabaseEnabled(true);
             settings.setLoadWithOverviewMode(true);
             settings.setUseWideViewPort(true);
-            settings.setUserAgentString(MOBILE_UA);
+            settings.setJavaScriptCanOpenWindowsAutomatically(true);
+            settings.setSupportMultipleWindows(false);
+
+            // ДЕСКТОПНЫЙ UA — VK отдаёт классическую HTML-форму логина.
+            settings.setUserAgentString(DESKTOP_UA);
 
             CookieManager.getInstance().setAcceptCookie(true);
             CookieManager.getInstance().setAcceptThirdPartyCookies(view, true);
@@ -245,6 +243,8 @@ public final class LaLuneTokenFetcherAndroid {
                 public void onPageStarted(WebView wv, String url, Bitmap favicon) {
                     firstLoadReceived = true;
                     Log.d(TAG, "onPageStarted: " + url);
+                    // Сбрасываем флаг инжекта — новая страница, нужен новый инжект.
+                    formHelperInjected = false;
                 }
 
                 @Override
@@ -252,6 +252,7 @@ public final class LaLuneTokenFetcherAndroid {
                     firstLoadReceived = true;
                     Log.d(TAG, "onPageFinished: " + url);
                     logUrl(url);
+                    scheduleFormHelperInjection(wv);
                     maybeStartScraper(url);
                 }
 
@@ -285,30 +286,56 @@ public final class LaLuneTokenFetcherAndroid {
             return view;
         }
 
+        /**
+         * На некоторых страницах VK форма логина подписана на JS-события,
+         * которые в WebView могут не сработать (из-за отсутствия каких-то
+         * API или из-за strict CSP). Инжектим JS, который:
+         *   - принудительно отправляет form.submit() при клике на «Войти»
+         *   - если кнопка — <button>, а не <input type=submit>, кликает
+         *     напрямую по форме
+         *   - снимает возможные блокировки на submit
+         */
+        private void scheduleFormHelperInjection(WebView wv) {
+            if (formHelperInjected) return;
+            formHelperInjected = true;
+            if (injectFormHelperRunnable != null) {
+                handler.removeCallbacks(injectFormHelperRunnable);
+            }
+            injectFormHelperRunnable = () -> {
+                if (finished.get() || wv != webView) return;
+                wv.evaluateJavascript(FORM_HELPER_JS, value ->
+                        Log.d(TAG, "Form helper injected: " + value));
+            };
+            // Небольшая задержка, чтобы страница успела подписаться на свои хендлеры.
+            handler.postDelayed(injectFormHelperRunnable, 1500);
+        }
+
         /** Проверяет, залогинен ли юзер, и запускает скрапер. */
         private void maybeStartScraper(@Nullable String url) {
             if (finished.get() || scrapeStarted) return;
             if (url == null) return;
 
-            boolean loggedIn = isVkLoggedInByCookies()
+            boolean cookiesOk = isVkLoggedInByCookies();
+
+            boolean definitelyLoggedIn = cookiesOk
                     || url.contains("/feed")
                     || url.contains("/im")
                     || url.contains("/messages")
                     || url.contains("/al_feed")
-                    || (url.startsWith("https://vk.ru/") && url.length() < 40)
-                    || (url.startsWith("https://vk.com/") && url.length() < 40);
+                    || url.contains("/friends")
+                    || url.contains("/id");
 
-            if (!loggedIn) return;
+            if (!definitelyLoggedIn) return;
+            if (url.contains("/login")) return;
 
             scrapeStarted = true;
-            Log.i(TAG, "User is logged in — starting HTTP scraper");
+            Log.i(TAG, "User is logged in — starting HTTP scraper (url=" + url + ")");
 
-            // Собираем cookies и запускаем скрапер в фоне.
             final String cookies = collectCookies();
             Log.d(TAG, "Cookies collected, length=" + cookies.length());
 
             new Thread(() -> {
-                ScrapeResult result = scrapeAccessToken(cookies, MOBILE_UA);
+                ScrapeResult result = scrapeAccessToken(cookies, DESKTOP_UA);
                 handler.post(() -> {
                     if (finished.get()) return;
 
@@ -321,7 +348,6 @@ public final class LaLuneTokenFetcherAndroid {
                             scrapeStarted = false;
                             Log.w(TAG, "Non-permanent token (expires_in=" +
                                     result.expiresIn + "), retrying scraper once");
-                            // Дадим WebView загрузиться заново и попробуем ещё раз.
                             maybeStartScraper(url);
                         } else {
                             finishWithError(
@@ -329,8 +355,12 @@ public final class LaLuneTokenFetcherAndroid {
                         }
                     } else {
                         Log.e(TAG, "Scraper failed: " + result.error);
-                        // Не падаем сразу — дадим ещё шанс, когда URL обновится.
                         scrapeStarted = false;
+                        handler.postDelayed(() -> {
+                            if (!finished.get() && webView != null) {
+                                maybeStartScraper(webView.getUrl());
+                            }
+                        }, 3000);
                     }
                 });
             }, "vk-token-scraper").start();
@@ -363,7 +393,7 @@ public final class LaLuneTokenFetcherAndroid {
         }
 
         // -----------------------------------------------------------------
-        //  HTTP-скрапер (порт VkTokenScraper.kt)
+        //  HTTP-скрапер
         // -----------------------------------------------------------------
 
         private static final class ScrapeResult {
@@ -397,7 +427,6 @@ public final class LaLuneTokenFetcherAndroid {
 
                     int code = conn.getResponseCode();
 
-                    // --- Редирект ---
                     if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
                         String next = conn.getHeaderField("Location");
                         if (next == null || next.isEmpty()) {
@@ -410,7 +439,6 @@ public final class LaLuneTokenFetcherAndroid {
                         continue;
                     }
 
-                    // --- 200 OK: парсим HTML ---
                     if (code == 200) {
                         String html = readStream(conn.getInputStream());
 
@@ -585,6 +613,10 @@ public final class LaLuneTokenFetcherAndroid {
                 handler.removeCallbacks(firstLoadTimeoutRunnable);
                 firstLoadTimeoutRunnable = null;
             }
+            if (injectFormHelperRunnable != null) {
+                handler.removeCallbacks(injectFormHelperRunnable);
+                injectFormHelperRunnable = null;
+            }
             if (webView != null) {
                 try {
                     webView.stopLoading();
@@ -602,4 +634,61 @@ public final class LaLuneTokenFetcherAndroid {
             }
         }
     }
+
+    /**
+     * JS-хелпер: делает форму логина VK работоспособной в WebView.
+     *
+     *   - Перехватывает клик по кнопке «Войти» и вызывает form.submit()
+     *     напрямую, минуя возможные JS-обработчики VK, которые могут
+     *     падать в WebView.
+     *   - Работает и с <input type="submit">, и с <button type="submit">,
+     *     и с кнопкой без явного form-родителя (находит ближайшую form).
+     */
+    private static final String FORM_HELPER_JS =
+            "(function() {" +
+            "  if (window.__lalune_form_helper) return 'already';" +
+            "  window.__lalune_form_helper = true;" +
+            "  function submitForm(form) {" +
+            "    try {" +
+            "      var btn = form.querySelector('button[type=submit], input[type=submit]');" +
+            "      if (btn) {" +
+            "        var nativeSubmit = HTMLFormElement.prototype.submit;" +
+            "        nativeSubmit.call(form);" +
+            "        return true;" +
+            "      }" +
+            "      HTMLFormElement.prototype.submit.call(form);" +
+            "      return true;" +
+            "    } catch (e) { return false; }" +
+            "  }" +
+            "  function findForm(el) {" +
+            "    while (el && el !== document.body) {" +
+            "      if (el.tagName === 'FORM') return el;" +
+            "      el = el.parentElement;" +
+            "    }" +
+            "    return null;" +
+            "  }" +
+            "  document.addEventListener('click', function(e) {" +
+            "    var t = e.target;" +
+            "    if (!t) return;" +
+            "    var isSubmit = (t.type === 'submit')" +
+            "      || (t.tagName === 'BUTTON' && (t.type === 'submit' || t.type === ''))" +
+            "      || (t.id && /login|submit|enter/i.test(t.id))" +
+            "      || (t.className && typeof t.className === 'string' && /login|submit|enter/i.test(t.className));" +
+            "    if (!isSubmit) {" +
+            "      var p = t.parentElement;" +
+            "      for (var i = 0; i < 3 && p; i++, p = p.parentElement) {" +
+            "        if (p.tagName === 'BUTTON' || (p.tagName === 'INPUT' && p.type === 'submit')) {" +
+            "          t = p; isSubmit = true; break;" +
+            "        }" +
+            "      }" +
+            "    }" +
+            "    if (!isSubmit) return;" +
+            "    var form = findForm(t);" +
+            "    if (form) { submitForm(form); }" +
+            "  }, true);" +
+            "  return 'ok';" +
+            "})();";
+
+    // Заглушка: JsResult не нужен, evaluateJavascript принимает ValueCallback.
+    // Импорт android.webkit.ValueCallback оставим для совместимости.
 }
