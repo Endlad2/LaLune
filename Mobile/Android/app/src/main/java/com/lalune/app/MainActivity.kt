@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -262,10 +263,6 @@ class MainActivity : AppCompatActivity() {
     //  VK token
     // ============================================================
 
-    /**
-     * Пишет токен в token.json (ключ Token) — единый формат с Desktop.
-     * Читает его же ReadTokenFromFile() / VkToken fetcher.
-     */
     private fun saveTokenToFile(token: String) {
         try {
             val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
@@ -309,12 +306,21 @@ class MainActivity : AppCompatActivity() {
         return o.toString()
     }
 
+    /// Вызывает JS-функцию window._vkLoginCallback(success, payload).
+    /// На Android WebView метод называется evaluateJavascript (не evaluateJavaScript),
+    /// и callback — ValueCallback<String>?, а не null.
     private fun notifyJsTokenReceived(success: Boolean, payload: String) {
-        val jsPayload = payload.replace("\\", "\\\\").replace("'", "\\'")
+        val jsPayload = payload
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+
         val js = "if(window._vkLoginCallback){window._vkLoginCallback($success,'$jsPayload');}"
+
         runOnUiThread {
             try {
-                webView.evaluateJavaScript(js, null)
+                webView.evaluateJavascript(js, ValueCallback<String> { /* ignore result */ })
             } catch (_: Exception) {}
         }
     }
@@ -440,10 +446,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun validateVKToken(): String = computeVkTokenState()
 
-        /**
-         * VkLogin — открывает WebView с OAuth ВК через LaLuneTokenFetcherAndroid.
-         * После успеха сохраняет токен в token.json и вызывает JS-callback.
-         */
+        /// VkLogin — открывает WebView с OAuth ВК через LaLuneTokenFetcherAndroid.
         @JavascriptInterface
         fun vkLogin(): Boolean {
             if (vkLoginInProgress) {
