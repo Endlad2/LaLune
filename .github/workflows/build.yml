@@ -50,6 +50,10 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
       - run: flutter config --enable-windows-desktop
+      - name: Setup MSVC (Visual Studio 2022)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=all
       - name: Prepare Flutter project (pub get + assets)
