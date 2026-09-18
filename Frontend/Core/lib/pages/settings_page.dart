@@ -181,9 +181,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _onLoginTap() async {
-    if (_vkLoginInProgress) return;
-
-    // Сначала проверяем — вдруг токен уже есть.
+    // Даже если уже идёт процесс — позволяем перезапустить.
+    // Если токен есть — не перезапускаем, показываем сообщение.
     final st = Api.validateVKToken();
     setState(() => _vkState = st);
     if (st.hasToken) {
@@ -194,9 +193,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _vkLoginInProgress = true;
     Toast.show(context, 'Открываю авторизацию ВК...');
 
-    // Api.vkLogin() → window.api.VkLogin().
-    //   Desktop: запускает LaLuneTokenFetcher.exe.
-    //   Android: открывает WebView с OAuth.
     final started = Api.vkLogin();
     if (!started) {
       _vkLoginInProgress = false;
@@ -204,7 +200,6 @@ class _SettingsPageState extends State<SettingsPage> {
       return;
     }
 
-    // Поллим состояние токена (и callback из Kotlin, и polling — оба работают).
     for (var i = 0; i < 600; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
@@ -265,6 +260,39 @@ class _SettingsPageState extends State<SettingsPage> {
                 Text(_vkState.message,
                   style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
               ],
+
+              // Доп. подсказка: жёлтый фон.
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7E84E).withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFFF7E84E).withOpacity(0.55),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.tips_and_updates_outlined,
+                        size: 16, color: Color(0xFFF7E84E)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Если зависло получение токена — нажмите на «Войти» заново',
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.45,
+                          color: Colors.white.withOpacity(0.85),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
               if (_authMode == 'manual') ...[
                 const SizedBox(height: 14),
@@ -335,7 +363,8 @@ class _SettingsPageState extends State<SettingsPage> {
       return SizedBox(
         width: double.infinity,
         child: OutlinedButton(
-          onPressed: null,
+          // Оставляем активной — чтобы можно было перезапустить, если зависло.
+          onPressed: _vkLoginInProgress ? null : _onLoginTap,
           style: OutlinedButton.styleFrom(
             padding: const EdgeInsets.symmetric(vertical: 12),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
