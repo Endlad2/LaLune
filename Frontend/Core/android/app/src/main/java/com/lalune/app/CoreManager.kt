@@ -84,7 +84,6 @@ class CoreManager(private val context: Context) {
 
         // Если файл уже извлечён и совпадает по размеру — ничего не делаем.
         if (dstFile.exists() && dstFile.length() == srcFile.length()) {
-            // Но права всё равно перепроверим — они могли слететь.
             try {
                 Os.chmod(dstFile.absolutePath, 0b111101101) // 0755
             } catch (e: Exception) {
@@ -191,7 +190,10 @@ class CoreManager(private val context: Context) {
             isRunning = true
 
             val process = coreProcess
-            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+
+            // Читаем stdout/stderr процесса в фоновом Thread —
+            // блокирующее чтение, корутины тут не нужны.
+            Thread {
                 try {
                     process?.inputStream?.bufferedReader()?.use { reader ->
                         var line: String?
@@ -203,9 +205,10 @@ class CoreManager(private val context: Context) {
                             }
                         }
                     }
-                } catch (e: Exception) {
+                } catch (_: Exception) {
+                    // Процесс закрылся — выходим.
                 }
-            }
+            }.start()
 
             writeLog("[CORE] Процесс запущен: $corePath")
             return@withContext true
