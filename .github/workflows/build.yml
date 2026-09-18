@@ -41,30 +41,169 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      # ----------------------------------------------------------
+      #  Ставим VS 2022 BuildTools вручную через winget.
+      #  ilammy/msvc-dev-cmd@v1 цепляется за предустановленный VS 18
+      #  на раннере, из-за чего Flutter не находит генератор VS 2019/2022.
+      # ----------------------------------------------------------
+      - name: Install Visual Studio 2022 BuildTools (winget)
+        shell: pwsh
+        run: |
+          winget install Microsoft.VisualStudio.2022.BuildTools `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --force `
+            --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+          Write-Host "winget exit code: $LASTEXITCODE"
 
-      - name: Detect Visual Studio and set CMAKE_GENERATOR
+      # ----------------------------------------------------------
+      #  Находим vcvarsall.bat именно от VS 17.x через
+      #  vswhere -version "[17.0,18.0)".
+      # ----------------------------------------------------------
+      - name: Locate vcvarsall.bat (VS 17.x)
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { Write-Error "vswhere.exe not found"; exit 1 }
-          $ver = & $vswhere -latest -products * `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationVersion
-          Write-Host "VS installationVersion: $ver"
-          if (-not $ver) { Write-Error "VS not found"; exit 1 }
-          $major = ($ver -split '\.')[0]
-          switch ($major) {
-            '16' { $gen = 'Visual Studio 16 2019' }
-            '17' { $gen = 'Visual Studio 17 2022' }
-            '18' { $gen = 'Visual Studio 18 2026' }
-            default { $gen = 'Visual Studio 17 2022' }
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe not found at $vswhere"
+            exit 1
           }
-          "CMAKE_GENERATOR=$gen" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+          $installPath = & $vswhere -latest -products * `
+            -version "[17.0,18.0)" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+
+          if (-not $installPath) {
+            Write-Error "Visual Studio 17.x with C++ toolchain not found"
+            Write-Host "--- all VS installations ---"
+            & $vswhere -products * -property installationPath
+            exit 1
+          }
+
+          Write-Host "VS 17 install path: $installPath"
+
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "vcvarsall.bat not found at $vcvars"
+            exit 1
+          }
+
+          Write-Host "vcvarsall.bat: $vcvars"
+          "VCVARSALL_PATH=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VS17_INSTALL_PATH=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ----------------------------------------------------------
+      #  Запускаем vcvarsall.bat x64, вытаскиваем env в GITHUB_ENV,
+      #  фильтруем PATH/INCLUDE/LIB от путей VS 18.
+      # ----------------------------------------------------------
+      - name: Run vcvarsall.bat and print MSVC version
+        shell: pwsh
+        run: |
+          $vcvars = $env:VCVARSALL_PATH
+          if (-not $vcvars -or -not (Test-Path $vcvars)) {
+            Write-Error "VCVARSALL_PATH not set or file missing: $vcvars"
+            exit 1
+          }
+
+          Write-Host "=== Calling vcvarsall.bat x64 ==="
+          $envDump = cmd /c "call `"$vcvars`" x64 >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "vcvarsall.bat failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+          foreach ($line in $envDump) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $matches[1]
+              $value = $matches[2]
+              # Выкидываем пути от VS 18, чтобы они не перебивали VS 17.
+              if ($name -eq 'PATH' -or $name -eq 'INCLUDE' -or $name -eq 'LIB' -or $name -eq 'LIBPATH') {
+                $parts = $value -split ';' | Where-Object {
+                  $_ -and -not ($_ -match 'Visual Studio\\18\\')
+                }
+                $value = ($parts -join ';')
+              }
+              "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+          Write-Host ""
+          Write-Host "=== MSVC version ==="
+          $clVersion = cmd /c "call `"$vcvars`" x64 >nul 2>&1 && cl 2>&1 | findstr /C:`"Version`""
+          $clVersion | ForEach-Object { Write-Host $_ }
+          if (-not $clVersion) {
+            Write-Error "cl.exe version not detected"
+            exit 1
+          }
+          Write-Host "VCToolsVersion=$env:VCToolsVersion"
+          Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
+
+      # ----------------------------------------------------------
+      #  ПАТЧ flutter_tools: Flutter хардкодит "Visual Studio 16 2019"
+      #  в исходниках Dart. Ни env-переменная, ни set(... FORCE)
+      #  в CMakeLists.txt не помогают, потому что Flutter передаёт
+      #  -G аргументом в командную строку CMake.
+      # ----------------------------------------------------------
+      - name: Patch flutter_tools to use VS 2022
+        shell: pwsh
+        run: |
+          $flutterRoot = $env:FLUTTER_ROOT
+          if (-not $flutterRoot) { Write-Error "FLUTTER_ROOT not set"; exit 1 }
+          Write-Host "FLUTTER_ROOT=$flutterRoot"
+
+          $targets = @(
+            "$flutterRoot\packages\flutter_tools\lib\src\windows\visual_studio.dart",
+            "$flutterRoot\packages\flutter_tools\lib\src\windows\visual_studio_validator.dart",
+            "$flutterRoot\packages\flutter_tools\lib\src\cmake_project.dart",
+            "$flutterRoot\packages\flutter_tools\lib\src\windows\build_windows.dart"
+          )
+
+          $patched = 0
+          foreach ($f in $targets) {
+            if (-not (Test-Path $f)) { Write-Host "SKIP (not found): $f"; continue }
+            $orig = Get-Content $f -Raw
+            $new = $orig -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022'
+            $new = $new -replace "'16\.0'", "'17.0'"
+            $new = $new -replace '"16\.0"', '"17.0"'
+            if ($new -ne $orig) {
+              Set-Content -Path $f -Value $new -NoNewline -Encoding utf8
+              Write-Host "PATCHED: $f"
+              $patched++
+            }
+          }
+          Write-Host "Patched files: $patched"
+
+          # Сбрасываем кэш flutter_tools, чтобы Dart перекомпилировал tool.
+          $cacheDir = "$flutterRoot\bin\cache"
+          Remove-Item -Force "$cacheDir\flutter_tools.stamp" -ErrorAction SilentlyContinue
+          Remove-Item -Force "$cacheDir\flutter_tools.snapshot" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$cacheDir\dart-sdk\.dart_tool" -ErrorAction SilentlyContinue
+          Write-Host "flutter_tools cache reset"
+
+      # ----------------------------------------------------------
+      #  Удаляем ephemeral-кэш Windows-сборки: там закэширован
+      #  выбранный генератор.
+      # ----------------------------------------------------------
+      - name: Clean ephemeral caches
+        shell: pwsh
+        run: |
+          $paths = @(
+            "Frontend\Core\windows\flutter\ephemeral",
+            "Frontend\Core\build\windows",
+            "Frontend\Core\.dart_tool"
+          )
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              Write-Host "Removing: $p"
+              Remove-Item -Recurse -Force $p
+            }
+          }
+
+      # ----------------------------------------------------------
+      #  Кладём scripts/ перед системным cmake в PATH.
+      #  Враппер cmake.cmd подменит -G "Visual Studio 16 2019".
+      # ----------------------------------------------------------
       - name: Prepend scripts/ to PATH (cmake wrapper)
         shell: pwsh
         run: |
@@ -77,12 +216,17 @@ jobs:
       - name: Prepare frontend (pub get + assets)
         run: python build_frontend.py --platform Windows
 
-      - name: Clean stale Windows build cache
+      - name: Verify toolchain
         shell: pwsh
         run: |
-          if (Test-Path "Frontend\Core\build\windows") {
-            Remove-Item -Recurse -Force "Frontend\Core\build\windows"
-          }
+          Write-Host "--- which cl ---"
+          Get-Command cl | Select-Object -ExpandProperty Source
+          Write-Host "--- which cmake ---"
+          Get-Command cmake | Select-Object -ExpandProperty Source
+          Write-Host "--- CMAKE_GENERATOR ---"
+          Write-Host $env:CMAKE_GENERATOR
+          Write-Host "--- VCToolsVersion ---"
+          Write-Host $env:VCToolsVersion
 
       - name: Build desktop (Go + Flutter)
         run: python build_desktop.py --platform Windows
@@ -239,19 +383,14 @@ jobs:
         run: flutter build apk --release
 
       # ------------------------------------------------------------
-      #  Ищем APK. На AGP 8.x + targetSdk 28 APK может оказаться в
-      #  build/app/outputs/apk/release/app-release.apk вместо
-      #  build/app/outputs/flutter-apk/app-release.apk.
+      #  Ищем APK. На AGP 8.x APK может оказаться в
+      #  build/app/outputs/apk/release/ вместо flutter-apk/.
       # ------------------------------------------------------------
       - name: Find APK
         run: |
           echo "=== Все .apk в build/ ==="
           find Frontend/Core/build -name "*.apk" -type f -exec ls -la {} \; || true
-          echo ""
-          echo "=== Содержимое build/app/outputs/ ==="
-          ls -laR Frontend/Core/build/app/outputs/ 2>/dev/null || true
 
-          # Пытаемся найти хоть один APK
           APK=$(find Frontend/Core/build -name "app-release.apk" -type f | head -n1)
           if [ -z "$APK" ]; then
             echo "::error::APK не найден нигде в build/"
@@ -260,7 +399,6 @@ jobs:
           echo "APK найден: $APK"
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
-          # Если APK лежит не там, где ожидает Flutter — копируем.
           EXPECTED="Frontend/Core/build/app/outputs/flutter-apk/app-release.apk"
           if [ "$APK" != "$EXPECTED" ]; then
             echo "Копирую $APK → $EXPECTED"
