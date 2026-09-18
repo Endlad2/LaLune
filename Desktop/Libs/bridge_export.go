@@ -3,17 +3,19 @@
 //
 // bridge_export.go — методы AppCore для C-ABI:
 //   - ConnectViaBridge / DisconnectViaBridge — потому что Connect/Disconnect
-//     живут в Bridge (который создаётся платформенно-зависимо в app_*.go).
-//   - UpdateCoreAndWaitSync — синхронная версия UpdateCoreAndWait (была только у Wails).
+//     живут в Bridge (который создаётся платформенно-зависимо).
+//   - UpdateCoreAndWaitSync — синхронная версия UpdateCoreAndWait.
 //   - RegenerateDeviceId — генерация нового UUID.
 //   - GetSmartTunnel / SetSmartTunnel — доступ к SmartTunnel для lalune_shutdown.
 //
 // Bridge создаётся один раз при Startup платформенно-зависимым кодом и
-// регистрируется через SetBridge(). Это заменяет Wails-биндинг.
+// регистрируется через SetBridge().
 
 package libs
 
 import (
+	"sync"
+
 	"github.com/google/uuid"
 )
 

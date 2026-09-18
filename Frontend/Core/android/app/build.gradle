@@ -47,9 +47,7 @@ android {
         minSdk = 24
 
         // targetSdk = 28 — legacy-режим, в котором SELinux разрешает
-        // execve() из nativeLibraryDir. Именно так работал старый
-        // рабочий проект. На targetSdk 29+ Android блокирует запуск
-        // бинарников из /data/app/.../lib/, и наше ядро не стартует.
+        // execve() из nativeLibraryDir.
         targetSdk = 28
 
         versionCode = flutterVersionCode.toInteger()
@@ -76,14 +74,13 @@ android {
         }
     }
 
-    packagingOptions {
-        jniLibs {
-            // Соответствует android:extractNativeLibs="true".
-            // .so распаковываются в nativeLibraryDir при установке,
-            // откуда их и запускает CoreManager.
-            useLegacyPackaging = true
-        }
-    }
+    // ВАЖНО: useLegacyPackaging НЕ задаём. Он конфликтует с
+    // flutter-gradle-plugin и Gradle складывает APK в
+    // build/app/outputs/apk/release/ вместо build/app/outputs/flutter-apk/,
+    // из-за чего Flutter пишет "Gradle build failed to produce an .apk file".
+    //
+    // extractNativeLibs="true" в AndroidManifest.xml уже обеспечивает
+    // распаковку .so в nativeLibraryDir — этого достаточно.
 }
 
 flutter {
@@ -91,26 +88,14 @@ flutter {
 }
 
 dependencies {
-    // AppCompat — нужен для Theme.AppCompat.NoActionBar в styles.xml.
     implementation "androidx.appcompat:appcompat:1.7.0"
-
-    // Стандартные androidx-зависимости Flutter-проекта.
     implementation "androidx.core:core-ktx:1.13.1"
     implementation "androidx.annotation:annotation:1.9.1"
-
-    // Kotlin stdlib — явно, чтобы Gradle не тащил 1.9.x из транзитивных
-    // зависимостей в обход KGP.
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
-
-    // Coroutines — нужны для withContext(Dispatchers.IO) в CoreManager
-    // и lifecycleScope.launch в MainActivity.
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
 
     // Lua 5.1 рантайм для SmartTunnelManager.kt.
-    // Содержит org.luaj.vm2.* (Globals, LuaValue, LuaError, LuaTable,
-    // Varargs, VarArgFunction) и org.luaj.vm2.lib.jse.JsePlatform.
-    // Без этой зависимости SmartTunnelManager.kt не компилируется —
-    // сотни ошибок "Unresolved reference: luaj".
+    // Без него — сотни "Unresolved reference: luaj".
     implementation "org.luaj:luaj-jse:3.0.1"
 }
 

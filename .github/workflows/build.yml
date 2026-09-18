@@ -19,7 +19,7 @@ env:
 
 jobs:
   # ============================================================
-  #  Desktop Windows (Flutter + Go c-shared)
+  #  Desktop Windows
   # ============================================================
   build-windows:
     name: Desktop Windows
@@ -50,10 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) {
-            Write-Error "vswhere.exe not found"
-            exit 1
-          }
+          if (-not (Test-Path $vswhere)) { Write-Error "vswhere.exe not found"; exit 1 }
           $ver = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationVersion
@@ -66,7 +63,6 @@ jobs:
             '18' { $gen = 'Visual Studio 18 2026' }
             default { $gen = 'Visual Studio 17 2022' }
           }
-          Write-Host "CMake generator: $gen"
           "CMAKE_GENERATOR=$gen" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Prepend scripts/ to PATH (cmake wrapper)
@@ -75,9 +71,6 @@ jobs:
           $scripts = (Resolve-Path "scripts").Path
           "$scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      # КРИТИЧНО: go:embed SmartTunnel.lua в Desktop/Libs/smarttunnel.go
-      # ищет файл рядом с .go. Без этого шага go build падает с
-      # "pattern SmartTunnel.lua: no matching files found".
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=all
 
@@ -102,7 +95,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  Desktop Linux (Flutter + Go c-shared)
+  #  Desktop Linux
   # ============================================================
   build-linux:
     name: Desktop Linux
@@ -232,9 +225,7 @@ jobs:
             Frontend/Core/android/settings.gradle.kts \
             Frontend/Core/android/build.gradle.kts \
             Frontend/Core/android/app/build.gradle.kts; do
-            if [ -f "$f" ]; then
-              echo "::error::$f exists — удалите его"; exit 1
-            fi
+            if [ -f "$f" ]; then echo "::error::$f exists"; exit 1; fi
           done
 
       - name: Verify no duplicate styles
@@ -247,6 +238,36 @@ jobs:
         working-directory: Frontend/Core
         run: flutter build apk --release
 
+      # ------------------------------------------------------------
+      #  Ищем APK. На AGP 8.x + targetSdk 28 APK может оказаться в
+      #  build/app/outputs/apk/release/app-release.apk вместо
+      #  build/app/outputs/flutter-apk/app-release.apk.
+      # ------------------------------------------------------------
+      - name: Find APK
+        run: |
+          echo "=== Все .apk в build/ ==="
+          find Frontend/Core/build -name "*.apk" -type f -exec ls -la {} \; || true
+          echo ""
+          echo "=== Содержимое build/app/outputs/ ==="
+          ls -laR Frontend/Core/build/app/outputs/ 2>/dev/null || true
+
+          # Пытаемся найти хоть один APK
+          APK=$(find Frontend/Core/build -name "app-release.apk" -type f | head -n1)
+          if [ -z "$APK" ]; then
+            echo "::error::APK не найден нигде в build/"
+            exit 1
+          fi
+          echo "APK найден: $APK"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+          # Если APK лежит не там, где ожидает Flutter — копируем.
+          EXPECTED="Frontend/Core/build/app/outputs/flutter-apk/app-release.apk"
+          if [ "$APK" != "$EXPECTED" ]; then
+            echo "Копирую $APK → $EXPECTED"
+            mkdir -p "$(dirname "$EXPECTED")"
+            cp "$APK" "$EXPECTED"
+          fi
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -255,7 +276,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  Token Fetcher (Windows + Linux)
+  #  Token Fetcher
   # ============================================================
   build-token-fetcher:
     name: Token Fetcher

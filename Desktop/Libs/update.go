@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -521,14 +520,9 @@ func (a *AppCore) OpenLaLuneReleasesURL() string {
 //  Вспомогательные функции
 // ============================================================
 
-func GetFreePort() int {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 9000
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
-}
+// ВНИМАНИЕ: GetFreePort() определена в platform.go. Здесь её НЕТ,
+// потому что в Go две функции с одним именем в одном пакете — ошибка
+// компиляции ("GetFreePort redeclared in this block").
 
 func minInt(a, b int) int {
 	if a < b {
