@@ -25,7 +25,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
       - run: flutter config --enable-linux-desktop
-      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev
+      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
       - name: Prepare SmartTunnel.lua
         run: python3 prepare_st.py --platform=all
       - name: Prepare Flutter project (pub get + assets)
@@ -71,7 +71,6 @@ jobs:
         with: { python-version: '3.12' }
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
-      - run: flutter config --enable-android
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - name: Accept Android licenses
@@ -80,8 +79,6 @@ jobs:
             export ANDROID_HOME=/usr/local/lib/android/sdk
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           fi
-      - uses: gradle/actions/setup-gradle@v4
-        with: { gradle-version: '8.9' }
       - name: Prepare Android Core
         run: python prepare_android_core.py
       - name: Prepare SmartTunnel.lua
@@ -90,17 +87,17 @@ jobs:
         run: python build_frontend.py --platform Android
       - name: Download core binaries
         run: |
-          mkdir -p Mobile/Android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
-          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
-          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
-          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+          mkdir -p Frontend/Core/android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
+          curl -L --fail --retry 3 -o Frontend/Core/android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
+          curl -L --fail --retry 3 -o Frontend/Core/android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+          curl -L --fail --retry 3 -o Frontend/Core/android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
       - name: Build APK
-        working-directory: Mobile/Android
-        run: gradle assembleDebug --stacktrace --no-daemon
+        working-directory: Frontend/Core
+        run: flutter build apk --release
       - name: Locate APK
         id: find_apk
         run: |
-          APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
+          APK=$(find Frontend/Core/build/app/outputs/flutter-apk -name "*.apk" -type f | head -n 1)
           [ -z "$APK" ] && exit 1
           echo "apk=$APK" >> $GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
