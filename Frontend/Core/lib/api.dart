@@ -3,18 +3,15 @@
 //
 // api.dart — единая точка входа для всей Dart-части.
 //
-// Три реализации под капотом:
+// Три реализации:
 //   1. Desktop (Linux/Windows): dart:ffi → liblalune.so / lalune.dll
 //   2. Android: MethodChannel('com.lalune.app/bridge') → Kotlin
 //   3. iOS: MethodChannel('com.lalune.app/bridge') → Swift
-//
-// Выбор реализации — через Platform.isAndroid/isIOS. Всё остальное в UI
-// просто вызывает Api.getLogs(), Api.connect(id) и т.д.
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
-import 'dart:io' show Platform, Directory;
+import 'dart:io' show File, Platform;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
@@ -282,7 +279,7 @@ class AutoApiResult {
 }
 
 // ============================================================
-//  Платформенный backend
+//  Backend
 // ============================================================
 
 abstract class _ApiBackend {
@@ -320,98 +317,107 @@ abstract class _ApiBackend {
 //  Desktop: dart:ffi
 // ------------------------------------------------------------
 
-typedef _CVoid = Void Function();
-typedef _CInt = Int32 Function();
-typedef _CIntFromLL = Int32 Function(Int64);
-typedef _CIntFromPtr = Int32 Function(Pointer<Utf8>);
-typedef _CPtrFromPtr = Pointer<Utf8> Function(Pointer<Utf8>);
-typedef _CPtrNoArgs = Pointer<Utf8> Function();
-typedef _CPtrFromLL = Pointer<Utf8> Function(Int64);
-typedef _CIntNoArgs = Int32 Function();
-typedef _CVoidFromPtr = Void Function(Pointer<Utf8>);
+// Native typedefs (C-ABI из capi.go)
+typedef _InitNative = Void Function();
+typedef _ShutdownNative = Void Function();
+typedef _GetStringNative = Pointer<Utf8> Function();
+typedef _PtrFromPtrNative = Pointer<Utf8> Function(Pointer<Utf8>);
+typedef _IntFromPtrNative = Int32 Function(Pointer<Utf8>);
+typedef _IntFromLLNative = Int32 Function(Int64);
+typedef _IntNoArgsNative = Int32 Function();
+typedef _VoidFromPtrNative = Void Function(Pointer<Utf8>);
+
+// Dart typedefs
+typedef _InitDart = void Function();
+typedef _ShutdownDart = void Function();
+typedef _GetStringDart = Pointer<Utf8> Function();
+typedef _PtrFromPtrDart = Pointer<Utf8> Function(Pointer<Utf8>);
+typedef _IntFromPtrDart = int Function(Pointer<Utf8>);
+typedef _IntFromLLDart = int Function(int);
+typedef _IntNoArgsDart = int Function();
+typedef _VoidFromPtrDart = void Function(Pointer<Utf8>);
 
 class _FfiBackend implements _ApiBackend {
   DynamicLibrary? _lib;
 
-  // Function pointers (lookup при init)
-  late final _InitFn _init;
-  late final _ShutdownFn _shutdown;
-  late final _GetStringFn _getConfigsJson;
-  late final _SaveConfigFn _saveConfig;
-  late final _DeleteConfigFn _deleteConfig;
-  late final _GetStringFn _getSettingsJson;
-  late final _SaveSettingsFn _saveSettings;
-  late final _GetStringFn _getLogsJson;
-  late final _BoolFn _clearLogs;
-  late final _GetStringFn _getStatusJson;
-  late final _ConnectFn _connect;
-  late final _BoolFn _disconnect;
-  late final _GetStringFn _checkCoreUpdate;
-  late final _BoolFn _updateCore;
-  late final _BoolFn _updateCoreAndWait;
-  late final _GetStringFn _checkLaLuneUpdate;
-  late final _GetStringFn _openLaLuneReleases;
-  late final _GetStringFn _getVKTokenState;
-  late final _BoolFn _vkLogin;
-  late final _BoolFn _deleteVKToken;
-  late final _GetStringFn _validateVKToken;
-  late final _GetStringFn _runVkAutoApiCalls;
-  late final _GetStringFn _pollAutoApiResult;
-  late final _FinishVkCallsFn _finishVkCalls;
-  late final _GetStringFn _getDeviceId;
-  late final _GetStringFn _regenerateDeviceId;
-  late final _GetStringFn _getSelectedConfigJson;
-  late final _SetSelectedConfigJsonFn _setSelectedConfigJson;
-  late final _BoolFn _isCoreDownloading;
-  late final _FreeFn _free;
+  late final _InitDart _init;
+  late final _ShutdownDart _shutdown;
+  late final _GetStringDart _getConfigsJson;
+  late final _IntFromPtrDart _saveConfig;
+  late final _IntFromLLDart _deleteConfig;
+  late final _GetStringDart _getSettingsJson;
+  late final _IntFromPtrDart _saveSettings;
+  late final _GetStringDart _getLogsJson;
+  late final _IntNoArgsDart _clearLogs;
+  late final _GetStringDart _getStatusJson;
+  late final _IntFromLLDart _connect;
+  late final _IntNoArgsDart _disconnect;
+  late final _GetStringDart _checkCoreUpdate;
+  late final _IntNoArgsDart _updateCore;
+  late final _IntNoArgsDart _updateCoreAndWait;
+  late final _GetStringDart _checkLaLuneUpdate;
+  late final _GetStringDart _openLaLuneReleases;
+  late final _GetStringDart _getVKTokenState;
+  late final _IntNoArgsDart _vkLogin;
+  late final _IntNoArgsDart _deleteVKToken;
+  late final _GetStringDart _validateVKToken;
+  late final _GetStringDart _runVkAutoApiCalls;
+  late final _GetStringDart _pollAutoApiResult;
+  late final _IntFromPtrDart _finishVkCalls;
+  late final _GetStringDart _getDeviceId;
+  late final _GetStringDart _regenerateDeviceId;
+  late final _GetStringDart _getSelectedConfigJson;
+  late final _IntFromPtrDart _setSelectedConfigJson;
+  late final _IntNoArgsDart _isCoreDownloading;
+  late final _VoidFromPtrDart _free;
 
   @override
   Future<void> init() async {
     _lib = _openLaluneLibrary();
     final l = _lib!;
 
-    _init = l.lookupFunction<_CVoid, _CVoid>('lalune_init');
-    _shutdown = l.lookupFunction<_CVoid, _CVoid>('lalune_shutdown');
+    _init = l.lookupFunction<_InitNative, _InitDart>('lalune_init');
+    _shutdown = l.lookupFunction<_ShutdownNative, _ShutdownDart>('lalune_shutdown');
 
-    _getConfigsJson = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_configs_json');
-    _saveConfig = l.lookupFunction<_CIntFromPtr, _CIntFromPtr>('lalune_save_config');
-    _deleteConfig = l.lookupFunction<_CIntFromLL, _CIntFromLL>('lalune_delete_config');
+    _getConfigsJson = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_configs_json');
+    _saveConfig = l.lookupFunction<_IntFromPtrNative, _IntFromPtrDart>('lalune_save_config');
+    _deleteConfig = l.lookupFunction<_IntFromLLNative, _IntFromLLDart>('lalune_delete_config');
 
-    _getSettingsJson = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_settings_json');
-    _saveSettings = l.lookupFunction<_CIntFromPtr, _CIntFromPtr>('lalune_save_settings');
+    _getSettingsJson = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_settings_json');
+    _saveSettings = l.lookupFunction<_IntFromPtrNative, _IntFromPtrDart>('lalune_save_settings');
 
-    _getLogsJson = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_logs_json');
-    _clearLogs = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_clear_logs');
-    _getStatusJson = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_status_json');
+    _getLogsJson = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_logs_json');
+    _clearLogs = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_clear_logs');
+    _getStatusJson = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_status_json');
 
-    _connect = l.lookupFunction<_CIntFromLL, _CIntFromLL>('lalune_connect');
-    _disconnect = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_disconnect');
+    _connect = l.lookupFunction<_IntFromLLNative, _IntFromLLDart>('lalune_connect');
+    _disconnect = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_disconnect');
 
-    _checkCoreUpdate = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_check_core_update');
-    _updateCore = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_update_core');
-    _updateCoreAndWait = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_update_core_and_wait');
+    _checkCoreUpdate = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_check_core_update');
+    _updateCore = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_update_core');
+    _updateCoreAndWait = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_update_core_and_wait');
 
-    _checkLaLuneUpdate = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_check_lalune_update');
-    _openLaLuneReleases = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_open_lalune_releases');
+    _checkLaLuneUpdate = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_check_lalune_update');
+    _openLaLuneReleases = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_open_lalune_releases');
 
-    _getVKTokenState = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_vk_token_state');
-    _vkLogin = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_vk_login');
-    _deleteVKToken = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_delete_vk_token');
-    _validateVKToken = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_validate_vk_token');
+    _getVKTokenState = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_vk_token_state');
+    _vkLogin = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_vk_login');
+    _deleteVKToken = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_delete_vk_token');
+    _validateVKToken = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_validate_vk_token');
 
-    _runVkAutoApiCalls = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_run_vk_auto_api_calls');
-    _pollAutoApiResult = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_poll_auto_api_result');
-    _finishVkCalls = l.lookupFunction<_CIntFromPtr, _CIntFromPtr>('lalune_finish_vk_calls');
+    _runVkAutoApiCalls = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_run_vk_auto_api_calls');
+    _pollAutoApiResult = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_poll_auto_api_result');
+    _finishVkCalls = l.lookupFunction<_IntFromPtrNative, _IntFromPtrDart>('lalune_finish_vk_calls');
 
-    _getDeviceId = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_device_id');
-    _regenerateDeviceId = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_regenerate_device_id');
+    _getDeviceId = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_device_id');
+    _regenerateDeviceId = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_regenerate_device_id');
 
-    _getSelectedConfigJson = l.lookupFunction<_CPtrNoArgs, _CPtrNoArgs>('lalune_get_selected_config_json');
-    _setSelectedConfigJson = l.lookupFunction<_CIntFromPtr, _CIntFromPtr>('lalune_set_selected_config_json');
+    _getSelectedConfigJson = l.lookupFunction<_GetStringNative, _GetStringDart>('lalune_get_selected_config_json');
+    _setSelectedConfigJson = l.lookupFunction<_IntFromPtrNative, _IntFromPtrDart>('lalune_set_selected_config_json');
 
-    _isCoreDownloading = l.lookupFunction<_CIntNoArgs, _CIntNoArgs>('lalune_is_core_downloading');
+    _isCoreDownloading = l.lookupFunction<_IntNoArgsNative, _IntNoArgsDart>('lalune_is_core_downloading');
 
-    _free = l.lookupFunction<_CVoidFromPtr, _CVoidFromPtr>('lalune_free');
+    _free = l.lookupFunction<_VoidFromPtrNative, _VoidFromPtrDart>('lalune_free');
 
     _init();
   }
@@ -419,15 +425,12 @@ class _FfiBackend implements _ApiBackend {
   DynamicLibrary _openLaluneLibrary() {
     final exeDir = p.dirname(Platform.resolvedExecutable);
     if (Platform.isWindows) {
-      // Ищем lalune.dll рядом с .exe.
       for (final name in ['lalune.dll', 'liblalune.dll']) {
         final path = p.join(exeDir, name);
         if (File(path).existsSync()) return DynamicLibrary.open(path);
       }
-      // Fallback — по имени из PATH.
       return DynamicLibrary.open('lalune.dll');
     }
-    // Linux.
     for (final name in ['liblalune.so', 'lalune.so']) {
       final path = p.join(exeDir, name);
       if (File(path).existsSync()) return DynamicLibrary.open(path);
@@ -448,8 +451,8 @@ class _FfiBackend implements _ApiBackend {
   String getConfigsJson() => _readAndFree(_getConfigsJson());
   @override
   bool saveConfig(String link) {
-    final p = _toC(link);
-    try { return _saveConfig(p) == 1; } finally { malloc.free(p); }
+    final ptr = _toC(link);
+    try { return _saveConfig(ptr) == 1; } finally { malloc.free(ptr); }
   }
   @override
   bool deleteConfig(int id) => _deleteConfig(id) == 1;
@@ -458,8 +461,8 @@ class _FfiBackend implements _ApiBackend {
   String getSettingsJson() => _readAndFree(_getSettingsJson());
   @override
   bool saveSettings(String json) {
-    final p = _toC(json);
-    try { return _saveSettings(p) == 1; } finally { malloc.free(p); }
+    final ptr = _toC(json);
+    try { return _saveSettings(ptr) == 1; } finally { malloc.free(ptr); }
   }
 
   @override
@@ -501,8 +504,8 @@ class _FfiBackend implements _ApiBackend {
   String pollAutoApiResult() => _readAndFree(_pollAutoApiResult());
   @override
   bool finishVkCalls(String callIdsJson) {
-    final p = _toC(callIdsJson);
-    try { return _finishVkCalls(p) == 1; } finally { malloc.free(p); }
+    final ptr = _toC(callIdsJson);
+    try { return _finishVkCalls(ptr) == 1; } finally { malloc.free(ptr); }
   }
 
   @override
@@ -514,8 +517,8 @@ class _FfiBackend implements _ApiBackend {
   String getSelectedConfigJson() => _readAndFree(_getSelectedConfigJson());
   @override
   bool setSelectedConfigJson(String json) {
-    final p = _toC(json);
-    try { return _setSelectedConfigJson(p) == 1; } finally { malloc.free(p); }
+    final ptr = _toC(json);
+    try { return _setSelectedConfigJson(ptr) == 1; } finally { malloc.free(ptr); }
   }
 
   @override
@@ -526,19 +529,6 @@ class _FfiBackend implements _ApiBackend {
   }
 }
 
-// FFI typedefs.
-typedef _InitFn = void Function();
-typedef _ShutdownFn = void Function();
-typedef _GetStringFn = Pointer<Utf8> Function();
-typedef _SaveConfigFn = int Function(Pointer<Utf8>);
-typedef _DeleteConfigFn = int Function(int);
-typedef _SaveSettingsFn = int Function(Pointer<Utf8>);
-typedef _BoolFn = int Function();
-typedef _ConnectFn = int Function(int);
-typedef _FinishVkCallsFn = int Function(Pointer<Utf8>);
-typedef _SetSelectedConfigJsonFn = int Function(Pointer<Utf8>);
-typedef _FreeFn = void Function(Pointer<Utf8>);
-
 // ------------------------------------------------------------
 //  Android / iOS: MethodChannel
 // ------------------------------------------------------------
@@ -546,32 +536,17 @@ typedef _FreeFn = void Function(Pointer<Utf8>);
 class _MethodChannelBackend implements _ApiBackend {
   static const _channel = MethodChannel('com.lalune.app/bridge');
 
-  @override
-  Future<void> init() async {
-    // Ничего не делаем — канал живёт на стороне нативной платформы.
-  }
-
-  Future<T?> _invoke<T>(String method, [Map<String, dynamic>? args]) async {
-    try {
-      return await _channel.invokeMethod<T>(method, args);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  @override
-  String getConfigsJson() => '[]';
-  // На Android/iOS часть методов синхронна (getConfigs, getSettings и т.д.),
-  // но через MethodChannel все вызовы асинхронны. Поэтому для UI мы работаем
-  // через кэш в Dart: первый вызов init() подтягивает актуальные данные.
-
-  // Синхронные геттеры читают локальный кэш, который обновляется из init().
   static String _cachedConfigs = '[]';
   static String _cachedSettings = '{}';
   static String _cachedLogs = '[]';
   static String _cachedStatus = '{"connected":false}';
   static String _cachedVkState = '{"hasToken":false,"fetcherOk":false,"fetching":false,"message":"","progress":0}';
   static String _cachedSelectedConfig = '{}';
+
+  @override
+  Future<void> init() async {
+    await refreshAll();
+  }
 
   Future<void> refreshAll() async {
     _cachedConfigs = await _invoke<String>('getConfigs') ?? '[]';
@@ -580,6 +555,14 @@ class _MethodChannelBackend implements _ApiBackend {
     _cachedStatus = await _invoke<String>('getStatus') ?? '{"connected":false}';
     _cachedVkState = await _invoke<String>('validateVKToken') ?? _cachedVkState;
     _cachedSelectedConfig = await _invoke<String>('getSelectedConfigJson') ?? '{}';
+  }
+
+  Future<T?> _invoke<T>(String method, [Map<String, dynamic>? args]) async {
+    try {
+      return await _channel.invokeMethod<T>(method, args);
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -691,8 +674,8 @@ class _MethodChannelBackend implements _ApiBackend {
 class Api {
   static _ApiBackend? _backend;
   static bool _initialized = false;
+  static Timer? _refreshTimer;
 
-  /// Вызывается один раз при старте приложения (в main()).
   static Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
@@ -701,9 +684,7 @@ class Api {
       final b = _MethodChannelBackend();
       _backend = b;
       await b.init();
-      await b.refreshAll();
-      // Периодический рефреш кэша из нативной стороны.
-      Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      _refreshTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
         b.refreshAll();
       });
     } else {
@@ -721,8 +702,6 @@ class Api {
     return b;
   }
 
-  // --- Configs ---
-
   static List<ConfigItem> getConfigs() {
     try {
       final arr = jsonDecode(_b.getConfigsJson()) as List;
@@ -733,16 +712,12 @@ class Api {
   static bool saveConfig(String link) => _b.saveConfig(link);
   static bool deleteConfig(int id) => _b.deleteConfig(id);
 
-  // --- Settings ---
-
   static Settings getSettings() {
     try { return Settings.fromJson(jsonDecode(_b.getSettingsJson()) as Map<String, dynamic>); }
     catch (_) { return Settings(); }
   }
 
   static bool saveSettings(Settings s) => _b.saveSettings(jsonEncode(s.toJson()));
-
-  // --- Logs / Status ---
 
   static List<String> getLogs() {
     try {
@@ -760,12 +735,8 @@ class Api {
     } catch (_) { return false; }
   }
 
-  // --- Connect ---
-
   static bool connect(int id) => _b.connect(id);
   static bool disconnect() => _b.disconnect();
-
-  // --- Core update ---
 
   static UpdateInfo checkCoreUpdate() {
     try { return UpdateInfo.fromJsonString(_b.checkCoreUpdate()); }
@@ -773,8 +744,6 @@ class Api {
   }
   static bool updateCore() => _b.updateCore();
   static bool updateCoreAndWait() => _b.updateCoreAndWait();
-
-  // --- LaLune update ---
 
   static UpdateInfo checkLaLuneUpdate() {
     try { return UpdateInfo.fromJsonString(_b.checkLaLuneUpdate()); }
@@ -784,8 +753,6 @@ class Api {
     _b.openLaLuneReleases();
     return true;
   }
-
-  // --- VK ---
 
   static VkTokenState getVKTokenState() {
     try { return VkTokenState.fromJsonString(_b.getVKTokenState()); }
@@ -798,8 +765,6 @@ class Api {
     catch (_) { return VkTokenState.empty; }
   }
 
-  // --- Auto API ---
-
   static AutoApiResult runVkAutoApiCalls() {
     try { return AutoApiResult.fromJsonString(_b.runVkAutoApiCalls()); }
     catch (_) { return const AutoApiResult(error: 'runtime error'); }
@@ -810,12 +775,8 @@ class Api {
   }
   static bool finishVkCalls(List<String> callIds) => _b.finishVkCalls(jsonEncode(callIds));
 
-  // --- Device ID ---
-
   static String getDeviceId() => _b.getDeviceId();
   static String regenerateDeviceId() => _b.regenerateDeviceId();
-
-  // --- Selected config ---
 
   static String getSelectedConfigJson() => _b.getSelectedConfigJson();
   static bool setSelectedConfigJson(String json) => _b.setSelectedConfigJson(json);
@@ -829,8 +790,6 @@ class Api {
       return ConfigItem.fromJson(j);
     } catch (_) { return null; }
   }
-
-  // --- Core downloading ---
 
   static bool isCoreDownloading() => _b.isCoreDownloading();
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 luminescq
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
@@ -13,6 +16,8 @@ android {
         targetSdk 34
         versionCode 1
         versionName "0.5.0"
+
+        // Кастомный Kotlin-код из Frontend/Core/android/app/src/main/java/
     }
 
     buildTypes {
@@ -38,4 +43,7 @@ dependencies {
 
     // SmartTunnel — Lua 5.1 runtime.
     implementation 'org.luaj:luaj-jse:3.0.1'
+
+    // Flutter embedding — теперь MainActivity наследует FlutterActivity.
+    implementation 'androidx.annotation:annotation:1.7.1'
 }
