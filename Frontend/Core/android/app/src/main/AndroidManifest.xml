@@ -7,20 +7,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      extractNativeLibs="true"
+        .so из jniLibs/<abi>/ распаковываются в nativeLibraryDir
+        при установке APK. CoreManager запускает ядро оттуда.
+
+      debuggable="true"
+        Разрешает execve() из nativeLibraryDir даже на новых
+        прошивках, где legacy-режим targetSdk может игнорироваться.
+
+      theme="@style/Theme.LaLune"
+        Наследует Theme.AppCompat.NoActionBar (см. values/themes.xml).
+    -->
     <application
         android:label="LaLune"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
-
-        <!-- extractNativeLibs=true — .so распаковываются в nativeLibraryDir -->
         android:extractNativeLibs="true"
-
-        <!-- debuggable=true — разрешает execve() из nativeLibraryDir
-             даже на новых прошивках, где legacy-режим targetSdk
-             может игнорироваться. -->
         android:debuggable="true"
-
         android:theme="@style/Theme.LaLune">
 
         <activity
