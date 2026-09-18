@@ -16,6 +16,10 @@ env:
   ANDROID_BUILD_TOOLS: '34.0.0'
   PYTHONIOENCODING: 'utf-8'
   PYTHONUTF8: '1'
+  # VS 2022 BuildTools — ставим вручную через winget,
+  # чтобы не зависеть от предустановленного VS 18 на раннере.
+  VS_INSTALLER_PATH: 'C:\Program Files (x86)\Microsoft Visual Studio\Installer'
+  CMAKE_GENERATOR: 'Visual Studio 17 2022'
 
 jobs:
   # ============================================================
@@ -41,12 +45,25 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      # ----------------------------------------------------------
+      #  Устанавливаем VS 2022 BuildTools вручную через winget.
+      #  ilammy/msvc-dev-cmd@v1 не используем: на текущих раннерах
+      #  он цепляется за предустановленный VS 18 (2026 Insider),
+      #  из-за чего Flutter не может найти генератор VS 2022.
+      # ----------------------------------------------------------
+      - name: Install Visual Studio 2022 BuildTools (winget)
+        shell: pwsh
+        run: |
+          winget install Microsoft.VisualStudio.2022.BuildTools `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+          Write-Host "winget exit code: $LASTEXITCODE"
 
-      - name: Detect Visual Studio and set CMAKE_GENERATOR
+      # ----------------------------------------------------------
+      #  Находим vcvarsall.bat через vswhere.
+      # ----------------------------------------------------------
+      - name: Locate vcvarsall.bat
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -55,33 +72,76 @@ jobs:
             exit 1
           }
 
-          $ver = & $vswhere -latest -products * `
+          $installPath = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationVersion
-          Write-Host "VS installationVersion: $ver"
+            -property installationPath
 
-          if (-not $ver) {
+          Write-Host "VS install path: $installPath"
+
+          if (-not $installPath) {
             Write-Error "Visual Studio with C++ toolchain not found"
             exit 1
           }
 
-          $major = ($ver -split '\.')[0]
-          switch ($major) {
-            '16' { $gen = 'Visual Studio 16 2019' }
-            '17' { $gen = 'Visual Studio 17 2022' }
-            '18' { $gen = 'Visual Studio 18 2026' }
-            default {
-              Write-Warning "Unknown VS major '$major' — assuming VS 2022 generator"
-              $gen = 'Visual Studio 17 2022'
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "vcvarsall.bat not found at $vcvars"
+            exit 1
+          }
+
+          Write-Host "vcvarsall.bat: $vcvars"
+          "VCVARSALL_PATH=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ----------------------------------------------------------
+      #  Запускаем vcvarsall.bat x64, вытаскиваем env в GITHUB_ENV
+      #  и печатаем версию cl.exe (MSVC).
+      # ----------------------------------------------------------
+      - name: Run vcvarsall.bat and print MSVC version
+        shell: pwsh
+        run: |
+          $vcvars = $env:VCVARSALL_PATH
+          if (-not $vcvars -or -not (Test-Path $vcvars)) {
+            Write-Error "VCVARSALL_PATH not set or file missing: $vcvars"
+            exit 1
+          }
+
+          Write-Host "=== Calling vcvarsall.bat x64 ==="
+          $envDump = cmd /c "call `"$vcvars`" x64 >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "vcvarsall.bat failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+          # Пишем все переменные окружения в GITHUB_ENV, чтобы
+          # следующие шаги видели INCLUDE, LIB, PATH и т.д.
+          foreach ($line in $envDump) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $matches[1]
+              $value = $matches[2]
+              # PATH перезаписываем, остальные — добавляем.
+              "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
           }
 
-          Write-Host "CMake generator: $gen"
-          "CMAKE_GENERATOR=$gen" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "VS_MAJOR=$major"      | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host ""
+          Write-Host "=== MSVC version ==="
+          $clVersion = cmd /c "call `"$vcvars`" x64 >nul 2>&1 && cl 2>&1 | findstr /C:`"Version`""
+          $clVersion | ForEach-Object { Write-Host $_ }
+
+          if (-not $clVersion) {
+            Write-Error "cl.exe version not detected — MSVC toolchain broken"
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=== VCToolsVersion ==="
+          Write-Host "VCToolsVersion=$env:VCToolsVersion"
+          Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
 
       # ----------------------------------------------------------
       #  Кладём scripts/ ПЕРЕД системным cmake в PATH.
+      #  Flutter жёстко передаёт -G "Visual Studio 16 2019",
+      #  враппер подменит на CMAKE_GENERATOR (VS 17 2022).
       # ----------------------------------------------------------
       - name: Prepend scripts/ to PATH (cmake wrapper)
         shell: pwsh
@@ -89,6 +149,18 @@ jobs:
           $scripts = (Resolve-Path "scripts").Path
           Write-Host "Adding to PATH: $scripts"
           "$scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Verify toolchain (cl, cmake, generator)
+        shell: pwsh
+        run: |
+          Write-Host "--- which cl ---"
+          Get-Command cl | Format-List *
+          Write-Host "--- which cmake ---"
+          Get-Command cmake | Format-List *
+          Write-Host "--- CMAKE_GENERATOR ---"
+          Write-Host $env:CMAKE_GENERATOR
+          Write-Host "--- PATH (first 8) ---"
+          $env:PATH -split ';' | Select-Object -First 8
 
       - name: Prepare frontend (pub get + assets)
         run: python build_frontend.py --platform Windows
@@ -99,14 +171,6 @@ jobs:
           if (Test-Path "Frontend\Core\build\windows") {
             Remove-Item -Recurse -Force "Frontend\Core\build\windows"
           }
-
-      - name: Verify cmake wrapper is first in PATH
-        shell: pwsh
-        run: |
-          Write-Host "--- which cmake ---"
-          Get-Command cmake | Format-List *
-          Write-Host "--- PATH (first 5) ---"
-          $env:PATH -split ';' | Select-Object -First 5
 
       - name: Build desktop (Go + Flutter)
         run: python build_desktop.py --platform Windows

@@ -2,17 +2,16 @@
 REM ---------------------------------------------------------------------------
 REM  cmake.cmd — wrapper вокруг настоящего cmake.exe.
 REM
-REM  Зачем: Flutter-тулза для Windows жёстко передаёт
-REM    -G "Visual Studio 16 2019" -A x64
-REM  в командную строку CMake, игнорируя переменную окружения CMAKE_GENERATOR.
-REM  Аргумент -G имеет приоритет над CMAKE_GENERATOR и над set(... FORCE)
-REM  внутри CMakeLists.txt, поэтому единственный чистый способ —
-REM  перехватить вызов cmake и подменить генератор.
+REM  Flutter для Windows жёстко передаёт `-G "Visual Studio 16 2019"` в
+REM  командной строке CMake, игнорируя env-переменную CMAKE_GENERATOR.
+REM  Аргумент -G приоритетнее env и set(... FORCE) в CMakeLists.txt.
+REM  Этот враппер вырезает -G и -A из аргументов и подставляет генератор
+REM  из %CMAKE_GENERATOR% (VS 17 2022, потому что мы ставим BuildTools 2022).
 REM ---------------------------------------------------------------------------
 
 setlocal EnableDelayedExpansion
 
-REM Находим настоящий cmake.exe, минуя этот скрипт.
+REM Находим настоящий cmake.exe, минуя эту папку scripts/.
 set "REAL_CMAKE="
 for %%P in ("%PATH:;=" "%") do (
     if exist "%%~P\cmake.exe" (
