@@ -114,6 +114,9 @@ class Settings {
   final bool allowHashRedistribution;
   final bool validateVkHashes;
 
+  /// Экспериментальные функции.
+  final bool enableSmartTunnel;
+
   Settings({
     this.peer = '',
     this.vkHashes = '',
@@ -133,6 +136,7 @@ class Settings {
     this.vkAuthMode = 'vkcalls',
     this.allowHashRedistribution = false,
     this.validateVkHashes = false,
+    this.enableSmartTunnel = false,
   });
 
   factory Settings.fromJson(Map<String, dynamic> j) {
@@ -163,6 +167,7 @@ class Settings {
       vkAuthMode: (j['vkAuthMode'] ?? 'vkcalls') as String,
       allowHashRedistribution: (j['allowHashRedistribution'] ?? false) as bool,
       validateVkHashes: (j['validateVkHashes'] ?? false) as bool,
+      enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
     );
   }
 
@@ -185,6 +190,7 @@ class Settings {
     'vkAuthMode': vkAuthMode,
     'allowHashRedistribution': allowHashRedistribution,
     'validateVkHashes': validateVkHashes,
+    'enableSmartTunnel': enableSmartTunnel,
   };
 
   Settings copyWith({
@@ -194,6 +200,7 @@ class Settings {
     String? deviceId, String? authMode, String? turnTransport,
     String? turnHost, String? turnPort, String? captchaMode,
     String? vkAuthMode, bool? allowHashRedistribution, bool? validateVkHashes,
+    bool? enableSmartTunnel,
   }) => Settings(
     peer: peer ?? this.peer,
     vkHashes: vkHashes ?? this.vkHashes,
@@ -213,6 +220,7 @@ class Settings {
     vkAuthMode: vkAuthMode ?? this.vkAuthMode,
     allowHashRedistribution: allowHashRedistribution ?? this.allowHashRedistribution,
     validateVkHashes: validateVkHashes ?? this.validateVkHashes,
+    enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
   );
 }
 
@@ -345,9 +353,6 @@ class Api {
     catch (_) { return VkTokenState.empty; }
   }
 
-  /// VK login — открывает окно авторизации:
-  ///   Desktop: запускает LaLuneTokenFetcher.exe
-  ///   Android: открывает WebView с VK OAuth
   static bool vkLogin() { try { return _vkLogin(); } catch (_) { return false; } }
 
   static bool deleteVKToken() { try { return _deleteVKToken(); } catch (_) { return false; } }

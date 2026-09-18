@@ -31,7 +31,6 @@ const (
 
 	LaLuneVersion = "0.5.0"
 
-	// Дефолты и границы для workers.
 	DefaultWorkers        = 9
 	MinWorkers            = 1
 	MaxWorkers            = 127
@@ -53,21 +52,12 @@ type Config struct {
 type Settings struct {
 	Peer                    string `json:"peer"`
 	VkHashes                string `json:"vkHashes"`
-	VkJsToken               string `json:"vkJsToken"` // legacy, не используется
+	VkJsToken               string `json:"vkJsToken"` // legacy
 	TurnHost                string `json:"turnHost"`
 	TurnPort                string `json:"turnPort"`
 	TurnTransport           string `json:"turnTransport"`
-
-	// Workers — общее число воркеров ядра (идёт в -n напрямую).
-	// Диапазон: 1..127.
 	Workers                 int    `json:"workers"`
-
-	// AutoApiWorkers — сколько воркеров "влезает" в один звонок VK
-	// в режиме Авто API. Используется только для расчёта количества
-	// звонков: callsCount = ceil(Workers / AutoApiWorkers).
-	// Диапазон: 9..27, дефолт 9.
 	AutoApiWorkers          int    `json:"autoApiWorkers"`
-
 	Obfs                    string `json:"obfs"`
 	Fingerprint             string `json:"fingerprint"`
 	ClientIds               string `json:"clientIds"`
@@ -78,6 +68,9 @@ type Settings struct {
 	AuthMode                string `json:"authMode"`
 	AllowHashRedistribution bool   `json:"allowHashRedistribution"`
 	ValidateVkHashes        bool   `json:"validateVkHashes"`
+
+	// Экспериментальные функции.
+	EnableSmartTunnel bool `json:"enableSmartTunnel"`
 }
 
 type AppCore struct {
@@ -107,6 +100,8 @@ type AppCore struct {
 
 	activeCallIds []string
 	activeCallMux sync.Mutex
+
+	smartTunnel *SmartTunnel
 }
 
 func NewAppCore() *AppCore { return &AppCore{logs: []string{}} }
@@ -128,6 +123,14 @@ func (a *AppCore) Startup(ctx context.Context) {
 
 	a.InitDB()
 	a.LoadSettings()
+
+	// SmartTunnel — запускаем, если включён в настройках.
+	a.smartTunnel = NewSmartTunnel(a)
+	if a.settings.EnableSmartTunnel {
+		if err := a.smartTunnel.Start(); err != nil {
+			a.AddLog(fmt.Sprintf("[SMART-TUNNEL] Ошибка запуска: %v", err))
+		}
+	}
 }
 
 func (a *AppCore) GetAppDataDir() string {
@@ -189,16 +192,17 @@ func (a *AppCore) LoadSettings() {
 	data, err := os.ReadFile(a.settingsFile)
 	if err != nil {
 		a.settings = Settings{
-			Workers:        DefaultWorkers,
-			AutoApiWorkers: DefaultAutoApiWorkers,
-			Obfs:           "audio",
-			Fingerprint:    "chrome",
-			ClientIds:      "8202606,6287487",
-			VkAuthMode:     "vkcalls",
-			CaptchaMode:    "auto",
-			TurnTransport:  "udp",
-			DeviceId:       uuid.New().String(),
-			AuthMode:       "manual",
+			Workers:           DefaultWorkers,
+			AutoApiWorkers:    DefaultAutoApiWorkers,
+			Obfs:              "audio",
+			Fingerprint:       "chrome",
+			ClientIds:         "8202606,6287487",
+			VkAuthMode:        "vkcalls",
+			CaptchaMode:       "auto",
+			TurnTransport:     "udp",
+			DeviceId:          uuid.New().String(),
+			AuthMode:          "manual",
+			EnableSmartTunnel: false,
 		}
 		a.SaveSettingsFile()
 		return
@@ -209,7 +213,6 @@ func (a *AppCore) LoadSettings() {
 		return
 	}
 
-	// Нормализуем значения (миграция со старого settings.json).
 	if a.settings.DeviceId == "" {
 		a.settings.DeviceId = uuid.New().String()
 		a.SaveSettingsFile()
@@ -221,7 +224,6 @@ func (a *AppCore) LoadSettings() {
 		a.settings.TurnTransport = "udp"
 	}
 
-	// Workers: clamp в [1, 127]. Если 0 (старый settings.json) — дефолт.
 	if a.settings.Workers <= 0 {
 		a.settings.Workers = DefaultWorkers
 	}
@@ -232,7 +234,6 @@ func (a *AppCore) LoadSettings() {
 		a.settings.Workers = MaxWorkers
 	}
 
-	// AutoApiWorkers: clamp в [9, 27]. Если 0 — дефолт.
 	if a.settings.AutoApiWorkers <= 0 {
 		a.settings.AutoApiWorkers = DefaultAutoApiWorkers
 	}
@@ -361,7 +362,6 @@ func (a *AppCore) SaveSettings(settingsJson string) bool {
 		newSettings.TurnTransport = "udp"
 	}
 
-	// Клэмпим workers.
 	if newSettings.Workers < MinWorkers {
 		newSettings.Workers = MinWorkers
 	}
@@ -369,7 +369,6 @@ func (a *AppCore) SaveSettings(settingsJson string) bool {
 		newSettings.Workers = MaxWorkers
 	}
 
-	// Клэмпим autoApiWorkers.
 	if newSettings.AutoApiWorkers < MinAutoApiWorkers {
 		newSettings.AutoApiWorkers = MinAutoApiWorkers
 	}
@@ -377,11 +376,24 @@ func (a *AppCore) SaveSettings(settingsJson string) bool {
 		newSettings.AutoApiWorkers = MaxAutoApiWorkers
 	}
 
+	oldSmartTunnel := a.settings.EnableSmartTunnel
+
 	a.mu.Lock()
 	a.settings = newSettings
 	data, _ := json.MarshalIndent(a.settings, "", "  ")
 	_ = os.WriteFile(a.settingsFile, data, 0644)
 	a.mu.Unlock()
+
+	// Реагируем на изменение флага SmartTunnel.
+	if a.smartTunnel != nil && oldSmartTunnel != newSettings.EnableSmartTunnel {
+		if newSettings.EnableSmartTunnel {
+			if err := a.smartTunnel.Start(); err != nil {
+				a.AddLog(fmt.Sprintf("[SMART-TUNNEL] Ошибка запуска: %v", err))
+			}
+		} else {
+			a.smartTunnel.Stop()
+		}
+	}
 
 	a.AddLog("[API] Настройки сохранены")
 	return true

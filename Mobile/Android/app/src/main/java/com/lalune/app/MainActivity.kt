@@ -69,6 +69,9 @@ class MainActivity : AppCompatActivity() {
     private var selectedConfigJson: String = "{}"
     private var vkLoginInProgress = false
 
+    // SmartTunnel — Lua-рантайм.
+    private var smartTunnelManager: SmartTunnelManager? = null
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -88,6 +91,12 @@ class MainActivity : AppCompatActivity() {
 
         coreManager = CoreManager(this)
         loadConfigs()
+
+        // SmartTunnel — инициализируем и запускаем, если включён.
+        smartTunnelManager = SmartTunnelManager(this)
+        if (readSettingBool("enableSmartTunnel", false)) {
+            smartTunnelManager?.start()
+        }
 
         assetLoader = WebViewAssetLoader.Builder()
             .setDomain(ASSET_HOST)
@@ -259,6 +268,16 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, message)
     }
 
+    private fun readSettingBool(key: String, default: Boolean): Boolean {
+        return try {
+            if (!settingsFile.exists()) return default
+            val json = JSONObject(settingsFile.readText())
+            json.optBoolean(key, default)
+        } catch (_: Exception) {
+            default
+        }
+    }
+
     // ============================================================
     //  VK token
     // ============================================================
@@ -306,9 +325,6 @@ class MainActivity : AppCompatActivity() {
         return o.toString()
     }
 
-    /// Вызывает JS-функцию window._vkLoginCallback(success, payload).
-    /// На Android WebView метод называется evaluateJavascript (не evaluateJavaScript),
-    /// и callback — ValueCallback<String>?, а не null.
     private fun notifyJsTokenReceived(success: Boolean, payload: String) {
         val jsPayload = payload
             .replace("\\", "\\\\")
@@ -320,7 +336,7 @@ class MainActivity : AppCompatActivity() {
 
         runOnUiThread {
             try {
-                webView.evaluateJavascript(js, ValueCallback<String> { /* ignore result */ })
+                webView.evaluateJavascript(js, ValueCallback<String> { })
             } catch (_: Exception) {}
         }
     }
@@ -353,6 +369,7 @@ class MainActivity : AppCompatActivity() {
             if (!json.has("vkAuthMode")) json.put("vkAuthMode", "vkcalls")
             if (!json.has("captchaMode")) json.put("captchaMode", "auto")
             if (!json.has("autoConnect")) json.put("autoConnect", false)
+            if (!json.has("enableSmartTunnel")) json.put("enableSmartTunnel", false)
 
             json.put("deviceId", DeviceId.getOrCreate(this@MainActivity))
             return json.toString()
@@ -421,7 +438,20 @@ class MainActivity : AppCompatActivity() {
                 val currentDeviceId = DeviceId.getOrCreate(this@MainActivity)
                 incoming.put("deviceId", currentDeviceId)
 
+                val oldSmartTunnel = readSettingBool("enableSmartTunnel", false)
+                val newSmartTunnel = incoming.optBoolean("enableSmartTunnel", false)
+
                 settingsFile.writeText(incoming.toString())
+
+                // Реагируем на изменение флага SmartTunnel.
+                if (oldSmartTunnel != newSmartTunnel) {
+                    if (newSmartTunnel) {
+                        smartTunnelManager?.start()
+                    } else {
+                        smartTunnelManager?.stop()
+                    }
+                }
+
                 true
             } catch (e: Exception) {
                 false
@@ -446,7 +476,6 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun validateVKToken(): String = computeVkTokenState()
 
-        /// VkLogin — открывает WebView с OAuth ВК через LaLuneTokenFetcherAndroid.
         @JavascriptInterface
         fun vkLogin(): Boolean {
             if (vkLoginInProgress) {
@@ -622,6 +651,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        smartTunnelManager?.stop()
         scope.cancel()
     }
 

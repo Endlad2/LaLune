@@ -9,14 +9,10 @@ android {
 
     defaultConfig {
         applicationId "com.lalune.app"
-        minSdk 24
+        minSdk 21
         targetSdk 34
         versionCode 1
         versionName "0.5.0"
-
-        ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
-        }
     }
 
     buildTypes {
@@ -25,37 +21,21 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-
     kotlinOptions {
         jvmTarget = '17'
-    }
-
-    packaging {
-        jniLibs {
-            useLegacyPackaging = false
-        }
-        resources {
-            excludes += ['/META-INF/{AL2.0,LGPL2.1}']
-        }
-    }
-
-    sourceSets {
-        main {
-            assets.srcDirs = ['src/main/assets']
-            jniLibs.srcDirs = ['src/main/jniLibs']
-        }
     }
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'androidx.activity:activity-ktx:1.8.2'
-    implementation 'androidx.webkit:webkit:1.11.0'
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.webkit:webkit:1.10.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // SmartTunnel — Lua 5.1 runtime.
+    implementation 'org.luaj:luaj-jse:3.0.1'
 }

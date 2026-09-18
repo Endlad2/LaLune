@@ -29,6 +29,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final _deviceIdCtl = TextEditingController();
 
   String _authMode = 'manual';
+  bool _enableSmartTunnel = false;
+
   VkTokenState _vkState = VkTokenState.empty;
   Timer? _vkPollTimer;
   bool _vkLoginInProgress = false;
@@ -80,6 +82,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _clientIdsCtl.text = s.clientIds;
     _deviceIdCtl.text = s.deviceId;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
+    _enableSmartTunnel = s.enableSmartTunnel;
 
     _vkState = Api.validateVKToken();
     setState(() {
@@ -137,6 +140,7 @@ class _SettingsPageState extends State<SettingsPage> {
       clientIds: _clientIdsCtl.text.trim(),
       deviceId: _s.deviceId,
       authMode: _authMode,
+      enableSmartTunnel: _enableSmartTunnel,
     );
 
     final ok = Api.saveSettings(s);
@@ -181,8 +185,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _onLoginTap() async {
-    // Даже если уже идёт процесс — позволяем перезапустить.
-    // Если токен есть — не перезапускаем, показываем сообщение.
     final st = Api.validateVKToken();
     setState(() => _vkState = st);
     if (st.hasToken) {
@@ -261,7 +263,6 @@ class _SettingsPageState extends State<SettingsPage> {
                   style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
               ],
 
-              // Доп. подсказка: жёлтый фон.
               const SizedBox(height: 10),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -363,7 +364,6 @@ class _SettingsPageState extends State<SettingsPage> {
       return SizedBox(
         width: double.infinity,
         child: OutlinedButton(
-          // Оставляем активной — чтобы можно было перезапустить, если зависло.
           onPressed: _vkLoginInProgress ? null : _onLoginTap,
           style: OutlinedButton.styleFrom(
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -640,6 +640,36 @@ class _SettingsPageState extends State<SettingsPage> {
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+
+              // --------- Экспериментальные ---------
+              _sectionTitle('Экспериментальные'),
+              GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _toggleRow(
+                      'Enable SmartTunnel',
+                      _enableSmartTunnel,
+                      (v) {
+                        setState(() => _enableSmartTunnel = v);
+                        _markDirty();
+                      },
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'SmartTunnel — экспериментальный Lua 5.1-скрипт '
+                      'для автоматического управления туннелем. '
+                      'Пока в разработке — включайте только для тестов.',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        height: 1.5,
+                        color: Colors.white.withOpacity(0.55),
                       ),
                     ),
                   ],
