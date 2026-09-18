@@ -2,46 +2,52 @@
 """
 build_desktop.py — сборка нативного Desktop-приложения LaLune.
 
+Структура модуля:
+  Desktop/Libs/go.mod        (module lalune-libs)
+  Desktop/Libs/cmd/main.go   (package main для c-shared)
+  Desktop/Libs/*.go          (package libs — вся логика)
+
 Порядок:
-  1. go build -buildmode=c-shared → Desktop/<platform>/build/liblalune.so / lalune.dll
-  2. flutter build linux|windows --release
+  1. go build -buildmode=c-shared из Desktop/Libs/ → Desktop/Libs/build/liblalune.so / lalune.dll
+  2. flutter build linux|windows --release из Frontend/Core/
   3. Копируем .so/.dll рядом с Flutter-бинарником (в bundle)
-  4. Копируем SmartTunnel.lua в bundle (если нужен внешний, а не embed)
 
 Требования:
   - Go 1.22+
   - Flutter 3.22+ (с desktop support)
-  - Frontend/Core/pubspec.yaml
 """
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 class DesktopBuilder:
-    def __init__(self, platform: str):
-        if platform not in ("Linux", "Windows"):
-            raise ValueError(f"Неподдерживаемая платформа: {platform}")
-        self.platform = platform
+    def __init__(self, platform_name: str):
+        if platform_name not in ("Linux", "Windows"):
+            raise ValueError(f"Неподдерживаемая платформа: {platform_name}")
+        self.platform = platform_name
         self.root = Path.cwd()
         self.desktop_dir = self.root / "Desktop"
-        self.platform_dir = self.desktop_dir / platform
         self.libs_dir = self.desktop_dir / "Libs"
-        self.cmd_dir = self.desktop_dir / "cmd"
-        self.build_dir = self.platform_dir / "build"
+        self.build_dir = self.libs_dir / "build"
         self.flutter_dir = self.root / "Frontend" / "Core"
 
-        if platform == "Linux":
+        if platform_name == "Linux":
             self.lib_name = "liblalune.so"
             self.flutter_target = "linux"
-            self.bundle_lib_dir = self.flutter_dir / "build" / "linux" / "x64" / "release" / "bundle" / "lib"
+            self.bundle_lib_dir = (
+                self.flutter_dir / "build" / "linux" / "x64" / "release" / "bundle" / "lib"
+            )
         else:
             self.lib_name = "lalune.dll"
             self.flutter_target = "windows"
-            self.bundle_lib_dir = self.flutter_dir / "build" / "windows" / "x64" / "runner" / "Release"
+            self.bundle_lib_dir = (
+                self.flutter_dir / "build" / "windows" / "x64" / "runner" / "Release"
+            )
 
     def build_go(self) -> None:
         self.build_dir.mkdir(parents=True, exist_ok=True)
@@ -63,12 +69,12 @@ class DesktopBuilder:
             "./cmd",
         ]
         print(f"[build] go build (c-shared) → {out_lib}")
-        subprocess.run(cmd, cwd=str(self.desktop_dir), env=env, check=True)
+        subprocess.run(cmd, cwd=str(self.libs_dir), env=env, check=True)
 
         if not out_lib.exists():
             raise FileNotFoundError(f"Go не создал {out_lib}")
 
-        # Заодно убираем сгенерированный .h — он нам не нужен.
+        # Удаляем сгенерированный .h — он не нужен.
         h_file = out_lib.with_suffix(".h")
         if h_file.exists():
             h_file.unlink()

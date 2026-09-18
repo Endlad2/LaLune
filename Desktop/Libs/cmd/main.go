@@ -3,19 +3,17 @@
 //
 // main.go — точка входа для сборки C-shared библиотеки.
 //
-// Сборка:
+// Сборка (из Desktop/Libs/):
 //   Linux:   go build -buildmode=c-shared -o build/liblalune.so ./cmd
 //   Windows: go build -buildmode=c-shared -o build/lalune.dll ./cmd
 //
-// Все публичные функции объявлены в ../Libs/capi.go через //export.
-// main() здесь нужен для buildmode=c-shared, но не вызывается.
+// Все публичные функции объявлены в ../capi.go через //export.
+// main() нужен для buildmode=c-shared, но не вызывается.
 
 package main
 
-import (
-	_ "lalune-desktop/Libs"
-)
-
 func main() {
 	// Ничего не делаем — библиотека работает через C-ABI.
+	// Все функции находятся в пакете libs (родительская папка),
+	// который компилируется в эту же .dll целиком.
 }
