@@ -11,9 +11,13 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.lifecycle.lifecycleScope
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -85,7 +89,14 @@ class MainActivity : FlutterActivity() {
                     "getStatus" -> result.success("{\"connected\":$isConnected}")
                     "connect" -> result.success(connect(call.argument<Number>("configId")?.toLong() ?: 0L))
                     "disconnect" -> { stopVpnService(); isConnected = false; result.success(true) }
-                    "updateCore" -> { coreManager.checkCore(); result.success(true) }
+
+                    // checkCore — suspend-функция, вызываем из корутины.
+                    "updateCore" -> {
+                        lifecycleScope.launch {
+                            val ok = withContext(Dispatchers.IO) { coreManager.checkCore() }
+                            result.success(ok)
+                        }
+                    }
                     "updateCoreAndWait" -> result.success(true)
                     "checkCoreUpdate" -> result.success("{\"update\":false,\"version\":\"\"}")
                     "checkLaLuneUpdate" -> result.success("{\"update\":false,\"version\":\"0.5.0\"}")

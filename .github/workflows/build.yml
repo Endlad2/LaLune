@@ -14,9 +14,6 @@ env:
   JAVA_VERSION: '17'
   ANDROID_COMPILE_SDK: '34'
   ANDROID_BUILD_TOOLS: '34.0.0'
-  # Windows Python по умолчанию использует cp1252 для stdout/stderr —
-  # русские буквы в логах падают с UnicodeEncodeError. Форсируем UTF-8
-  # на уровне интерпретатора, ДО запуска любого .py.
   PYTHONIOENCODING: 'utf-8'
   PYTHONUTF8: '1'
 
@@ -49,10 +46,6 @@ jobs:
         with:
           arch: x64
 
-      # ----------------------------------------------------------
-      #  Динамически определяем Visual Studio: мажор может быть
-      #  16 (2019), 17 (2022) или 18+ (2026 Insider). Не хардкодим.
-      # ----------------------------------------------------------
       - name: Detect Visual Studio and set CMAKE_GENERATOR
         shell: pwsh
         run: |
@@ -87,20 +80,33 @@ jobs:
           "CMAKE_GENERATOR=$gen" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "VS_MAJOR=$major"      | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # ----------------------------------------------------------
+      #  Кладём scripts/ ПЕРЕД системным cmake в PATH.
+      # ----------------------------------------------------------
+      - name: Prepend scripts/ to PATH (cmake wrapper)
+        shell: pwsh
+        run: |
+          $scripts = (Resolve-Path "scripts").Path
+          Write-Host "Adding to PATH: $scripts"
+          "$scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       - name: Prepare frontend (pub get + assets)
         run: python build_frontend.py --platform Windows
 
-      # ----------------------------------------------------------
-      #  Чистим кэш CMake перед сборкой — Flutter кэширует выбранный
-      #  генератор в build/windows, и без очистки может остаться
-      #  старый "Visual Studio 16 2019".
-      # ----------------------------------------------------------
       - name: Clean stale Windows build cache
         shell: pwsh
         run: |
           if (Test-Path "Frontend\Core\build\windows") {
             Remove-Item -Recurse -Force "Frontend\Core\build\windows"
           }
+
+      - name: Verify cmake wrapper is first in PATH
+        shell: pwsh
+        run: |
+          Write-Host "--- which cmake ---"
+          Get-Command cmake | Format-List *
+          Write-Host "--- PATH (first 5) ---"
+          $env:PATH -split ';' | Select-Object -First 5
 
       - name: Build desktop (Go + Flutter)
         run: python build_desktop.py --platform Windows
@@ -172,15 +178,6 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # ----------------------------------------------------------
-      #  Android SDK ставим ВРУЧНУЮ через sdkmanager.
-      #  - android-actions/setup-android@v3 больше не работает:
-      #    он пытается ставить удалённый пакет 'tools'.
-      #  - yes | sdkmanager ... || true — глушим SIGPIPE
-      #    ("yes: standard output: Broken pipe"), который иначе
-      #    валит шаг из-за set -o pipefail.
-      #  - cmdline-tools НЕ ставим: он уже есть на раннере.
-      # ----------------------------------------------------------
       - name: Install Android SDK manually
         shell: bash
         run: |
@@ -214,7 +211,6 @@ jobs:
 
           yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
 
-          # NDK 25.1.8937393 нужен для path_provider_android и url_launcher_android.
           yes | "$SDKMGR" --sdk_root="$SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_COMPILE_SDK}" \
@@ -271,24 +267,34 @@ jobs:
       - name: Prepare frontend (pub get + assets)
         run: python3 build_frontend.py --platform Android
 
-      # ----------------------------------------------------------
-      #  Удаляем .kts-дубликаты, иначе Gradle игнорирует .gradle
-      #  и падает с невнятными ошибками.
-      # ----------------------------------------------------------
+      - name: Prepare Android Core (Java sources)
+        run: python3 prepare_android_core.py
+
       - name: Verify no .kts duplicates
         run: |
           if [ -f Frontend/Core/android/settings.gradle.kts ]; then
-            echo "::error::settings.gradle.kts exists — удалите его, иначе Gradle игнорирует settings.gradle"
+            echo "::error::settings.gradle.kts exists — удалите его"
             exit 1
           fi
           if [ -f Frontend/Core/android/app/build.gradle.kts ]; then
-            echo "::error::app/build.gradle.kts exists — удалите его, иначе Gradle игнорирует app/build.gradle"
+            echo "::error::app/build.gradle.kts exists — удалите его"
             exit 1
           fi
           if [ -f Frontend/Core/android/build.gradle.kts ]; then
-            echo "::error::build.gradle.kts exists — удалите его, иначе Gradle игнорирует build.gradle"
+            echo "::error::build.gradle.kts exists — удалите его"
             exit 1
           fi
+
+      - name: Verify Java sources are in place
+        run: |
+          JAVA_DIR="Frontend/Core/android/app/src/main/java/com/lalune/app"
+          if [ ! -f "$JAVA_DIR/LaLuneTokenFetcherAndroid.java" ]; then
+            echo "::error::LaLuneTokenFetcherAndroid.java не найден в $JAVA_DIR"
+            ls -la "$JAVA_DIR" || true
+            exit 1
+          fi
+          echo "Java sources OK:"
+          ls -la "$JAVA_DIR"
 
       - name: Build APK
         working-directory: Frontend/Core
