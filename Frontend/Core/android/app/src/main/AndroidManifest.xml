@@ -12,7 +12,16 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
-        android:extractNativeLibs="true">
+
+        <!-- extractNativeLibs=true — .so распаковываются в nativeLibraryDir -->
+        android:extractNativeLibs="true"
+
+        <!-- debuggable=true — разрешает execve() из nativeLibraryDir
+             даже на новых прошивках, где legacy-режим targetSdk
+             может игнорироваться. -->
+        android:debuggable="true"
+
+        android:theme="@style/Theme.LaLune">
 
         <activity
             android:name=".MainActivity"

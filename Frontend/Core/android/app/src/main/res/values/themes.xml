@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Theme.LaLune наследует Theme.AppCompat.NoActionBar — как в старом
+      рабочем проекте. Требует androidx.appcompat:appcompat (добавлен
+      в app/build.gradle).
+    -->
+    <style name="Theme.LaLune" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:statusBarColor">#0a0e2a</item>
+        <item name="android:navigationBarColor">#0a0e2a</item>
+        <item name="android:windowBackground">#0a0e2a</item>
+    </style>
+
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">?android:colorBackground</item>
+    </style>
+</resources>

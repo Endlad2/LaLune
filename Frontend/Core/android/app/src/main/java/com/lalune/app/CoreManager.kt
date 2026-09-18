@@ -3,29 +3,35 @@
 //
 // CoreManager — управление нативным ядром CSQTT на Android.
 //
-// Ядро (libclient-android-<abi>.so) поставляется ВНУТРИ APK,
-// в lib/<abi>/ (jniLibs, упакованные Gradle'ом). Запускать его
-// напрямую из nativeLibraryDir нельзя: на Android 10+ SELinux
-// и W^X запрещают execve() файлов из /data/app/.../lib/.
+// ВАЖНО: ядро (libclient-android-<abi>.so) запускается ПРЯМО из
+// nativeLibraryDir, без копирования в filesDir и без chmod.
 //
-// Поэтому при первом запуске мы копируем .so в filesDir/la-lune/core/,
-// выставляем права 0755 и запускаем оттуда. Это стандартный подход
-// для VPN-клиентов (Clash, sing-box, Xray и т.д.).
+// Почему так работает:
+//   - AndroidManifest.xml имеет extractNativeLibs="true", поэтому
+//     Gradle упаковывает jniLibs/<abi>/*.so в APK, а система при
+//     установке распаковывает их в /data/app/.../lib/<abi>/.
+//   - targetSdk = 28 включает legacy-режим, в котором SELinux
+//     разрешает execve() для файлов из nativeLibraryDir.
+//   - android:debuggable="true" — второй рубеж: даже на новых
+//     прошивках debuggable-приложениям разрешён execve из
+//     app_data_file/apk_data_file.
+//
+// Логи ядра пишутся в filesDir/la-lune/logs.log; их читает
+// LaLuneVpnService, чтобы понять, когда поднимать TUN.
 
 package com.lalune.app
 
 import android.content.Context
-import android.system.Os
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 
 class CoreManager(private val context: Context) {
 
     companion object {
-        private const val TAG = "CoreManager"
+        private const val DEFAULT_WORKERS = 9
+        private const val MIN_WORKERS = 1
+        private const val MAX_WORKERS = 127
     }
 
     private val appDir: File by lazy { File(context.filesDir, "la-lune") }
@@ -33,14 +39,13 @@ class CoreManager(private val context: Context) {
 
     val logsFile: File by lazy { File(appDir, "logs.log") }
 
-    private val latestFile: File by lazy { File(appDir, "LATEST") }
     private var coreProcess: Process? = null
     private var isRunning = false
 
     /**
-     * Имя нативного ядра внутри APK, в зависимости от ABI устройства.
-     * Gradle кладёт файлы из src/main/jniLibs/<abi>/ в lib/<abi>/
-     * внутри APK, и Android распаковывает их в nativeLibraryDir.
+     * Имя ядра внутри APK, в зависимости от ABI устройства.
+     * Gradle кладёт jniLibs/<abi>/libclient-android-<abi>.so в
+     * lib/<abi>/ внутри APK, система распаковывает в nativeLibraryDir.
      */
     fun getCoreName(): String? {
         val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
@@ -52,171 +57,155 @@ class CoreManager(private val context: Context) {
         }
     }
 
-    /** Путь к ядру, извлечённому из APK в filesDir (откуда можно exec). */
+    /**
+     * Путь к ядру — прямо в nativeLibraryDir.
+     * Никакого копирования в filesDir: на targetSdk=28 + debuggable
+     * Android разрешает execve оттуда (это старый проверенный путь).
+     */
     fun getCorePath(): String? {
         val coreName = getCoreName() ?: return null
-        val file = File(coreDir, coreName)
-        return if (file.exists()) file.absolutePath else null
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val coreFile = File(nativeDir, coreName)
+        return if (coreFile.exists()) coreFile.absolutePath else null
     }
 
     /**
-     * Копирует ядро из nativeLibraryDir (внутри APK) в filesDir,
-     * выставляет права 0755. Идемпотентно: если файл уже скопирован
-     * и его размер совпадает с исходным — ничего не делает.
-     *
-     * Возвращает true при успехе.
+     * Проверяет, что ядро доступно в nativeLibraryDir.
+     * Если нет — пишет понятную диагностику в лог.
      */
-    suspend fun ensureCoreExtracted(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
         val coreName = getCoreName()
         if (coreName == null) {
             writeLog("[CORE] Неизвестная ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
             return@withContext false
         }
 
-        val srcFile = File(context.applicationInfo.nativeLibraryDir, coreName)
-        if (!srcFile.exists()) {
-            writeLog("[CORE] Ядро не найдено в APK: ${srcFile.absolutePath}")
-            return@withContext false
-        }
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val coreFile = File(nativeDir, coreName)
 
-        coreDir.mkdirs()
-        val dstFile = File(coreDir, coreName)
+        writeLog("[CORE] nativeLibraryDir = $nativeDir")
+        writeLog("[CORE] ищем: ${coreFile.absolutePath}")
 
-        // Если файл уже извлечён и совпадает по размеру — ничего не делаем.
-        if (dstFile.exists() && dstFile.length() == srcFile.length()) {
+        if (!coreFile.exists()) {
+            writeLog("[CORE] Ядро НЕ найдено в nativeLibraryDir")
+            writeLog("[CORE] SUPPORTED_ABIS = ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
+            // Покажем, что вообще есть в nativeLibraryDir — для диагностики.
             try {
-                Os.chmod(dstFile.absolutePath, 0b111101101) // 0755
-            } catch (e: Exception) {
-                Log.w(TAG, "chmod failed for existing core: ${e.message}")
-            }
-            writeLog("[CORE] Ядро уже извлечено: ${dstFile.absolutePath}")
-            return@withContext true
-        }
-
-        writeLog("[CORE] Извлекаю ядро из APK: $coreName")
-        try {
-            srcFile.inputStream().use { input ->
-                FileOutputStream(dstFile).use { output ->
-                    input.copyTo(output)
+                File(nativeDir).listFiles()?.forEach { f ->
+                    writeLog("[CORE]   ${f.name}  ${f.length()} bytes")
                 }
-            }
-
-            // chmod 0755 через android.system.Os — надёжнее, чем
-            // File.setExecutable(true, false), который может не выставить
-            // execute-бит для группы/остальных.
-            Os.chmod(dstFile.absolutePath, 0b111101101) // 0755
-
-            writeLog("[CORE] Ядро извлечено: ${dstFile.absolutePath} " +
-                     "(${dstFile.length()} байт)")
-            return@withContext true
-        } catch (e: Exception) {
-            writeLog("[CORE] Ошибка извлечения ядра: ${e.message}")
-            dstFile.delete()
+            } catch (_: Exception) {}
             return@withContext false
         }
+
+        writeLog("[CORE] Ядро найдено: ${coreFile.absolutePath} (${coreFile.length()} байт)")
+        return@withContext true
     }
 
-    /** Убедиться, что ядро доступно; при необходимости — извлечь из APK. */
-    suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
-        // Уже есть готовый исполняемый файл — ок.
-        val existing = getCorePath()
-        if (existing != null) {
-            writeLog("[CORE] Ядро найдено: $existing")
-            return@withContext true
-        }
-        // Иначе — извлекаем из APK.
-        return@withContext ensureCoreExtracted()
-    }
-
-    suspend fun startCore(peer: String, password: String, hashes: String): Boolean = withContext(Dispatchers.IO) {
-        if (getCorePath() == null) {
+    /**
+     * Запускает ядро из nativeLibraryDir.
+     * Все аргументы — те же, что были в рабочем старом проекте.
+     */
+    suspend fun startCore(peer: String, password: String, hashes: String): Boolean =
+        withContext(Dispatchers.IO) {
             if (!checkCore()) {
+                writeLog("[CORE] startCore: ядро недоступно")
                 return@withContext false
             }
-        }
 
-        val corePath = getCorePath() ?: return@withContext false
+            val corePath = getCorePath()
+            if (corePath == null) {
+                writeLog("[CORE] startCore: getCorePath() вернул null")
+                return@withContext false
+            }
 
-        val settingsFile = File(appDir, "settings.json")
-        val settings = if (settingsFile.exists()) {
-            try {
-                org.json.JSONObject(settingsFile.readText())
-            } catch (e: Exception) {
+            writeLog("[CORE] Запускаю: $corePath")
+
+            val settingsFile = File(appDir, "settings.json")
+            val settings = if (settingsFile.exists()) {
+                try {
+                    org.json.JSONObject(settingsFile.readText())
+                } catch (_: Exception) {
+                    org.json.JSONObject()
+                }
+            } else {
                 org.json.JSONObject()
             }
-        } else {
-            org.json.JSONObject()
-        }
 
-        var workers = settings.optInt("workers", 9)
-        if (workers < 1) workers = 1
-        if (workers > 127) workers = 127
+            var workers = settings.optInt("workers", DEFAULT_WORKERS)
+            if (workers < MIN_WORKERS) workers = MIN_WORKERS
+            if (workers > MAX_WORKERS) workers = MAX_WORKERS
 
-        val obfs = settings.optString("obfs", "video")
-        val fingerprint = settings.optString("fingerprint", "firefox")
-        val clientIds = settings.optString("clientIds", "8202606,6287487")
-        val vkAuthMode = settings.optString("vkAuthMode", "vkcalls")
-        val captchaMode = settings.optString("captchaMode", "auto")
+            val obfs = settings.optString("obfs", "video")
+            val fingerprint = settings.optString("fingerprint", "firefox")
+            val clientIds = settings.optString("clientIds", "8202606,6287487")
+            val vkAuthMode = settings.optString("vkAuthMode", "vkcalls")
+            val captchaMode = settings.optString("captchaMode", "auto")
 
-        var deviceId = settings.optString("deviceId", "")
-        if (deviceId.isBlank()) {
-            deviceId = DeviceId.getOrCreate(context)
-            DeviceId.syncToSettingsFile(context, deviceId)
-        }
+            var deviceId = settings.optString("deviceId", "")
+            if (deviceId.isBlank()) {
+                deviceId = DeviceId.getOrCreate(context)
+                DeviceId.syncToSettingsFile(context, deviceId)
+                writeLog("[DEVICE] deviceId отсутствовал, восстановлен: $deviceId")
+            }
 
-        val args = listOf(
-            corePath,
-            "-peer", peer,
-            "-password", password,
-            "-vk", hashes,
-            "-n", workers.toString(),
-            "-listen", "127.0.0.1:52230",
-            "-obfs", obfs,
-            "-fingerprint", fingerprint,
-            "-client-ids", clientIds,
-            "-vk-auth-mode", vkAuthMode,
-            "-captcha-mode", captchaMode,
-            "-device-id", deviceId
-        )
+            val args = listOf(
+                corePath,
+                "-peer", peer,
+                "-password", password,
+                "-vk", hashes,
+                "-n", workers.toString(),
+                "-listen", "127.0.0.1:52230",
+                "-obfs", obfs,
+                "-fingerprint", fingerprint,
+                "-client-ids", clientIds,
+                "-vk-auth-mode", vkAuthMode,
+                "-captcha-mode", captchaMode,
+                "-device-id", deviceId
+            )
 
-        try {
-            logsFile.writeText("")
+            try {
+                logsFile.writeText("")
 
-            val processBuilder = ProcessBuilder(args)
-            processBuilder.redirectErrorStream(true)
-            processBuilder.directory(coreDir)
+                val processBuilder = ProcessBuilder(args)
+                processBuilder.redirectErrorStream(true)
+                processBuilder.directory(context.applicationInfo.nativeLibraryDir.let { File(it) })
 
-            coreProcess = processBuilder.start()
-            isRunning = true
+                coreProcess = processBuilder.start()
+                isRunning = true
 
-            val process = coreProcess
+                val process = coreProcess
 
-            // Читаем stdout/stderr процесса в фоновом Thread —
-            // блокирующее чтение, корутины тут не нужны.
-            Thread {
-                try {
-                    process?.inputStream?.bufferedReader()?.use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            line?.let {
-                                synchronized(this@CoreManager) {
-                                    logsFile.appendText(it + "\n")
+                // Читаем stdout/stderr в фоне, пишем в logs.log.
+                // LaLuneVpnService читает этот файл и реагирует на
+                // TUNCONF: и [СТАТИСТИКА] Активных: N.
+                Thread {
+                    try {
+                        process?.inputStream?.bufferedReader()?.use { reader ->
+                            var line: String?
+                            while (reader.readLine().also { line = it } != null) {
+                                line?.let {
+                                    synchronized(this@CoreManager) {
+                                        try { logsFile.appendText(it + "\n") }
+                                        catch (_: Exception) {}
+                                    }
                                 }
                             }
                         }
+                    } catch (_: Exception) {
+                        // Процесс закрылся — выходим.
                     }
-                } catch (_: Exception) {
-                    // Процесс закрылся — выходим.
-                }
-            }.start()
+                }.start()
 
-            writeLog("[CORE] Процесс запущен: $corePath")
-            return@withContext true
-        } catch (e: Exception) {
-            writeLog("[CORE] Ошибка запуска: ${e.message}")
-            return@withContext false
+                writeLog("[CORE] Процесс запущен: $corePath")
+                return@withContext true
+            } catch (e: Exception) {
+                writeLog("[CORE] Ошибка запуска: ${e.javaClass.simpleName}: ${e.message}")
+                writeLog("[CORE]   path=$corePath")
+                writeLog("[CORE]   nativeLibDir=${context.applicationInfo.nativeLibraryDir}")
+                return@withContext false
+            }
         }
-    }
 
     fun stopCore() {
         isRunning = false
@@ -233,7 +222,8 @@ class CoreManager(private val context: Context) {
 
     private fun writeLog(message: String) {
         synchronized(this) {
-            logsFile.appendText(message + "\n")
+            try { logsFile.appendText(message + "\n") } catch (_: Exception) {}
         }
+        android.util.Log.d("LaLune-Core", message)
     }
 }
