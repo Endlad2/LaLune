@@ -12,6 +12,8 @@ env:
   FLUTTER_VERSION: '3.24.5'
   GO_VERSION: '1.22.12'
   JAVA_VERSION: '17'
+  ANDROID_COMPILE_SDK: '34'
+  ANDROID_BUILD_TOOLS: '34.0.0'
 
 jobs:
   # ============================================================
@@ -37,39 +39,53 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup MSVC 2022 environment
+      - name: Setup MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Verify Visual Studio 2022
+      # ----------------------------------------------------------
+      #  Динамически определяем Visual Studio: мажор может быть
+      #  16 (2019), 17 (2022) или 18+ (2026 Insider). Не хардкодим.
+      # ----------------------------------------------------------
+      - name: Detect Visual Studio and set CMAKE_GENERATOR
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path $vswhere)) {
-            Write-Error "vswhere.exe not found"
+            Write-Error "vswhere.exe not found at $vswhere"
             exit 1
           }
+
           $ver = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationVersion
           Write-Host "VS installationVersion: $ver"
+
           if (-not $ver) {
             Write-Error "Visual Studio with C++ toolchain not found"
             exit 1
           }
-          if (-not $ver.StartsWith("17.")) {
-            Write-Error "Expected VS 2022 (17.x), got $ver"
-            exit 1
+
+          $major = ($ver -split '\.')[0]
+          switch ($major) {
+            '16' { $gen = 'Visual Studio 16 2019' }
+            '17' { $gen = 'Visual Studio 17 2022' }
+            '18' { $gen = 'Visual Studio 18 2026' }
+            default {
+              Write-Warning "Unknown VS major '$major' — assuming VS 2022 generator"
+              $gen = 'Visual Studio 17 2022'
+            }
           }
-          "CMAKE_GENERATOR=Visual Studio 17 2022" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "CMake generator: $gen"
+          "CMAKE_GENERATOR=$gen" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VS_MAJOR=$major"      | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Prepare frontend (pub get + assets)
         run: python build_frontend.py --platform Windows
 
       - name: Build desktop (Go + Flutter)
-        env:
-          CMAKE_GENERATOR: Visual Studio 17 2022
         run: python build_desktop.py --platform Windows
 
       - name: Upload Windows bundle
@@ -139,8 +155,63 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK manually
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_ROOT="/usr/local/lib/android/sdk"
+          if [ ! -d "$SDK_ROOT" ]; then
+            SDK_ROOT="$HOME/Android/Sdk"
+          fi
+
+          SDKMGR=""
+          for candidate in \
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager" \
+            "$SDK_ROOT/cmdline-tools/bin/sdkmanager" \
+            "$(command -v sdkmanager || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              SDKMGR="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMGR" ]; then
+            echo "::error::sdkmanager not found in $SDK_ROOT"
+            ls -la "$SDK_ROOT" || true
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMGR"
+          echo "SDK root: $SDK_ROOT"
+
+          yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+
+          yes | "$SDKMGR" --sdk_root="$SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_COMPILE_SDK}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "cmdline-tools;latest" \
+            2>&1 | tail -n 40
+
+          {
+            echo "ANDROID_HOME=$SDK_ROOT"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
+            echo "$SDK_ROOT/platform-tools"
+            echo "$SDK_ROOT/cmdline-tools/latest/bin"
+            echo "$SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
+          } >> "$GITHUB_PATH"
+
+          {
+            echo "ANDROID_HOME=$SDK_ROOT"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
+          } >> "$GITHUB_ENV"
+
+          echo "--- Installed SDK packages ---"
+          ls -la "$SDK_ROOT"
+          ls -la "$SDK_ROOT/platforms" || true
+          ls -la "$SDK_ROOT/build-tools" || true
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -148,6 +219,9 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
+      - name: Flutter doctor (diagnostics)
+        run: flutter doctor -v
 
       - name: Clean stale Kotlin caches
         run: |

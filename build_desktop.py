@@ -15,8 +15,8 @@ build_desktop.py — сборка нативного Desktop-приложени�
 Требования:
   - Go 1.22+
   - Flutter 3.22+ (с desktop support)
-  - Windows: Visual Studio 2022 с workload "Desktop development with C++"
-             (CMake-генератор "Visual Studio 17 2022")
+  - Windows: Visual Studio 2022 или новее с workload
+             "Desktop development with C++"
 """
 
 import argparse
@@ -26,6 +26,19 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Windows Python по умолчанию использует cp1252 для stdout/stderr —
+# русские буквы в логах падают с UnicodeEncodeError. Форсируем UTF-8.
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+if sys.stderr.encoding and sys.stderr.encoding.lower() not in ("utf-8", "utf8"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 def log(msg: str) -> None:
     print(f"[build] {msg}", flush=True)
@@ -48,9 +61,9 @@ def detect_vs_generator() -> str | None:
     Возвращает имя CMake-генератора для установленной Visual Studio,
     либо None, если vswhere не нашёл ни одной инсталляции.
 
-    Приоритет: VS 2022 → VS 2019. Если найдена только 2019 — вернём её,
-    но пользователь должен понимать, что для сборки Flutter Windows
-    нужен VS 2022 (Flutter 3.24+ не поддерживает 2019).
+    Поддерживаемые мажорные версии: 16 (2019), 17 (2022), 18+ (2026 Insider).
+    Для неизвестного мажора возвращаем генератор VS 2022 как наиболее
+    совместимый — CMake обычно умеет работать с более новой VS через него.
     """
     if platform.system() != "Windows":
         return None
@@ -84,13 +97,17 @@ def detect_vs_generator() -> str | None:
     if not out:
         return None
 
-    # installationVersion вида "17.9.34714.143" или "16.11.34.0"
+    # installationVersion вида "17.9.34714.143", "18.9.12120.119"
     major = out.split(".", 1)[0]
-    if major == "17":
-        return "Visual Studio 17 2022"
     if major == "16":
         return "Visual Studio 16 2019"
-    return None
+    if major == "17":
+        return "Visual Studio 17 2022"
+    if major == "18":
+        # VS 2026 Insider / "18.0" — генератор CMake 3.30+ знает его как 18 2026.
+        return "Visual Studio 18 2026"
+    # Неизвестный мажор — пробуем генератор VS 2022, CMake достаточно умён.
+    return "Visual Studio 17 2022"
 
 class DesktopBuilder:
     def __init__(self, platform_name: str):
@@ -117,11 +134,7 @@ class DesktopBuilder:
             )
 
     def preflight(self) -> None:
-        """Проверяет, что все нужные пути и инструменты на месте.
-
-        Выполняется ДО первого subprocess.run, чтобы WinError 2 / FileNotFoundError
-        не возникал в неочевидном месте.
-        """
+        """Проверяет, что все нужные пути и инструменты на месте."""
         if not self.libs_dir.exists():
             raise FileNotFoundError(
                 f"Не найдена папка {self.libs_dir}\n"
@@ -133,14 +146,12 @@ class DesktopBuilder:
 
         if not (self.libs_dir / "go.mod").exists():
             raise FileNotFoundError(
-                f"Не найден {self.libs_dir / 'go.mod'}\n"
-                f"  Убедитесь, что Go-модуль собран в Desktop/Libs/"
+                f"Не найден {self.libs_dir / 'go.mod'}"
             )
 
         if not (self.libs_dir / "cmd" / "main.go").exists():
             raise FileNotFoundError(
-                f"Не найден {self.libs_dir / 'cmd' / 'main.go'}\n"
-                f"  Это точка входа для c-shared сборки."
+                f"Не найден {self.libs_dir / 'cmd' / 'main.go'}"
             )
 
         if not self.flutter_dir.exists():
@@ -153,7 +164,6 @@ class DesktopBuilder:
                 f"Не найден {self.flutter_dir / 'pubspec.yaml'}"
             )
 
-        # Проверяем, что инструменты доступны.
         self.go_path = which_or_die(
             "go",
             "Установите Go 1.22+ (https://go.dev/dl/) и добавьте в PATH"
@@ -164,22 +174,26 @@ class DesktopBuilder:
             "и добавьте в PATH"
         )
 
-        # Windows: проверяем наличие VS 2022 и запоминаем генератор CMake.
+        # Windows: определяем генератор CMake.
+        # Приоритет у CMAKE_GENERATOR из окружения (его ставит CI),
+        # иначе — автоопределение через vswhere.
         self.cmake_generator: str | None = None
         if self.platform == "Windows":
-            gen = detect_vs_generator()
-            if gen is None:
-                raise RuntimeError(
-                    "Не найдена Visual Studio с C++ toolchain.\n"
-                    "  Установите Visual Studio 2022 с workload "
-                    "'Desktop development with C++'.\n"
-                    "  Скачать: https://visualstudio.microsoft.com/downloads/"
-                )
-            if gen == "Visual Studio 16 2019":
-                log("WARN: найдена только VS 2019. Flutter 3.24+ требует VS 2022 — "
-                    "сборка может упасть. Установите VS 2022.")
-            self.cmake_generator = gen
-            log(f"CMake generator: {self.cmake_generator}")
+            env_gen = os.environ.get("CMAKE_GENERATOR", "").strip()
+            if env_gen:
+                self.cmake_generator = env_gen
+                log(f"CMake generator (from env): {self.cmake_generator}")
+            else:
+                gen = detect_vs_generator()
+                if gen is None:
+                    raise RuntimeError(
+                        "Не найдена Visual Studio с C++ toolchain.\n"
+                        "  Установите Visual Studio 2022+ с workload "
+                        "'Desktop development with C++'.\n"
+                        "  Скачать: https://visualstudio.microsoft.com/downloads/"
+                    )
+                self.cmake_generator = gen
+                log(f"CMake generator (detected): {self.cmake_generator}")
 
         log(f"go:      {self.go_path}")
         log(f"flutter: {self.flutter_path}")
@@ -225,14 +239,11 @@ class DesktopBuilder:
                 f"  cwd:  {self.libs_dir}"
             )
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"go build завершился с кодом {e.returncode}"
-            )
+            raise RuntimeError(f"go build завершился с кодом {e.returncode}")
 
         if not out_lib.exists():
             raise FileNotFoundError(f"Go не создал {out_lib}")
 
-        # Удаляем сгенерированный .h — он не нужен.
         h_file = out_lib.with_suffix(".h")
         if h_file.exists():
             h_file.unlink()
@@ -243,9 +254,6 @@ class DesktopBuilder:
         log(f"  cwd: {self.flutter_dir}")
 
         env = os.environ.copy()
-        # Ключевой момент: принудительно сообщаем CMake, какой генератор использовать.
-        # Без этого Flutter-тулза подставляет VS 2019 по умолчанию на некоторых
-        # раннерах, и CMake падает с "could not find any instance of Visual Studio".
         if self.platform == "Windows" and self.cmake_generator:
             env["CMAKE_GENERATOR"] = self.cmake_generator
             log(f"  CMAKE_GENERATOR={env['CMAKE_GENERATOR']}")
@@ -267,9 +275,7 @@ class DesktopBuilder:
                 f"  cwd:  {self.flutter_dir}"
             )
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"flutter build завершился с кодом {e.returncode}"
-            )
+            raise RuntimeError(f"flutter build завершился с кодом {e.returncode}")
 
     def copy_lib_to_bundle(self) -> None:
         src = self.build_dir / self.lib_name
