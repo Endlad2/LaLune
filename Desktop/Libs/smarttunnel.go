@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // smarttunnel.go — встроенный Lua 5.1-рантайм для SmartTunnel.
+//
+// Скрипт SmartTunnel.lua эмбедится через //go:embed. Файл должен лежать
+// РЯДОМ с этим .go (то есть в Desktop/Libs/SmartTunnel.lua). Копируется
+// туда скриптом prepare_st.py ПЕРЕД сборкой Go — иначе go build падает с
+// "pattern SmartTunnel.lua: no matching files found".
+//
+// Скрипт коммитится в Core/SmartTunnel.lua, а prepare_st.py его копирует.
 
 package libs
 

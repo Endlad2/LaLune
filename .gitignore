@@ -1,52 +1,31 @@
-# Gradle
-.gradle/
-build/
-!gradle/wrapper/gradle-wrapper.jar
-!gradle/wrapper/gradle-wrapper.properties
+# SPDX-FileCopyrightText: 2026 luminescq
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-# Android
-*.apk
-*.aab
-*.ap_
-*.dex
-local.properties
-.cxx/
-captures/
-output.json
-
-# IDE
-.idea/
-*.iml
-*.ipr
-*.iws
-.vscode/
-.DS_Store
-
-# OS
-Thumbs.db
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-env/
-
-# Go
-*.test
-*.out
-Desktop/Linux/build/
-Desktop/Windows/build/
-
-# Wails temp
-Desktop/*/frontend/
-Desktop/*/Libs/
-
-# SmartTunnel.lua — генерируется из Core/SmartTunnel.lua через prepare_st.py
+# Копия SmartTunnel.lua, создаётся prepare_st.py перед сборкой Go.
+# Оригинал — Core/SmartTunnel.lua (коммитится).
 Desktop/Libs/SmartTunnel.lua
 Mobile/Android/app/src/main/assets/SmartTunnel.lua
 
-# Android generated
-# Mobile/Android/app/src/main/assets/
-# Mobile/Android/app/src/main/jniLibs/
+# Go build artifacts
+Desktop/Libs/build/
+Desktop/Libs/cmd/build/
+
+# Flutter/Dart
+Frontend/Core/.dart_tool/
+Frontend/Core/build/
+Frontend/Core/.flutter-plugins
+Frontend/Core/.flutter-plugins-dependencies
+
+# Android
+Frontend/Core/android/.gradle/
+Frontend/Core/android/local.properties
+Frontend/Core/android/app/src/main/jniLibs/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.iml

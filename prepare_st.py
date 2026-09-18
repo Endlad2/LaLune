@@ -14,16 +14,31 @@ prepare_st.py — копирует Core/SmartTunnel.lua туда, где его 
     - Android → Mobile/Android/app/src/main/assets/SmartTunnel.lua
     - all     → все три сразу
 
-ВАЖНО: Desktop/Libs/ — это единая папка для обеих платформ, потому что
-build_desktop.py копирует Desktop/Libs/*.go (и .lua) в Desktop/<platform>/Libs/.
-go:embed в smarttunnel.go ищет SmartTunnel.lua рядом с самим .go-файлом,
-то есть в Desktop/Libs/ (при сборке — в Desktop/<platform>/Libs/).
+ВАЖНО:
+    go:embed SmartTunnel.lua в Desktop/Libs/smarttunnel.go ищет файл
+    РЯДОМ с .go-файлом, то есть в Desktop/Libs/. Без этого шага
+    `go build` падает с "pattern SmartTunnel.lua: no matching files found".
+
+    Desktop/Libs/ — это единая папка для Linux и Windows, потому что
+    build_desktop.py собирает go build из неё же.
 """
 
 import argparse
 import shutil
 import sys
 from pathlib import Path
+
+# Windows Python по умолчанию использует cp1252 — форсируем UTF-8.
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+if sys.stderr.encoding and sys.stderr.encoding.lower() not in ("utf-8", "utf8"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "Core" / "SmartTunnel.lua"
@@ -69,7 +84,6 @@ def main() -> int:
 
     # Desktop/Libs/ общий для Linux и Windows — копируем один раз.
     if args.platform == "all":
-        # Дедуплицируем целевые пути (Libs общий для Linux и Windows).
         unique_targets = []
         seen = set()
         for name in ("Linux", "Windows", "Android"):

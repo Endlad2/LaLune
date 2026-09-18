@@ -91,11 +91,27 @@ flutter {
 }
 
 dependencies {
+    // AppCompat — нужен для Theme.AppCompat.NoActionBar в styles.xml.
     implementation "androidx.appcompat:appcompat:1.7.0"
+
+    // Стандартные androidx-зависимости Flutter-проекта.
     implementation "androidx.core:core-ktx:1.13.1"
     implementation "androidx.annotation:annotation:1.9.1"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+
+    // Kotlin stdlib — явно, чтобы Gradle не тащил 1.9.x из транзитивных
+    // зависимостей в обход KGP.
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+
+    // Coroutines — нужны для withContext(Dispatchers.IO) в CoreManager
+    // и lifecycleScope.launch в MainActivity.
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+
+    // Lua 5.1 рантайм для SmartTunnelManager.kt.
+    // Содержит org.luaj.vm2.* (Globals, LuaValue, LuaError, LuaTable,
+    // Varargs, VarArgFunction) и org.luaj.vm2.lib.jse.JsePlatform.
+    // Без этой зависимости SmartTunnelManager.kt не компилируется —
+    // сотни ошибок "Unresolved reference: luaj".
+    implementation "org.luaj:luaj-jse:3.0.1"
 }
 
 configurations.all {
