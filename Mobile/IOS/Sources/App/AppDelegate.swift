@@ -1,13 +1,32 @@
+// SPDX-FileCopyrightText: 2026 luminescq
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// AppDelegate — iOS-точка входа с FlutterViewController + MethodChannel.
+// Реальная логика (VPN, token) — в Swift-классах, как и было.
+// MethodChannel пока возвращает заглушки — заполним позже.
+
 import UIKit
+import Flutter
 
 @main
-class AppDelegate: UIResponder, UIApplicationDelegate {
+class AppDelegate: FlutterAppDelegate {
     var window: UIWindow?
 
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+    override func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
+        let controller = FlutterViewController(
+            project: nil, nibName: nil, bundle: nil)
+        let channel = FlutterMethodChannel(
+            name: "com.lalune.app/bridge",
+            binaryMessenger: controller.binaryMessenger)
+
+        FlutterBridge.shared.register(on: channel)
+
         window = UIWindow(frame: UIScreen.main.bounds)
-        window?.rootViewController = ViewController()
+        window?.rootViewController = controller
         window?.makeKeyAndVisible()
-        return true
+        return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
 }

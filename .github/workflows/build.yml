@@ -24,22 +24,18 @@ jobs:
         with: { python-version: '3.12' }
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
-      - run: flutter config --enable-web
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config gcc build-essential
-      - name: Setup Wails
-        run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
+      - run: flutter config --enable-linux-desktop
+      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev
       - name: Prepare SmartTunnel.lua
         run: python3 prepare_st.py --platform=all
-      - name: Build Dart frontend for Linux
+      - name: Prepare Flutter project (pub get + assets)
         run: python3 build_frontend.py --platform Linux
       - name: Build Desktop (Linux)
         run: python3 build_desktop.py --platform Linux
       - uses: actions/upload-artifact@v4
         with:
           name: LaLune-Linux
-          path: Desktop/Linux/build/bin/*
+          path: Frontend/Core/build/linux/x64/release/bundle/**
           if-no-files-found: error
 
   build-desktop-windows:
@@ -53,22 +49,21 @@ jobs:
         with: { python-version: '3.12' }
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
-      - run: flutter config --enable-web
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - run: flutter config --enable-windows-desktop
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=all
-      - name: Build Dart frontend for Windows
+      - name: Prepare Flutter project (pub get + assets)
         run: python build_frontend.py --platform Windows
       - name: Build Desktop (Windows)
         run: python build_desktop.py --platform Windows
       - uses: actions/upload-artifact@v4
         with:
           name: LaLune-Windows
-          path: Desktop/Windows/build/bin/*
+          path: Frontend/Core/build/windows/x64/runner/Release/**
           if-no-files-found: error
 
   build-android:
-    name: Android APK (universal)
+    name: Android APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,44 +71,30 @@ jobs:
         with: { python-version: '3.12' }
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
-      - run: flutter config --enable-web
+      - run: flutter config --enable-android
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
-      - name: Use preinstalled Android SDK
-        run: |
-          if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
-            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-          fi
-          echo "ANDROID_HOME=$ANDROID_HOME"
       - name: Accept Android licenses
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-          yes | "$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          if [ -d "/usr/local/lib/android/sdk" ]; then
+            export ANDROID_HOME=/usr/local/lib/android/sdk
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          fi
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '8.9' }
       - name: Prepare Android Core
         run: python prepare_android_core.py
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=all
-      - name: Build Dart frontend for Android
+      - name: Prepare Flutter project (pub get + assets)
         run: python build_frontend.py --platform Android
-      - name: Copy frontend to Android assets
-        run: |
-          ASSETS_DIR="Mobile/Android/app/src/main/assets"
-          # не удаляем всё — в assets уже лежит SmartTunnel.lua от prepare_st.py.
-          mkdir -p "$ASSETS_DIR"
-          cp -r Frontend/output/. "$ASSETS_DIR/"
-          test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
-          test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
-          test -f "$ASSETS_DIR/SmartTunnel.lua" || { echo "SmartTunnel.lua MISSING"; exit 1; }
       - name: Download core binaries
         run: |
           mkdir -p Mobile/Android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
           curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
           curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
-      - name: Build Android APK
+      - name: Build APK
         working-directory: Mobile/Android
         run: gradle assembleDebug --stacktrace --no-daemon
       - name: Locate APK
@@ -128,123 +109,22 @@ jobs:
           path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  build-token-fetcher:
-    name: "Token Fetcher - ${{ matrix.platform }}"
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: Windows
-            runner: windows-latest
-          - platform: Linux
-            runner: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
-
-      - name: Install WebKitGTK (Linux only)
-        if: matrix.platform == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            pkg-config || true
-
-      - name: Show dotnet version
-        run: dotnet --info
-
-      - name: Sanity check
-        shell: bash
-        run: ls -la Core/LaLuneTokenFetcher
-
-      - name: Build fetcher
-        run: python build_token_grabber.py --platform ${{ matrix.platform }}
-
-      - name: Package into vk-token-fetcher.zip
-        shell: bash
-        run: |
-          set -e
-          OUTPUT_BIN="Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher"
-          ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
-
-          if [ ! -d "$OUTPUT_BIN" ]; then
-            echo "Не найдена папка с результатом сборки: $OUTPUT_BIN"
-            find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
-            exit 1
-          fi
-
-          STAGING_DIR="Core/LaLuneTokenFetcher/output/_staging"
-          rm -rf "$STAGING_DIR"
-          mkdir -p "$STAGING_DIR/vk-token-fetcher"
-          cp -r "$OUTPUT_BIN/." "$STAGING_DIR/vk-token-fetcher/"
-
-          if [ "${{ matrix.platform }}" = "Linux" ]; then
-            chmod +x "$STAGING_DIR/vk-token-fetcher/LaLuneTokenFetcher" || true
-            chmod +x "$STAGING_DIR/vk-token-fetcher/la-lune-webview-helper" || true
-          fi
-
-          rm -f "$ZIP_PATH"
-
-          pushd "$STAGING_DIR" >/dev/null
-          if [ "${{ matrix.platform }}" = "Windows" ]; then
-            popd >/dev/null
-            powershell -Command "Compress-Archive -Path 'Core/LaLuneTokenFetcher/output/_staging/vk-token-fetcher' -DestinationPath '$ZIP_PATH' -Force"
-          else
-            zip -r "../../LaLuneTokenFetcher_${{ matrix.platform }}.zip" "vk-token-fetcher"
-            popd >/dev/null
-          fi
-
-          echo "=== $ZIP_PATH ==="
-          ls -la "$ZIP_PATH"
-
-      - name: Verify zip
-        shell: bash
-        run: |
-          ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
-          test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
-
-          if [ "${{ matrix.platform }}" = "Windows" ]; then
-            powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
-            ls -la verify_zip/vk-token-fetcher
-          else
-            unzip -l "$ZIP"
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LaLuneTokenFetcher-${{ matrix.platform }}
-          path: Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip
-          if-no-files-found: error
-
   create-release:
     name: Create Release
     needs:
       - build-desktop-linux
       - build-desktop-windows
       - build-android
-      - build-token-fetcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with: { path: release }
-      - run: find release -type f | head -50
       - name: Create ZIP archives
         run: |
           cd release
           zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
-          cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
-          cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
           ls -la
       - id: date
         run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT

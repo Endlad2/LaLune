@@ -1,293 +1,112 @@
 #!/usr/bin/env python3
 """
-build_desktop.py — сборка Wails-приложения LaLune для Desktop.
+build_desktop.py — сборка нативного Desktop-приложения LaLune.
+
+Порядок:
+  1. go build -buildmode=c-shared → Desktop/<platform>/build/liblalune.so / lalune.dll
+  2. flutter build linux|windows --release
+  3. Копируем .so/.dll рядом с Flutter-бинарником (в bundle)
+  4. Копируем SmartTunnel.lua в bundle (если нужен внешний, а не embed)
 
 Требования:
-    - Python 3.8+
-    - Wails v2 установлен в PATH
-    - Frontend/output/ уже собран через build_frontend.py
-
-Что делает:
-  1. Проверяет, что Frontend/output/ существует
-  2. Копирует Frontend/output/* в Desktop/<platform>/frontend/
-  3. Копирует Desktop/Libs/* (включая SmartTunnel.lua) в Desktop/<platform>/Libs/
-  4. Копирует ресурсы Windows (icon.ico, manifest)
-  5. Запускает wails build
-  6. Убирает временные файлы
+  - Go 1.22+
+  - Flutter 3.22+ (с desktop support)
+  - Frontend/Core/pubspec.yaml
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import List
 
-# ============================================================
-#  Progress
-# ============================================================
-
-class ProgressBar:
-    def __init__(self, total_steps: int, desc: str = "Progress"):
-        self.total_steps = total_steps
-        self.current_step = 0
-        self.desc = desc
-        self.start_time = time.time()
-
-    def update(self, step_desc: str = "") -> None:
-        self.current_step += 1
-        percent = (self.current_step / self.total_steps) * 100
-        bar_width = 50
-        filled = int(bar_width * self.current_step / self.total_steps)
-        bar = "#" * filled + "-" * (bar_width - filled)
-
-        elapsed = time.time() - self.start_time
-        sys.stdout.write(
-            f"\r{self.desc}: [{bar}] {percent:.1f}% "
-            f"({self.current_step}/{self.total_steps}) {step_desc}  [{elapsed:.1f}s]"
-        )
-        sys.stdout.flush()
-
-        if self.current_step == self.total_steps:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-# ============================================================
-#  Builder
-# ============================================================
-
-class WailsBuilder:
-    def __init__(self, platform: str, wails_flags: str = ""):
+class DesktopBuilder:
+    def __init__(self, platform: str):
         if platform not in ("Linux", "Windows"):
             raise ValueError(f"Неподдерживаемая платформа: {platform}")
-
         self.platform = platform
-        self.wails_flags = wails_flags
-
-        self.root_dir = Path.cwd()
-        self.frontend_output = self.root_dir / "Frontend" / "output"
-        self.desktop_dir = self.root_dir / "Desktop"
+        self.root = Path.cwd()
+        self.desktop_dir = self.root / "Desktop"
         self.platform_dir = self.desktop_dir / platform
-        self.frontend_dir = self.platform_dir / "frontend"
-        self.libs_platform_dir = self.platform_dir / "Libs"
-        self.desktop_libs_dir = self.desktop_dir / "Libs"
+        self.libs_dir = self.desktop_dir / "Libs"
+        self.cmd_dir = self.desktop_dir / "cmd"
+        self.build_dir = self.platform_dir / "build"
+        self.flutter_dir = self.root / "Frontend" / "Core"
 
-        self.icon_ico_source = self.platform_dir / "icon.ico"
-        self.manifest_source = self.platform_dir / "wails.exe.manifest"
-        self.build_windows_dir = self.platform_dir / "build" / "windows"
-
-        self._created_frontend = False
-        self._created_libs = False
-        self._created_build_windows = False
-
-    # ---------- setup ----------
-
-    def check_prerequisites(self) -> None:
-        if not self.frontend_output.exists():
-            raise FileNotFoundError(
-                f"Не найден {self.frontend_output}\n"
-                f"Сначала соберите фронтенд:\n"
-                f"  python build_frontend.py --platform {self.platform}"
-            )
-
-        index = self.frontend_output / "index.html"
-        if not index.exists():
-            raise FileNotFoundError(
-                f"В {self.frontend_output} нет index.html — сборка фронта пустая"
-            )
-
-        # Проверяем, что SmartTunnel.lua лежит в Desktop/Libs/ (его читает go:embed).
-        smart_lua = self.desktop_libs_dir / "SmartTunnel.lua"
-        if not smart_lua.exists():
-            raise FileNotFoundError(
-                f"Не найден {smart_lua}\n"
-                f"Сначала подготовьте SmartTunnel:\n"
-                f"  python prepare_st.py --platform={self.platform}"
-            )
-
-    def setup_frontend(self) -> None:
-        """Копирует Frontend/output/* в Desktop/<platform>/frontend/."""
-        if self.frontend_dir.exists():
-            shutil.rmtree(self.frontend_dir)
-        self.frontend_dir.mkdir(parents=True, exist_ok=True)
-        self._created_frontend = True
-
-        for item in self.frontend_output.iterdir():
-            dst = self.frontend_dir / item.name
-            if item.is_dir():
-                shutil.copytree(item, dst)
-            else:
-                shutil.copy2(item, dst)
-
-        count = len(list(self.frontend_dir.rglob("*")))
-        print(f"  Фронтенд: {count} файлов → {self.frontend_dir}")
-
-    def copy_libs(self) -> None:
-        """Копирует Desktop/Libs/* → Desktop/<platform>/Libs/.
-
-        Копирует ВСЁ содержимое папки — включая SmartTunnel.lua, который
-        нужен для go:embed в smarttunnel.go.
-        """
-        if not self.desktop_libs_dir.exists():
-            print(f"\n  [WARN] {self.desktop_libs_dir} не найден, пропускаю")
-            return
-
-        if self.libs_platform_dir.exists():
-            shutil.rmtree(self.libs_platform_dir)
-        self.libs_platform_dir.mkdir(parents=True, exist_ok=True)
-        self._created_libs = True
-
-        count = 0
-        for item in self.desktop_libs_dir.iterdir():
-            dst = self.libs_platform_dir / item.name
-            if item.is_file():
-                shutil.copy2(item, dst)
-                count += 1
-                print(f"  Libs: {item.name}")
-            elif item.is_dir():
-                shutil.copytree(item, dst, dirs_exist_ok=True)
-                count += 1
-                print(f"  Libs: {item.name}/")
-
-        # Явно проверяем, что SmartTunnel.lua попал в целевой Libs/.
-        target_lua = self.libs_platform_dir / "SmartTunnel.lua"
-        if not target_lua.exists():
-            raise FileNotFoundError(
-                f"После копирования SmartTunnel.lua не найден в {self.libs_platform_dir}\n"
-                f"Проверьте {self.desktop_libs_dir}"
-            )
-
-    def copy_windows_resources(self) -> None:
-        """Копирует icon.ico и wails.exe.manifest в build/windows/."""
-        if self.platform != "Windows":
-            return
-
-        if self.build_windows_dir.exists():
-            shutil.rmtree(self.build_windows_dir)
-        self.build_windows_dir.mkdir(parents=True, exist_ok=True)
-        self._created_build_windows = True
-
-        if self.icon_ico_source.exists():
-            shutil.copy2(
-                self.icon_ico_source,
-                self.build_windows_dir / "icon.ico",
-            )
-            print(f"  icon.ico → {self.build_windows_dir}")
+        if platform == "Linux":
+            self.lib_name = "liblalune.so"
+            self.flutter_target = "linux"
+            self.bundle_lib_dir = self.flutter_dir / "build" / "linux" / "x64" / "release" / "bundle" / "lib"
         else:
-            print(f"  [WARN] {self.icon_ico_source} не найден")
+            self.lib_name = "lalune.dll"
+            self.flutter_target = "windows"
+            self.bundle_lib_dir = self.flutter_dir / "build" / "windows" / "x64" / "runner" / "Release"
 
-        if self.manifest_source.exists():
-            shutil.copy2(
-                self.manifest_source,
-                self.build_windows_dir / "wails.exe.manifest",
-            )
-            print(f"  wails.exe.manifest → {self.build_windows_dir}")
+    def build_go(self) -> None:
+        self.build_dir.mkdir(parents=True, exist_ok=True)
+        out_lib = self.build_dir / self.lib_name
+
+        env = os.environ.copy()
+        env["CGO_ENABLED"] = "1"
+        if self.platform == "Windows":
+            env["GOOS"] = "windows"
+            env["GOARCH"] = "amd64"
         else:
-            print(f"  [WARN] {self.manifest_source} не найден")
+            env["GOOS"] = "linux"
+            env["GOARCH"] = "amd64"
 
-    # ---------- build ----------
+        cmd = [
+            "go", "build",
+            "-buildmode=c-shared",
+            "-o", str(out_lib),
+            "./cmd",
+        ]
+        print(f"[build] go build (c-shared) → {out_lib}")
+        subprocess.run(cmd, cwd=str(self.desktop_dir), env=env, check=True)
 
-    def build_wails(self) -> None:
-        cmd = ["wails", "build"]
-        if self.wails_flags:
-            cmd.extend(self.wails_flags.split())
+        if not out_lib.exists():
+            raise FileNotFoundError(f"Go не создал {out_lib}")
 
-        print("\n" + "=" * 60)
-        print(f"Running: {' '.join(cmd)}")
-        print(f"  cwd: {self.platform_dir}")
-        print("=" * 60 + "\n")
+        # Заодно убираем сгенерированный .h — он нам не нужен.
+        h_file = out_lib.with_suffix(".h")
+        if h_file.exists():
+            h_file.unlink()
 
-        use_shell = sys.platform == "win32"
+    def build_flutter(self) -> None:
+        cmd = ["flutter", "build", self.flutter_target, "--release"]
+        print(f"[build] flutter {' '.join(cmd[1:])}")
+        subprocess.run(cmd, cwd=str(self.flutter_dir), check=True)
 
-        process = subprocess.Popen(
-            cmd,
-            cwd=str(self.platform_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            shell=use_shell,
-        )
+    def copy_lib_to_bundle(self) -> None:
+        src = self.build_dir / self.lib_name
+        if not src.exists():
+            raise FileNotFoundError(f"Не найден {src} — сначала соберите Go")
 
-        assert process.stdout is not None
-        for line in process.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+        self.bundle_lib_dir.mkdir(parents=True, exist_ok=True)
+        dst = self.bundle_lib_dir / self.lib_name
+        shutil.copy2(src, dst)
+        print(f"[build] {self.lib_name} → {dst}")
 
-        process.wait()
-
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, cmd)
-
-    # ---------- cleanup ----------
-
-    def cleanup(self) -> None:
-        if self._created_frontend and self.frontend_dir.exists():
-            shutil.rmtree(self.frontend_dir, ignore_errors=True)
-
-        if self._created_libs and self.libs_platform_dir.exists():
-            shutil.rmtree(self.libs_platform_dir, ignore_errors=True)
-
-        if self._created_build_windows and self.build_windows_dir.exists():
-            shutil.rmtree(self.build_windows_dir, ignore_errors=True)
-
-# ============================================================
-#  main
-# ============================================================
+    def build(self) -> None:
+        self.build_go()
+        self.build_flutter()
+        self.copy_lib_to_bundle()
+        print(f"\nГотово. Bundle: {self.bundle_lib_dir.parent}")
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Wails Builder Script")
-    parser.add_argument(
-        "--platform",
-        required=True,
-        choices=["Linux", "Windows"],
-        help="Target platform",
-    )
-    parser.add_argument(
-        "--wails-flags",
-        default="",
-        help="Additional flags for wails build (в виде строки)",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--platform", required=True, choices=["Linux", "Windows"])
     args = parser.parse_args()
 
-    builder = WailsBuilder(args.platform, args.wails_flags)
-
-    total_steps = 6
-    progress = ProgressBar(total_steps, f"Building for {args.platform}")
-
     try:
-        progress.update("Проверка Frontend/output/...")
-        builder.check_prerequisites()
-
-        progress.update("Копирование фронтенда...")
-        builder.setup_frontend()
-
-        progress.update("Копирование Libs (включая SmartTunnel.lua)...")
-        builder.copy_libs()
-
-        progress.update("Копирование Windows-ресурсов...")
-        builder.copy_windows_resources()
-
-        progress.update("Запуск wails build...")
-        builder.build_wails()
-
-        progress.update("Очистка временных файлов...")
-        builder.cleanup()
-
-        print(f"\nСборка успешно завершена для {args.platform}")
+        DesktopBuilder(args.platform).build()
         return 0
-
     except subprocess.CalledProcessError as e:
-        progress.update(f"Ошибка wails build (exit={e.returncode})")
-        builder.cleanup()
+        print(f"[build] ошибка: {e}", file=sys.stderr)
         return e.returncode or 1
-
     except Exception as e:
-        progress.update(f"Ошибка: {e}")
-        builder.cleanup()
+        print(f"[build] ошибка: {e}", file=sys.stderr)
         return 1
 
 if __name__ == "__main__":

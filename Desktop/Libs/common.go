@@ -68,9 +68,7 @@ type Settings struct {
 	AuthMode                string `json:"authMode"`
 	AllowHashRedistribution bool   `json:"allowHashRedistribution"`
 	ValidateVkHashes        bool   `json:"validateVkHashes"`
-
-	// Экспериментальные функции.
-	EnableSmartTunnel bool `json:"enableSmartTunnel"`
+	EnableSmartTunnel       bool   `json:"enableSmartTunnel"`
 }
 
 type AppCore struct {
@@ -106,8 +104,9 @@ type AppCore struct {
 
 func NewAppCore() *AppCore { return &AppCore{logs: []string{}} }
 
+// Startup — ctx может быть nil (C-API), тогда используем Background.
 func (a *AppCore) Startup(ctx context.Context) {
-	a.ctx = ctx
+	a.ctx = ensureCtx(ctx)
 	a.appDir = a.GetAppDataDir()
 
 	if err := os.MkdirAll(a.appDir, 0755); err != nil {
@@ -124,7 +123,6 @@ func (a *AppCore) Startup(ctx context.Context) {
 	a.InitDB()
 	a.LoadSettings()
 
-	// SmartTunnel — запускаем, если включён в настройках.
 	a.smartTunnel = NewSmartTunnel(a)
 	if a.settings.EnableSmartTunnel {
 		if err := a.smartTunnel.Start(); err != nil {
@@ -384,7 +382,6 @@ func (a *AppCore) SaveSettings(settingsJson string) bool {
 	_ = os.WriteFile(a.settingsFile, data, 0644)
 	a.mu.Unlock()
 
-	// Реагируем на изменение флага SmartTunnel.
 	if a.smartTunnel != nil && oldSmartTunnel != newSettings.EnableSmartTunnel {
 		if newSettings.EnableSmartTunnel {
 			if err := a.smartTunnel.Start(); err != nil {

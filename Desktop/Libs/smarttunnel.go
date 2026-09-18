@@ -2,32 +2,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // smarttunnel.go — встроенный Lua 5.1-рантайм для SmartTunnel.
-//
-// Использует github.com/yuin/gopher-lua (совместим с Lua 5.1).
-//
-// Скрипт встраивается через go:embed. Запускается один раз при старте,
-// если в settings.json включён флаг enableSmartTunnel.
-//
-// API, доступное из Lua (глобальная таблица smarttunnel):
-//   smarttunnel.log(message)
-//   smarttunnel.logs()
-//   smarttunnel.connect()
-//   smarttunnel.disconnect()
-//   smarttunnel.is_connected()
-//   smarttunnel.set_args(table)
-//   smarttunnel.get_args()
-//   smarttunnel.get_vk_creds()
-//   smarttunnel.get_setting(key)
-//   smarttunnel.set_setting(key, value)
 
 package libs
 
 import (
 	"embed"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,11 +29,9 @@ type SmartTunnel struct {
 
 	state *lua.LState
 
-	// Буфер логов, которые читает Lua через smarttunnel.logs().
 	logs   []string
 	logsMu sync.Mutex
 
-	// Аргументы cmd для ядра. Могут быть переопределены из Lua.
 	args   []string
 	argsMu sync.Mutex
 
@@ -70,7 +48,6 @@ func NewSmartTunnel(core *AppCore) *SmartTunnel {
 }
 
 // Start загружает SmartTunnel.lua и запускает его.
-// Если уже запущен — ничего не делает.
 func (st *SmartTunnel) Start() error {
 	st.mu.Lock()
 	if st.running {
@@ -79,15 +56,11 @@ func (st *SmartTunnel) Start() error {
 	}
 	st.mu.Unlock()
 
-	L := lua.NewState(lua.Options{
-		SkipOpenLibs: false,
-	})
+	L := lua.NewState(lua.Options{SkipOpenLibs: false})
 	st.state = L
 
-	// Регистрируем глобальную таблицу `smarttunnel`.
 	st.registerAPI(L)
 
-	// Читаем встроенный .lua.
 	src, err := smartTunnelFS.ReadFile("SmartTunnel.lua")
 	if err != nil {
 		L.Close()
@@ -95,14 +68,12 @@ func (st *SmartTunnel) Start() error {
 		return fmt.Errorf("не удалось прочитать SmartTunnel.lua: %w", err)
 	}
 
-	// Загружаем скрипт.
 	if err := L.DoString(string(src)); err != nil {
 		L.Close()
 		st.state = nil
 		return fmt.Errorf("ошибка загрузки SmartTunnel.lua: %w", err)
 	}
 
-	// Вызываем on_load(), если он есть.
 	st.callIfExists("on_load")
 
 	st.mu.Lock()
@@ -111,7 +82,6 @@ func (st *SmartTunnel) Start() error {
 	stopChan := st.stopChan
 	st.mu.Unlock()
 
-	// Тикаем раз в секунду.
 	go st.tickLoop(stopChan)
 
 	st.core.AddLog("[SMART-TUNNEL] Рантайм запущен")
@@ -144,7 +114,6 @@ func (st *SmartTunnel) IsRunning() bool {
 	return st.running
 }
 
-// tickLoop вызывает on_tick() раз в секунду.
 func (st *SmartTunnel) tickLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(smartTunnelTickInterval)
 	defer ticker.Stop()
@@ -159,7 +128,6 @@ func (st *SmartTunnel) tickLoop(stop <-chan struct{}) {
 	}
 }
 
-// callIfExists вызывает глобальную функцию по имени, если она определена.
 func (st *SmartTunnel) callIfExists(name string) {
 	st.mu.Lock()
 	L := st.state
@@ -171,21 +139,15 @@ func (st *SmartTunnel) callIfExists(name string) {
 	if fn.Type() != lua.LTFunction {
 		return
 	}
-	if err := L.CallByParam(lua.P{
-		Fn:      fn,
-		NRet:    0,
-		Protect: true,
-	}); err != nil {
+	if err := L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true}); err != nil {
 		st.core.AddLog(fmt.Sprintf("[SMART-TUNNEL] Ошибка в %s: %v", name, err))
 	}
 }
 
-// registerAPI регистрирует таблицу `smarttunnel`.
 func (st *SmartTunnel) registerAPI(L *lua.LState) {
 	mod := L.NewTable()
 	L.SetGlobal("smarttunnel", mod)
 
-	// --- smarttunnel.log(message) ---
 	L.SetField(mod, "log", L.NewFunction(func(L *lua.LState) int {
 		msg := L.CheckString(1)
 		st.appendLog(msg)
@@ -193,7 +155,6 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 		return 0
 	}))
 
-	// --- smarttunnel.logs() → table of strings ---
 	L.SetField(mod, "logs", L.NewFunction(func(L *lua.LState) int {
 		st.logsMu.Lock()
 		snapshot := append([]string{}, st.logs...)
@@ -207,27 +168,23 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 		return 1
 	}))
 
-	// --- smarttunnel.connect() ---
 	L.SetField(mod, "connect", L.NewFunction(func(L *lua.LState) int {
 		st.core.AddLog("[SMART-TUNNEL] connect() — пока не реализовано")
 		L.Push(lua.LFalse)
 		return 1
 	}))
 
-	// --- smarttunnel.disconnect() ---
 	L.SetField(mod, "disconnect", L.NewFunction(func(L *lua.LState) int {
 		st.core.AddLog("[SMART-TUNNEL] disconnect() — пока не реализовано")
 		L.Push(lua.LFalse)
 		return 1
 	}))
 
-	// --- smarttunnel.is_connected() ---
 	L.SetField(mod, "is_connected", L.NewFunction(func(L *lua.LState) int {
 		L.Push(lua.LBool(st.core.IsConnected()))
 		return 1
 	}))
 
-	// --- smarttunnel.set_args(table) ---
 	L.SetField(mod, "set_args", L.NewFunction(func(L *lua.LState) int {
 		tbl := L.CheckTable(1)
 		var args []string
@@ -242,7 +199,6 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 		return 0
 	}))
 
-	// --- smarttunnel.get_args() → table ---
 	L.SetField(mod, "get_args", L.NewFunction(func(L *lua.LState) int {
 		st.argsMu.Lock()
 		snapshot := append([]string{}, st.args...)
@@ -256,7 +212,6 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 		return 1
 	}))
 
-	// --- smarttunnel.get_vk_creds() → table { token, hashes, userId, expiresIn } ---
 	L.SetField(mod, "get_vk_creds", L.NewFunction(func(L *lua.LState) int {
 		tbl := L.NewTable()
 		token := st.core.ReadTokenFromFile()
@@ -268,7 +223,6 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 		return 1
 	}))
 
-	// --- smarttunnel.get_setting(key) → value ---
 	L.SetField(mod, "get_setting", L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		val := st.core.smartTunnelGetSetting(key)
@@ -276,7 +230,6 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 		return 1
 	}))
 
-	// --- smarttunnel.set_setting(key, value) ---
 	L.SetField(mod, "set_setting", L.NewFunction(func(L *lua.LState) int {
 		key := L.CheckString(1)
 		val := L.Get(2)
@@ -285,7 +238,6 @@ func (st *SmartTunnel) registerAPI(L *lua.LState) {
 	}))
 }
 
-// appendLog кладёт строку в локальный буфер (для smarttunnel.logs()).
 func (st *SmartTunnel) appendLog(msg string) {
 	st.logsMu.Lock()
 	defer st.logsMu.Unlock()
@@ -295,23 +247,17 @@ func (st *SmartTunnel) appendLog(msg string) {
 	}
 }
 
-// SetArgs — переопределяет аргументы cmd для ядра (вызывается извне, например из bridge).
 func (st *SmartTunnel) SetArgs(args []string) {
 	st.argsMu.Lock()
 	defer st.argsMu.Unlock()
 	st.args = args
 }
 
-// GetArgs — читает текущие аргументы.
 func (st *SmartTunnel) GetArgs() []string {
 	st.argsMu.Lock()
 	defer st.argsMu.Unlock()
 	return append([]string{}, st.args...)
 }
-
-// =====================================================================
-//  Методы AppCore, вызываемые из Lua API
-// =====================================================================
 
 // smartTunnelGetSetting возвращает значение настройки по ключу.
 func (a *AppCore) smartTunnelGetSetting(key string) lua.LValue {
@@ -371,8 +317,3 @@ func (a *AppCore) smartTunnelSetSetting(key string, value lua.LValue) {
 		}
 	}
 }
-
-// _ — избегаем unused-import для os и filepath.
-var _ = os.Getenv
-var _ = filepath.Join
-var _ = strings.TrimSpace
