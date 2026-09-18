@@ -25,7 +25,10 @@ if (flutterVersionName == null) {
 android {
     namespace = "com.lalune.app"
     compileSdk = 34
-    ndkVersion = flutter.ndkVersion
+
+    // NDK 25.1.8937393 — требование path_provider_android и url_launcher_android.
+    // NDK 23 из flutter.ndkVersion не подходит: плагины собраны под 25.
+    ndkVersion = "25.1.8937393"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -34,8 +37,6 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-        // Подавляем предупреждения о metadata-version, если какая-то
-        // транзитивная зависимость окажется собрана Kotlin 2.0.
         freeCompilerArgs += [
             "-Xjvm-default=all",
             "-Xskip-metadata-version-check",
@@ -49,7 +50,6 @@ android {
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
         ndk {
-            // Под наши нативные ядра
             abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
         }
     }
@@ -74,10 +74,12 @@ flutter {
 }
 
 dependencies {
-    // Kotlin stdlib — явно, чтобы Gradle не тащил 1.9.24 из транзитивных
-    // зависимостей в обход KGP.
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+    // AppCompat — нужен для Theme.AppCompat.NoActionBar в values/styles.xml.
+    // Если решите убрать parent="Theme.AppCompat.NoActionBar" из стилей,
+    // эту строку можно удалить.
+    implementation "androidx.appcompat:appcompat:1.7.0"
 
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
     implementation "androidx.core:core-ktx:1.13.1"
     implementation "androidx.annotation:annotation:1.9.1"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"

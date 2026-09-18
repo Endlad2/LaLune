@@ -8,7 +8,13 @@
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
 
-    <style name="Theme.LaLune" parent="Theme.AppCompat.NoActionBar">
+    <!--
+      Theme.LaLune использует встроенную Material-тему Android вместо
+      Theme.AppCompat.NoActionBar. Это избавляет от необходимости тянуть
+      androidx.appcompat (хотя мы её всё равно подключили в build.gradle —
+      на случай, если понадобится в будущем).
+    -->
+    <style name="Theme.LaLune" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:statusBarColor">#0a0e2a</item>
         <item name="android:navigationBarColor">#0a0e2a</item>
         <item name="android:windowBackground">#0a0e2a</item>

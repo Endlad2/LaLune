@@ -1,5 +1,20 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
+
+# ---------------------------------------------------------------------------
+# Форсируем генератор CMake из переменной окружения CMAKE_GENERATOR.
+# Это нужно, потому что Flutter-тулза для Windows жёстко подставляет
+# "Visual Studio 16 2019" (см. flutter_tools/cmake_project.dart), игнорируя
+# переменные окружения. На раннерах GitHub Actions стоит VS 2022/2026,
+# и без этого CMake падает с "could not find any instance of Visual Studio".
+#
+# ВАЖНО: должно быть ДО project(), иначе CMake уже выбрал генератор.
+# ---------------------------------------------------------------------------
+if(DEFINED ENV{CMAKE_GENERATOR} AND NOT "$ENV{CMAKE_GENERATOR}" STREQUAL "")
+  set(CMAKE_GENERATOR "$ENV{CMAKE_GENERATOR}" CACHE STRING "CMake generator (from env)" FORCE)
+  message(STATUS "Forcing CMAKE_GENERATOR=$ENV{CMAKE_GENERATOR} from environment")
+endif()
+
 project(lalune_core LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -52,11 +67,9 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
-
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
-
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can

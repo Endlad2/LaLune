@@ -90,6 +90,18 @@ jobs:
       - name: Prepare frontend (pub get + assets)
         run: python build_frontend.py --platform Windows
 
+      # ----------------------------------------------------------
+      #  Чистим кэш CMake перед сборкой — Flutter кэширует выбранный
+      #  генератор в build/windows, и без очистки может остаться
+      #  старый "Visual Studio 16 2019".
+      # ----------------------------------------------------------
+      - name: Clean stale Windows build cache
+        shell: pwsh
+        run: |
+          if (Test-Path "Frontend\Core\build\windows") {
+            Remove-Item -Recurse -Force "Frontend\Core\build\windows"
+          }
+
       - name: Build desktop (Go + Flutter)
         run: python build_desktop.py --platform Windows
 
@@ -167,8 +179,7 @@ jobs:
       #  - yes | sdkmanager ... || true — глушим SIGPIPE
       #    ("yes: standard output: Broken pipe"), который иначе
       #    валит шаг из-за set -o pipefail.
-      #  - cmdline-tools НЕ ставим: он уже есть на раннере, и
-      #    повторная установка создаёт latest-2 и мусорит.
+      #  - cmdline-tools НЕ ставим: он уже есть на раннере.
       # ----------------------------------------------------------
       - name: Install Android SDK manually
         shell: bash
@@ -201,26 +212,26 @@ jobs:
           echo "Using sdkmanager: $SDKMGR"
           echo "SDK root: $SDK_ROOT"
 
-          # Принимаем лицензии. `yes |` может упасть с SIGPIPE —
-          # это нормально, поэтому глушим через `|| true`.
           yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
 
-          # Ставим только реально нужные пакеты.
-          # cmdline-tools НЕ ставим — он уже есть.
-          # `yes |` может упасть с SIGPIPE — глушим.
+          # NDK 25.1.8937393 нужен для path_provider_android и url_launcher_android.
           yes | "$SDKMGR" --sdk_root="$SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_COMPILE_SDK}" \
             "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;25.1.8937393" \
             >/dev/null 2>&1 || true
 
-          # Проверяем, что реально поставилось.
           if [ ! -d "$SDK_ROOT/platforms/android-${ANDROID_COMPILE_SDK}" ]; then
             echo "::error::platforms;android-${ANDROID_COMPILE_SDK} не установился"
             exit 1
           fi
           if [ ! -d "$SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}" ]; then
             echo "::error::build-tools;${ANDROID_BUILD_TOOLS} не установился"
+            exit 1
+          fi
+          if [ ! -d "$SDK_ROOT/ndk/25.1.8937393" ]; then
+            echo "::error::ndk;25.1.8937393 не установился"
             exit 1
           fi
 
@@ -241,6 +252,7 @@ jobs:
           ls -la "$SDK_ROOT"
           ls -la "$SDK_ROOT/platforms" || true
           ls -la "$SDK_ROOT/build-tools" || true
+          ls -la "$SDK_ROOT/ndk" || true
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -259,10 +271,22 @@ jobs:
       - name: Prepare frontend (pub get + assets)
         run: python3 build_frontend.py --platform Android
 
-      - name: Verify no settings.gradle.kts
+      # ----------------------------------------------------------
+      #  Удаляем .kts-дубликаты, иначе Gradle игнорирует .gradle
+      #  и падает с невнятными ошибками.
+      # ----------------------------------------------------------
+      - name: Verify no .kts duplicates
         run: |
           if [ -f Frontend/Core/android/settings.gradle.kts ]; then
             echo "::error::settings.gradle.kts exists — удалите его, иначе Gradle игнорирует settings.gradle"
+            exit 1
+          fi
+          if [ -f Frontend/Core/android/app/build.gradle.kts ]; then
+            echo "::error::app/build.gradle.kts exists — удалите его, иначе Gradle игнорирует app/build.gradle"
+            exit 1
+          fi
+          if [ -f Frontend/Core/android/build.gradle.kts ]; then
+            echo "::error::build.gradle.kts exists — удалите его, иначе Gradle игнорирует build.gradle"
             exit 1
           fi
 
@@ -292,8 +316,6 @@ jobs:
             platform: Linux
     runs-on: ${{ matrix.os }}
     env:
-      # Дублируем на уровне job — на случай, если глобальный env
-      # по какой-то причине не применился к Python.
       PYTHONIOENCODING: 'utf-8'
       PYTHONUTF8: '1'
     steps:
