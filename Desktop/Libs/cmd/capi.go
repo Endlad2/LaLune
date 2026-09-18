@@ -3,17 +3,19 @@
 //
 // capi.go — C-ABI обёртка над AppCore для Flutter Desktop (dart:ffi).
 //
-// Собирается через: go build -buildmode=c-shared -o liblalune.so
+// ВАЖНО: этот файл лежит в cmd/ — рядом с main.go, потому что
+// `go build ./cmd` компилирует ТОЛЬКО пакеты из этой директории.
+// Файлы из родительской папки (Desktop/Libs/) в сборку не попадают,
+// даже если у них тот же `package main`. Это и было причиной
+// "Failed to lookup symbol 'lalune_init'": функция не экспортировалась,
+// потому что не компилировалась.
+//
+// Собирается через: go build -buildmode=c-shared -o build/lalune.dll ./cmd
 //
 // Все функции возвращают char* (C-строка, JSON или простое значение).
 // Dart читает через .cast<Utf8>().toDartString(), после чего обязан
 // вызвать lalune_free(ptr) — иначе утечка.
-//
-// Соглашения:
-//   - Всё, что возвращает JSON — валидный JSON (массив/объект).
-//   - Всё, что возвращает bool — "1" / "0".
-//   - Всё, что возвращает строку — C-строка в UTF-8.
-//   - Никаких исключений — при ошибке возвращаем пустой JSON/строку.
+
 package main
 
 /*
@@ -60,9 +62,6 @@ func lalune_init() C.int {
 	coreMu.Lock()
 	defer coreMu.Unlock()
 
-	// ВАЖНО: было `if globalCore = nil` (присваивание!) —
-	// это всегда true и всегда возвращало 0, не создавая AppCore.
-	// Теперь — сравнение.
 	if globalCore != nil {
 		return 0
 	}
@@ -70,7 +69,6 @@ func lalune_init() C.int {
 	core := libs.NewAppCore()
 	core.Startup(nil)
 
-	// Регистрируем платформенный Bridge (TUN + Runner).
 	if err := libs.BuildBridge(core); err != nil {
 		core.AddLog("[CAPI] Не удалось создать Bridge: " + err.Error())
 	}
@@ -217,7 +215,7 @@ func lalune_disconnect() C.int {
 }
 
 // ============================================================
-//  Selected config (для Settings Page)
+//  Selected config
 // ============================================================
 
 //export lalune_get_selected_config_json
@@ -242,7 +240,7 @@ func lalune_set_selected_config_json(jsonStr *C.char) C.int {
 }
 
 // ============================================================
-//  Core downloading (для тоста «Подождите, качается ядро...»)
+//  Core downloading
 // ============================================================
 
 //export lalune_is_core_downloading
@@ -458,7 +456,3 @@ func jsonEscape(s string) string {
 	data, _ := json.Marshal(s)
 	return string(data)
 }
-
-// main нужен для buildmode=c-shared — Go требует наличия main-пакета,
-// но функция не вызывается (библиотека экспортирует только C-функции).
-func main() {}
