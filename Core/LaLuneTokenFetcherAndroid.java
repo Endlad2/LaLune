@@ -3,8 +3,6 @@ package com.lalune.app;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Dialog;
-import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
@@ -29,33 +27,33 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.net.URLDecoder;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * LaLuneTokenFetcherAndroid — открывает WebView с OAuth ВК и возвращает
  * вечный access_token через Callback.
  *
- * Флоу:
- *   1. WebView грузит vk.com с ДЕСКТОПНЫМ UA — VK отдаёт классическую
- *      HTML-форму логина, которая корректно работает в WebView.
- *   2. Каждые 3 секунды проверяем URL:
- *        - если мы на домене логина (vk.com/login, id.vk.ru/auth и т.п.) —
- *          продолжаем ждать;
- *        - если мы НЕ на домене логина — значит юзер вошёл, запускаем
- *          HTTP-скрапер.
- *   3. Скрапер собирает cookies и делает GET на oauth.vk.com/authorize
- *      с response_type=token, обходя до 15 редиректов.
- *   4. Возвращаем вечный access_token.
+ * Флоу «двойного прохода» (порт поведения Desktop-версии LaLuneTokenFetcher):
+ *
+ *   Проход 1:
+ *     WebView грузит https://oauth.vk.ru/authorize?...&response_type=token.
+ *     VK логинит и редиректит на blank.html.
+ *       - Если фрагмент содержит #access_token=... — сохраняем сразу.
+ *       - Если фрагмент содержит #payload=... (silent_token, TTL 600s) —
+ *         это НЕ то, что нам нужно. Закрываем окно, показываем тост
+ *         «Получаем токен, подождите...» и СРАЗУ открываем новое окно
+ *         с тем же URL.
+ *
+ *   Проход 2:
+ *     VK уже знает, что юзер залогинен (cookies сохранены), показывает
+ *     экран «Выберите аккаунт» → после выбора возвращает
+ *     #access_token=... — вечный токен. Сохраняем.
+ *
+ *   Если и на втором проходе пришёл silent_token — показываем ошибку
+ *   и ждём действий юзера (юзер может нажать «Войти» заново вручную).
  */
 public final class LaLuneTokenFetcherAndroid {
 
@@ -65,57 +63,32 @@ public final class LaLuneTokenFetcherAndroid {
     private static final String SCOPE = "1073737727";
     private static final String REDIRECT_URI = "https://oauth.vk.ru/blank.html";
 
-    /** vk.com — десктопная страница логина. */
-    private static final String VK_LOGIN_URL = "https://vk.com/";
-
     /**
-     * Скрапер URL: display=page (десктопная форма, надёжнее mobile).
+     * URL страницы авторизации. Порядок параметров сохранён как в Desktop-версии
+     * (VkAuthConstants.AuthUrl) — это важно, VK иногда чувствителен к порядку.
      */
-    private static final String SCRAPER_AUTH_URL =
-            "https://oauth.vk.com/authorize?" +
+    private static final String AUTH_URL =
+            "https://oauth.vk.ru/authorize?" +
             "client_id=" + CLIENT_ID + "&" +
-            "display=page&" +
-            "redirect_uri=" + Uri.encode(REDIRECT_URI) + "&" +
-            "response_type=token&" +
             "scope=" + SCOPE + "&" +
-            "v=5.199&" +
-            "revoke=1";
+            "redirect_uri=" + Uri.encode(REDIRECT_URI) + "&" +
+            "display=page&" +
+            "response_type=token&" +
+            "revoke=1&" +
+            "v=5.199";
 
-    private static final String[] COOKIE_DOMAINS = {
-            "https://vk.com/",
-            "https://vk.ru/",
-            "https://id.vk.ru/",
-            "https://id.vk.com/",
-            "https://login.vk.com/",
-            "https://login.vk.ru/",
-            "https://m.vk.com/",
-            "https://m.vk.ru/",
-    };
+    private static final String[] BLANK_HOSTS = {"oauth.vk.ru", "oauth.vk.com"};
+    private static final String BLANK_PATH = "/blank.html";
 
-    /**
-     * Подстроки URL, которые означают, что мы ЕЩЁ на странице логина.
-     * Если текущий URL НЕ содержит ни одной из них — значит юзер вошёл
-     * и пора запускать скрапер.
-     */
-    private static final String[] LOGIN_URL_MARKERS = {
-            "/login",
-            "/auth",
-            "act=login",
-            "id.vk.ru/auth",
-            "id.vk.com/auth",
-            "login.vk.com",
-            "login.vk.ru",
-            "oauth.vk.com/authorize",
-            "oauth.vk.ru/authorize",
-    };
-
-    private static final int MAX_OAUTH_HOPS = 15;
-    private static final long POLL_INTERVAL_MS = 3000L;
+    private static final long POLL_INTERVAL_MS = 1000L;
     private static final long TIMEOUT_MS = 5 * 60 * 1000L;
     private static final long FIRST_LOAD_TIMEOUT_MS = 15_000L;
 
+    /** Задержка перед авто-перезапуском WebView (чтобы юзер увидел тост). */
+    private static final long RESTART_DELAY_MS = 1500L;
+
     /**
-     * ДЕСКТОПНЫЙ User-Agent — тот же, что в Desktop/Libs/update.go.
+     * Десктопный UA — как в Desktop/Libs/update.go.
      */
     private static final String DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -137,6 +110,10 @@ public final class LaLuneTokenFetcherAndroid {
         new Session(activity, callback).start();
     }
 
+    // ---------------------------------------------------------------------
+    //  Session
+    // ---------------------------------------------------------------------
+
     private static final class Session {
         private final Activity activity;
         private final Callback callback;
@@ -148,15 +125,17 @@ public final class LaLuneTokenFetcherAndroid {
         private Runnable pollRunnable;
         private Runnable timeoutRunnable;
         private Runnable firstLoadTimeoutRunnable;
-        private Runnable injectFormHelperRunnable;
 
         private final AtomicBoolean finished = new AtomicBoolean(false);
         private volatile boolean closingByUs = false;
         private volatile boolean firstLoadReceived = false;
-        private volatile boolean scrapeStarted = false;
-        private volatile boolean nonPermanentRetried = false;
-        private volatile boolean formHelperInjected = false;
-        private String lastLoggedUrl = "";
+        private volatile String lastLoggedUrl = "";
+
+        /**
+         * 0 = ещё не было silent_token,
+         * 1 = первый silent_token получен, сейчас идёт второй проход.
+         */
+        private volatile int pass = 0;
 
         Session(Activity activity, Callback callback) {
             this.activity = activity;
@@ -173,7 +152,12 @@ public final class LaLuneTokenFetcherAndroid {
                 return;
             }
 
-            Log.d(TAG, "start(): creating dialog");
+            showDialogAndLoad();
+            scheduleTimeout();
+        }
+
+        private void showDialogAndLoad() {
+            Log.d(TAG, "showDialogAndLoad(): pass=" + pass);
 
             dialog = new Dialog(activity);
             dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -214,7 +198,7 @@ public final class LaLuneTokenFetcherAndroid {
 
             try {
                 dialog.show();
-                Log.d(TAG, "dialog.show() OK");
+                Log.d(TAG, "dialog.show() OK (pass=" + pass + ")");
             } catch (Exception e) {
                 Log.e(TAG, "dialog.show() failed: " + e.getMessage(), e);
                 finishWithError("не удалось открыть окно: " + e.getMessage());
@@ -227,17 +211,17 @@ public final class LaLuneTokenFetcherAndroid {
                         ViewGroup.LayoutParams.MATCH_PARENT);
             }
 
-            Log.d(TAG, "loadUrl: " + VK_LOGIN_URL + " (desktop UA)");
-            webView.loadUrl(VK_LOGIN_URL);
+            Log.d(TAG, "loadUrl: " + AUTH_URL);
+            firstLoadReceived = false;
+            webView.loadUrl(AUTH_URL);
 
             schedulePolling();
-            scheduleTimeout();
             scheduleFirstLoadTimeout();
         }
 
         @SuppressLint("SetJavaScriptEnabled")
-        private WebView buildWebView(Context context) {
-            WebView view = new WebView(context);
+        private WebView buildWebView(Activity activity) {
+            WebView view = new WebView(activity);
             view.setBackgroundColor(Color.WHITE);
 
             WebSettings settings = view.getSettings();
@@ -246,8 +230,6 @@ public final class LaLuneTokenFetcherAndroid {
             settings.setDatabaseEnabled(true);
             settings.setLoadWithOverviewMode(true);
             settings.setUseWideViewPort(true);
-            settings.setJavaScriptCanOpenWindowsAutomatically(true);
-            settings.setSupportMultipleWindows(false);
             settings.setUserAgentString(DESKTOP_UA);
 
             CookieManager.getInstance().setAcceptCookie(true);
@@ -255,29 +237,40 @@ public final class LaLuneTokenFetcherAndroid {
 
             view.setWebViewClient(new WebViewClient() {
                 @Override
-                public void onPageStarted(WebView wv, String url, Bitmap favicon) {
+                public boolean shouldOverrideUrlLoading(WebView wv, String url) {
+                    handleUrl(url);
+                    return false;
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView wv, WebResourceRequest request) {
+                    handleUrl(request.getUrl().toString());
+                    return false;
+                }
+
+                @Override
+                public void onPageStarted(WebView wv, String url, android.graphics.Bitmap favicon) {
                     firstLoadReceived = true;
                     Log.d(TAG, "onPageStarted: " + url);
-                    formHelperInjected = false;
+                    handleUrl(url);
                 }
 
                 @Override
                 public void onPageFinished(WebView wv, String url) {
                     firstLoadReceived = true;
                     Log.d(TAG, "onPageFinished: " + url);
-                    logUrl(url);
-                    scheduleFormHelperInjection(wv);
+                    handleUrl(url);
                 }
 
                 @Override
                 public void doUpdateVisitedHistory(WebView wv, String url, boolean isReload) {
-                    logUrl(url);
+                    handleUrl(url);
                 }
 
                 @Override
                 public void onPageCommitVisible(WebView wv, String url) {
                     firstLoadReceived = true;
-                    logUrl(url);
+                    handleUrl(url);
                 }
 
                 @Override
@@ -298,283 +291,165 @@ public final class LaLuneTokenFetcherAndroid {
             return view;
         }
 
-        /**
-         * JS-хелпер: делает форму логина VK работоспособной в WebView.
-         * Перехватывает клик по «Войти» и вызывает form.submit() напрямую,
-         * минуя возможные JS-обработчики VK, которые могут падать в WebView.
-         */
-        private void scheduleFormHelperInjection(WebView wv) {
-            if (formHelperInjected) return;
-            formHelperInjected = true;
-            if (injectFormHelperRunnable != null) {
-                handler.removeCallbacks(injectFormHelperRunnable);
-            }
-            injectFormHelperRunnable = () -> {
-                if (finished.get() || wv != webView) return;
-                wv.evaluateJavascript(FORM_HELPER_JS, value ->
-                        Log.d(TAG, "Form helper injected: " + value));
-            };
-            handler.postDelayed(injectFormHelperRunnable, 1500);
-        }
-
         // -----------------------------------------------------------------
-        //  Главная проверка: где мы находимся
+        //  Обработка URL
         // -----------------------------------------------------------------
 
-        /**
-         * true, если URL — это страница логина VK (то есть юзер ещё НЕ вошёл).
-         * false, если мы уже на любой другой странице — значит вошёл.
-         */
-        private static boolean isLoginPage(@Nullable String url) {
-            if (url == null || url.isEmpty()) return true;
-            String lower = url.toLowerCase();
-            for (String marker : LOGIN_URL_MARKERS) {
-                if (lower.contains(marker)) return true;
-            }
-            return false;
-        }
+        private void handleUrl(@Nullable String url) {
+            if (finished.get() || url == null) return;
+            logUrl(url);
 
-        /**
-         * Каждые 3 секунды: если НЕ на странице логина — запускаем скрапер.
-         * Также страховочно триггерим по cookie remixsid.
-         */
-        private void checkAndRunScraper(@Nullable String url) {
-            if (finished.get() || scrapeStarted) return;
+            if (!isBlankRedirect(url)) return;
 
-            boolean onLoginPage = isLoginPage(url);
-            boolean hasRemixsid = isVkLoggedInByCookies();
+            String fragment = extractFragment(url);
+            if (fragment == null || fragment.isEmpty()) return;
 
-            // Условие запуска:
-            //   1) мы НЕ на странице логина И страница уже загружена (url != null);
-            //   2) ИЛИ у нас уже появился remixsid cookie.
-            boolean shouldRun = (!onLoginPage && url != null) || hasRemixsid;
-
-            if (!shouldRun) {
-                Log.d(TAG, "Still on login page: " + url);
+            // --- Случай 1: настоящий access_token ---
+            String token = extractAccessToken(url);
+            if (token != null && !token.isEmpty()) {
+                Log.i(TAG, "access_token received (pass=" + pass + ") ✓");
+                finishWithToken(token);
                 return;
             }
 
-            scrapeStarted = true;
-            Log.i(TAG, "User is logged in — starting HTTP scraper (url=" + url + ")");
+            // --- Случай 2: silent_token (payload=...) ---
+            if (fragment.contains("payload=")) {
+                if (pass == 0) {
+                    Log.w(TAG, "silent_token received on pass 1 — auto-restart");
+                    pass = 1;
 
-            final String cookies = collectCookies();
-            Log.d(TAG, "Cookies collected, length=" + cookies.length());
+                    // Тост: «Получаем токен, подождите...»
+                    try {
+                        Toast.makeText(activity,
+                                "Получаем токен, подождите...",
+                                Toast.LENGTH_SHORT).show();
+                    } catch (Exception ignored) {}
 
-            new Thread(() -> {
-                ScrapeResult result = scrapeAccessToken(cookies, DESKTOP_UA);
-                handler.post(() -> {
-                    if (finished.get()) return;
-
-                    if (result.token != null && !result.token.isEmpty()) {
-                        if (result.expiresIn == 0L) {
-                            Log.i(TAG, "Permanent access_token received ✓");
-                            finishWithToken(result.token);
-                        } else if (!nonPermanentRetried) {
-                            nonPermanentRetried = true;
-                            scrapeStarted = false;
-                            Log.w(TAG, "Non-permanent token (expires_in=" +
-                                    result.expiresIn + "), retrying scraper once");
-                            checkAndRunScraper(url);
-                        } else {
-                            finishWithError(
-                                    "VK выдал токен с ограниченным сроком действия");
-                        }
-                    } else {
-                        Log.e(TAG, "Scraper failed: " + result.error);
-                        scrapeStarted = false;
-                        // Повторим на следующем тике поллинга.
-                    }
-                });
-            }, "vk-token-scraper").start();
-        }
-
-        private boolean isVkLoggedInByCookies() {
-            CookieManager cm = CookieManager.getInstance();
-            for (String domain : COOKIE_DOMAINS) {
-                try {
-                    String c = cm.getCookie(domain);
-                    if (c != null && c.contains("remixsid")) return true;
-                } catch (Exception ignored) {}
-            }
-            return false;
-        }
-
-        private String collectCookies() {
-            CookieManager cm = CookieManager.getInstance();
-            StringBuilder sb = new StringBuilder();
-            for (String domain : COOKIE_DOMAINS) {
-                try {
-                    String c = cm.getCookie(domain);
-                    if (c != null && !c.isEmpty()) {
-                        if (sb.length() > 0) sb.append("; ");
-                        sb.append(c);
-                    }
-                } catch (Exception ignored) {}
-            }
-            return sb.toString();
-        }
-
-        // -----------------------------------------------------------------
-        //  HTTP-скрапер
-        // -----------------------------------------------------------------
-
-        private static final class ScrapeResult {
-            @Nullable String token;
-            long expiresIn;
-            @Nullable String error;
-        }
-
-        private static final Pattern JS_LOCATION_RE =
-                Pattern.compile("location\\.href\\s*=\\s*[\"']([^\"']+)[\"']");
-        private static final Pattern OAUTH_GRANT_RE =
-                Pattern.compile("(https://login\\.vk\\.(?:com|ru)/\\?act=grant_access[^\"'\\s<]+)");
-
-        private ScrapeResult scrapeAccessToken(String cookies, String userAgent) {
-            ScrapeResult result = new ScrapeResult();
-            String endpoint = SCRAPER_AUTH_URL;
-            int hops = MAX_OAUTH_HOPS;
-
-            while (hops-- > 0) {
-                HttpURLConnection conn = null;
-                try {
-                    conn = (HttpURLConnection) new URL(endpoint).openConnection();
-                    conn.setInstanceFollowRedirects(false);
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("Cookie", cookies);
-                    conn.setRequestProperty("User-Agent", userAgent);
-                    conn.setRequestProperty("Accept",
-                            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                    conn.setConnectTimeout(15_000);
-                    conn.setReadTimeout(15_000);
-
-                    int code = conn.getResponseCode();
-
-                    if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-                        String next = conn.getHeaderField("Location");
-                        if (next == null || next.isEmpty()) {
-                            result.error = "redirect without Location (HTTP " + code + ")";
-                            return result;
-                        }
-                        ScrapeResult parsed = parseFragment(next);
-                        if (parsed != null) return parsed;
-                        endpoint = next;
-                        continue;
-                    }
-
-                    if (code == 200) {
-                        String html = readStream(conn.getInputStream());
-
-                        Matcher jsMatch = JS_LOCATION_RE.matcher(html);
-                        if (jsMatch.find()) {
-                            String target = jsMatch.group(1);
-                            ScrapeResult parsed = parseFragment(target);
-                            if (parsed != null) return parsed;
-                            endpoint = target.replace("&amp;", "&");
-                            continue;
-                        }
-
-                        Matcher grantMatch = OAUTH_GRANT_RE.matcher(html);
-                        if (grantMatch.find()) {
-                            endpoint = grantMatch.group(1).replace("&amp;", "&");
-                            continue;
-                        }
-
-                        result.error = "no redirect found in HTML (HTTP 200)";
-                        return result;
-                    }
-
-                    result.error = "unexpected HTTP " + code;
-                    return result;
-                } catch (Exception e) {
-                    result.error = "network: " + e.getMessage();
-                    return result;
-                } finally {
-                    if (conn != null) {
-                        try { conn.disconnect(); } catch (Exception ignored) {}
-                    }
+                    // Закрываем текущее окно и через небольшую паузу открываем новое.
+                    closeCurrentDialog();
+                    handler.postDelayed(() -> {
+                        if (!finished.get()) showDialogAndLoad();
+                    }, RESTART_DELAY_MS);
+                } else {
+                    // Второй раз тоже silent_token — сдаёмся.
+                    Log.e(TAG, "silent_token received on pass 2 — giving up");
+                    finishWithError(
+                            "VK не выдал вечный токен. Нажмите «Войти» и попробуйте снова");
                 }
+                return;
             }
 
-            result.error = "too many redirects (max " + MAX_OAUTH_HOPS + ")";
-            return result;
+            // --- Случай 3: ошибка OAuth ---
+            if (fragment.contains("error=")) {
+                String desc = extractQueryParam(fragment, "error_description");
+                if (desc == null) desc = extractQueryParam(fragment, "error");
+                finishWithError("VK: " + (desc != null ? desc : "неизвестная ошибка"));
+            }
+        }
+
+        /** Закрывает текущий диалог и WebView, не завершая сессию. */
+        private void closeCurrentDialog() {
+            if (webView != null) {
+                try {
+                    webView.stopLoading();
+                    webView.loadUrl("about:blank");
+                    webView.removeAllViews();
+                    webView.destroy();
+                } catch (Exception ignored) {}
+                webView = null;
+            }
+            if (dialog != null) {
+                try {
+                    if (dialog.isShowing()) dialog.dismiss();
+                } catch (Exception ignored) {}
+                dialog = null;
+            }
+            // Сбрасываем поллинг на старый webView.
+            if (pollRunnable != null) {
+                handler.removeCallbacks(pollRunnable);
+                pollRunnable = null;
+            }
+            if (firstLoadTimeoutRunnable != null) {
+                handler.removeCallbacks(firstLoadTimeoutRunnable);
+                firstLoadTimeoutRunnable = null;
+            }
+        }
+
+        private static boolean isBlankRedirect(String url) {
+            if (url == null) return false;
+            Uri parsed;
+            try {
+                parsed = Uri.parse(url);
+            } catch (Exception e) {
+                return false;
+            }
+            String host = parsed.getHost();
+            if (host == null) return false;
+            boolean hostOk = false;
+            for (String h : BLANK_HOSTS) {
+                if (h.equalsIgnoreCase(host)) { hostOk = true; break; }
+            }
+            if (!hostOk) return false;
+            return BLANK_PATH.equalsIgnoreCase(parsed.getPath());
         }
 
         @Nullable
-        private static ScrapeResult parseFragment(String urlStr) {
-            if (urlStr == null || !urlStr.contains("access_token=")) return null;
-
-            String fragment;
-            try {
-                Uri uri = Uri.parse(urlStr);
-                fragment = uri.getEncodedFragment();
-                if (fragment == null) fragment = uri.getEncodedQuery();
-                if (fragment == null) {
-                    int hash = urlStr.indexOf('#');
-                    if (hash >= 0) fragment = urlStr.substring(hash + 1);
-                }
-            } catch (Exception e) {
-                int hash = urlStr.indexOf('#');
-                fragment = hash >= 0 ? urlStr.substring(hash + 1) : urlStr;
-            }
-            if (fragment == null) return null;
-
-            Map<String, String> params = new HashMap<>();
-            for (String part : fragment.split("&")) {
-                int eq = part.indexOf('=');
-                if (eq <= 0) continue;
-                String k = part.substring(0, eq);
-                String v = part.substring(eq + 1);
-                try {
-                    v = URLDecoder.decode(v, "UTF-8");
-                } catch (Exception ignored) {}
-                params.put(k, v);
-            }
-
-            String token = params.get("access_token");
-            if (token == null || token.isEmpty()) return null;
-
-            long expires = 0L;
-            try { expires = Long.parseLong(params.get("expires_in")); } catch (Exception ignored) {}
-
-            ScrapeResult r = new ScrapeResult();
-            r.token = token;
-            r.expiresIn = expires;
-            return r;
+        private static String extractFragment(String url) {
+            int hash = url.indexOf('#');
+            if (hash >= 0) return url.substring(hash + 1);
+            int q = url.indexOf('?');
+            if (q >= 0) return url.substring(q + 1);
+            return null;
         }
 
-        private static String readStream(InputStream is) throws Exception {
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    sb.append(line).append('\n');
+        @Nullable
+        private static String extractAccessToken(String url) {
+            String fragment = extractFragment(url);
+            if (fragment == null) return null;
+            String token = extractQueryParam(fragment, "access_token");
+            if (token == null || token.isEmpty()) return null;
+            return token;
+        }
+
+        @Nullable
+        private static String extractQueryParam(String query, String key) {
+            if (query == null) return null;
+            if (query.startsWith("#") || query.startsWith("?")) {
+                query = query.substring(1);
+            }
+            for (String pair : query.split("&")) {
+                if (pair.isEmpty()) continue;
+                int eq = pair.indexOf('=');
+                if (eq <= 0) continue;
+                String k = pair.substring(0, eq);
+                if (!k.equals(key)) continue;
+                String v = pair.substring(eq + 1);
+                try {
+                    return URLDecoder.decode(v, "UTF-8");
+                } catch (Exception e) {
+                    return v;
                 }
             }
-            return sb.toString();
+            return null;
         }
 
         // -----------------------------------------------------------------
         //  Поллинг / таймеры
         // -----------------------------------------------------------------
 
-        /**
-         * Каждые 3 секунды проверяем URL. Если это уже не логин —
-         * запускаем скрапер.
-         */
         private void schedulePolling() {
+            if (pollRunnable != null) {
+                handler.removeCallbacks(pollRunnable);
+            }
             pollRunnable = new Runnable() {
                 @Override
                 public void run() {
                     if (finished.get()) return;
                     WebView wv = webView;
-                    if (wv == null) {
-                        handler.postDelayed(this, POLL_INTERVAL_MS);
-                        return;
-                    }
+                    if (wv == null) return;
                     String url = wv.getUrl();
-                    logUrl(url);
-                    checkAndRunScraper(url);
-                    if (!finished.get()) {
+                    if (url != null) handleUrl(url);
+                    if (!finished.get() && webView == wv) {
                         handler.postDelayed(this, POLL_INTERVAL_MS);
                     }
                 }
@@ -588,6 +463,9 @@ public final class LaLuneTokenFetcherAndroid {
         }
 
         private void scheduleFirstLoadTimeout() {
+            if (firstLoadTimeoutRunnable != null) {
+                handler.removeCallbacks(firstLoadTimeoutRunnable);
+            }
             firstLoadTimeoutRunnable = () -> {
                 if (finished.get()) return;
                 if (!firstLoadReceived) {
@@ -637,10 +515,6 @@ public final class LaLuneTokenFetcherAndroid {
                 handler.removeCallbacks(firstLoadTimeoutRunnable);
                 firstLoadTimeoutRunnable = null;
             }
-            if (injectFormHelperRunnable != null) {
-                handler.removeCallbacks(injectFormHelperRunnable);
-                injectFormHelperRunnable = null;
-            }
             if (webView != null) {
                 try {
                     webView.stopLoading();
@@ -658,47 +532,4 @@ public final class LaLuneTokenFetcherAndroid {
             }
         }
     }
-
-    /**
-     * JS-хелпер: делает форму логина VK работоспособной в WebView.
-     */
-    private static final String FORM_HELPER_JS =
-            "(function() {" +
-            "  if (window.__lalune_form_helper) return 'already';" +
-            "  window.__lalune_form_helper = true;" +
-            "  function submitForm(form) {" +
-            "    try {" +
-            "      var nativeSubmit = HTMLFormElement.prototype.submit;" +
-            "      nativeSubmit.call(form);" +
-            "      return true;" +
-            "    } catch (e) { return false; }" +
-            "  }" +
-            "  function findForm(el) {" +
-            "    while (el && el !== document.body) {" +
-            "      if (el.tagName === 'FORM') return el;" +
-            "      el = el.parentElement;" +
-            "    }" +
-            "    return null;" +
-            "  }" +
-            "  document.addEventListener('click', function(e) {" +
-            "    var t = e.target;" +
-            "    if (!t) return;" +
-            "    var isSubmit = (t.type === 'submit')" +
-            "      || (t.tagName === 'BUTTON' && (t.type === 'submit' || t.type === ''))" +
-            "      || (t.id && /login|submit|enter/i.test(t.id))" +
-            "      || (t.className && typeof t.className === 'string' && /login|submit|enter/i.test(t.className));" +
-            "    if (!isSubmit) {" +
-            "      var p = t.parentElement;" +
-            "      for (var i = 0; i < 3 && p; i++, p = p.parentElement) {" +
-            "        if (p.tagName === 'BUTTON' || (p.tagName === 'INPUT' && p.type === 'submit')) {" +
-            "          t = p; isSubmit = true; break;" +
-            "        }" +
-            "      }" +
-            "    }" +
-            "    if (!isSubmit) return;" +
-            "    var form = findForm(t);" +
-            "    if (form) { submitForm(form); }" +
-            "  }, true);" +
-            "  return 'ok';" +
-            "})();";
 }
