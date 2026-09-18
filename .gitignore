@@ -43,6 +43,10 @@ Desktop/Windows/build/
 Desktop/*/frontend/
 Desktop/*/Libs/
 
-# Android generated (оставь только если не хочешь коммитить)
+# SmartTunnel.lua — генерируется из Core/SmartTunnel.lua через prepare_st.py
+Desktop/Libs/SmartTunnel.lua
+Mobile/Android/app/src/main/assets/SmartTunnel.lua
+
+# Android generated
 # Mobile/Android/app/src/main/assets/
 # Mobile/Android/app/src/main/jniLibs/

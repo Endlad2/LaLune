@@ -10,7 +10,7 @@ build_desktop.py — сборка Wails-приложения LaLune для Deskt
 Что делает:
   1. Проверяет, что Frontend/output/ существует
   2. Копирует Frontend/output/* в Desktop/<platform>/frontend/
-  3. Копирует Desktop/Libs/*.go в Desktop/<platform>/Libs/
+  3. Копирует Desktop/Libs/* (включая SmartTunnel.lua) в Desktop/<platform>/Libs/
   4. Копирует ресурсы Windows (icon.ico, manifest)
   5. Запускает wails build
   6. Убирает временные файлы
@@ -97,6 +97,15 @@ class WailsBuilder:
                 f"В {self.frontend_output} нет index.html — сборка фронта пустая"
             )
 
+        # Проверяем, что SmartTunnel.lua лежит в Desktop/Libs/ (его читает go:embed).
+        smart_lua = self.desktop_libs_dir / "SmartTunnel.lua"
+        if not smart_lua.exists():
+            raise FileNotFoundError(
+                f"Не найден {smart_lua}\n"
+                f"Сначала подготовьте SmartTunnel:\n"
+                f"  python prepare_st.py --platform={self.platform}"
+            )
+
     def setup_frontend(self) -> None:
         """Копирует Frontend/output/* в Desktop/<platform>/frontend/."""
         if self.frontend_dir.exists():
@@ -115,7 +124,11 @@ class WailsBuilder:
         print(f"  Фронтенд: {count} файлов → {self.frontend_dir}")
 
     def copy_libs(self) -> None:
-        """Копирует Desktop/Libs/* → Desktop/<platform>/Libs/."""
+        """Копирует Desktop/Libs/* → Desktop/<platform>/Libs/.
+
+        Копирует ВСЁ содержимое папки — включая SmartTunnel.lua, который
+        нужен для go:embed в smarttunnel.go.
+        """
         if not self.desktop_libs_dir.exists():
             print(f"\n  [WARN] {self.desktop_libs_dir} не найден, пропускаю")
             return
@@ -131,11 +144,19 @@ class WailsBuilder:
             if item.is_file():
                 shutil.copy2(item, dst)
                 count += 1
+                print(f"  Libs: {item.name}")
             elif item.is_dir():
                 shutil.copytree(item, dst, dirs_exist_ok=True)
                 count += 1
+                print(f"  Libs: {item.name}/")
 
-        print(f"  Libs: {count} файлов → {self.libs_platform_dir}")
+        # Явно проверяем, что SmartTunnel.lua попал в целевой Libs/.
+        target_lua = self.libs_platform_dir / "SmartTunnel.lua"
+        if not target_lua.exists():
+            raise FileNotFoundError(
+                f"После копирования SmartTunnel.lua не найден в {self.libs_platform_dir}\n"
+                f"Проверьте {self.desktop_libs_dir}"
+            )
 
     def copy_windows_resources(self) -> None:
         """Копирует icon.ico и wails.exe.manifest в build/windows/."""
@@ -177,9 +198,6 @@ class WailsBuilder:
         print(f"  cwd: {self.platform_dir}")
         print("=" * 60 + "\n")
 
-        # На Windows wails — .exe/.bat, но он есть в PATH и subprocess
-        # со shell=True на Windows корректно работает только с одной строкой.
-        # Используем list + shell для .bat-совместимости.
         use_shell = sys.platform == "win32"
 
         process = subprocess.Popen(
@@ -247,7 +265,7 @@ def main() -> int:
         progress.update("Копирование фронтенда...")
         builder.setup_frontend()
 
-        progress.update("Копирование Libs...")
+        progress.update("Копирование Libs (включая SmartTunnel.lua)...")
         builder.copy_libs()
 
         progress.update("Копирование Windows-ресурсов...")

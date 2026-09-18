@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-prepare_st.py — копирует Core/SmartTunnel.lua в места, где его читают рантаймы.
+prepare_st.py — копирует Core/SmartTunnel.lua туда, где его читают рантаймы.
 
 Использование:
     python prepare_st.py --platform=Linux
@@ -9,12 +9,15 @@ prepare_st.py — копирует Core/SmartTunnel.lua в места, где е
     python prepare_st.py --platform=all
 
 Что делает:
-    - Linux   → Desktop/Linux/SmartTunnel.lua   (для go:embed)
-    - Windows → Desktop/Windows/SmartTunnel.lua (для go:embed)
+    - Linux   → Desktop/Libs/SmartTunnel.lua        (для go:embed)
+    - Windows → Desktop/Libs/SmartTunnel.lua        (для go:embed)
     - Android → Mobile/Android/app/src/main/assets/SmartTunnel.lua
     - all     → все три сразу
 
-После копирования печатает список файлов и их размер.
+ВАЖНО: Desktop/Libs/ — это единая папка для обеих платформ, потому что
+build_desktop.py копирует Desktop/Libs/*.go (и .lua) в Desktop/<platform>/Libs/.
+go:embed в smarttunnel.go ищет SmartTunnel.lua рядом с самим .go-файлом,
+то есть в Desktop/Libs/ (при сборке — в Desktop/<platform>/Libs/).
 """
 
 import argparse
@@ -26,8 +29,8 @@ ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "Core" / "SmartTunnel.lua"
 
 TARGETS = {
-    "Linux": ROOT / "Desktop" / "Linux" / "SmartTunnel.lua",
-    "Windows": ROOT / "Desktop" / "Windows" / "SmartTunnel.lua",
+    "Linux": ROOT / "Desktop" / "Libs" / "SmartTunnel.lua",
+    "Windows": ROOT / "Desktop" / "Libs" / "SmartTunnel.lua",
     "Android": ROOT / "Mobile" / "Android" / "app" / "src" / "main" / "assets" / "SmartTunnel.lua",
 }
 
@@ -64,12 +67,24 @@ def main() -> int:
     log(f"Источник: {SOURCE.relative_to(ROOT)} "
         f"({SOURCE.stat().st_size} байт)")
 
-    platforms = list(TARGETS.keys()) if args.platform == "all" else [args.platform]
+    # Desktop/Libs/ общий для Linux и Windows — копируем один раз.
+    if args.platform == "all":
+        # Дедуплицируем целевые пути (Libs общий для Linux и Windows).
+        unique_targets = []
+        seen = set()
+        for name in ("Linux", "Windows", "Android"):
+            t = TARGETS[name]
+            key = str(t)
+            if key not in seen:
+                seen.add(key)
+                unique_targets.append(t)
+        for t in unique_targets:
+            copy_one(t)
+        log(f"Готово: {len(unique_targets)} файл(ов)")
+    else:
+        copy_one(TARGETS[args.platform])
+        log(f"Готово: 1 файл")
 
-    for name in platforms:
-        copy_one(TARGETS[name])
-
-    log(f"Готово: {len(platforms)} файл(ов)")
     return 0
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
-      - name: Prepare SmartTunnel.lua (Linux + Android)
+      - name: Prepare SmartTunnel.lua
         run: python3 prepare_st.py --platform=all
       - name: Build Dart frontend for Linux
         run: python3 build_frontend.py --platform Linux
@@ -55,7 +55,7 @@ jobs:
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
       - run: flutter config --enable-web
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-      - name: Prepare SmartTunnel.lua (Linux + Windows + Android)
+      - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=all
       - name: Build Dart frontend for Windows
         run: python build_frontend.py --platform Windows
@@ -94,14 +94,14 @@ jobs:
         with: { gradle-version: '8.9' }
       - name: Prepare Android Core
         run: python prepare_android_core.py
-      - name: Prepare SmartTunnel.lua (Linux + Windows + Android)
+      - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=all
       - name: Build Dart frontend for Android
         run: python build_frontend.py --platform Android
       - name: Copy frontend to Android assets
         run: |
           ASSETS_DIR="Mobile/Android/app/src/main/assets"
-          # не удаляем всё подряд — в assets уже лежит SmartTunnel.lua от prepare_st.py.
+          # не удаляем всё — в assets уже лежит SmartTunnel.lua от prepare_st.py.
           mkdir -p "$ASSETS_DIR"
           cp -r Frontend/output/. "$ASSETS_DIR/"
           test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
