@@ -1,67 +1,141 @@
-name: Build OpenWRT
+name: Build OpenWRT LuCI package
 
 on:
   push:
-    branches:
-      - main
-      - release
+    branches: [ main, master ]
     paths:
-      - 'OpenWRT/**'
+      - 'OpenWRT/luci-app-csqtt/**'
       - '.github/workflows/build-openwrt.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'OpenWRT/luci-app-csqtt/**'
   workflow_dispatch:
+
+env:
+  SDK_URL: "https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+  SDK_ARCHIVE: "openwrt-sdk.tar.zst"
+  PKG_DIR: "OpenWRT/luci-app-csqtt"
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: "RouteRich 24.10.8"
-            short_name: "RouteRich"
-            rust_target: "aarch64-unknown-linux-musl"
-
-    name: "OpenWRT - ${{ matrix.name }}"
+    name: Build luci-app-csqtt (.ipk)
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build owrt-client
-        working-directory: OpenWRT
+      - name: Install dependencies
         run: |
-          cross build --release --target ${{ matrix.rust_target }}
-          ls -la target/${{ matrix.rust_target }}/release/
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gawk gettext libncurses-dev libssl-dev \
+            python3 python3-pip rsync unzip file wget zstd time git ca-certificates
 
-      - name: Verify binary
-        working-directory: OpenWRT
+      - name: Download OpenWRT SDK
         run: |
-          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
-          file "$BIN"
-          file "$BIN" | grep -q "ARM aarch64" || { echo "Not ARM64!"; exit 1; }
+          echo "==> Скачиваю SDK: $SDK_URL"
+          wget -q --show-progress -O "$SDK_ARCHIVE" "$SDK_URL"
+          ls -la "$SDK_ARCHIVE"
 
-      - name: Prepare package
-        working-directory: OpenWRT
+      - name: Extract SDK
         run: |
-          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
-          OUT="/tmp/owrt-client-${{ matrix.short_name }}"
-          mkdir -p "$OUT"
-          cp "$BIN" "$OUT/owrt-client"
-          cp README.md "$OUT/README.md"
-          printf '%s\n' '# Скопируй в файл config (без .example) рядом с бинарником.' 'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' > "$OUT/config.example"
-          ls -la "$OUT"
+          echo "==> Распаковываю SDK"
+          mkdir -p sdk
+          tar --zstd -xf "$SDK_ARCHIVE" -C sdk
+          SDK_ROOT="$(find sdk -maxdepth 1 -mindepth 1 -type d -name 'openwrt-sdk-*' | head -n1)"
+          if [ -z "$SDK_ROOT" ]; then
+            echo "ERROR: не нашёл распакованную папку SDK"
+            ls -la sdk
+            exit 1
+          fi
+          echo "SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "==> SDK: $SDK_ROOT"
 
-      - name: Upload OpenWRT Artifact
+      - name: Configure SDK (feeds)
+        run: |
+          cd "$SDK_ROOT"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Copy package into SDK
+        run: |
+          cd "$SDK_ROOT"
+          rm -rf package/luci-app-csqtt
+          cp -r "$GITHUB_WORKSPACE/$PKG_DIR" package/luci-app-csqtt
+          echo "==> Package contents:"
+          find package/luci-app-csqtt -type f | sort
+
+      - name: Select package in config
+        run: |
+          cd "$SDK_ROOT"
+          make defconfig
+          {
+            echo "CONFIG_PACKAGE_luci-app-csqtt=y"
+            echo "CONFIG_PACKAGE_luci-base=y"
+            echo "CONFIG_PACKAGE_luci-compat=y"
+            echo "CONFIG_PACKAGE_luci-mod-admin-full=y"
+            echo "CONFIG_PACKAGE_luci-theme-bootstrap=y"
+            echo "CONFIG_PACKAGE_rpcd=y"
+            echo "CONFIG_PACKAGE_rpcd-mod-file=y"
+            echo "CONFIG_PACKAGE_rpcd-mod-luci=y"
+            echo "CONFIG_PACKAGE_curl=y"
+            echo "CONFIG_PACKAGE_unzip=y"
+            echo "CONFIG_PACKAGE_ca-bundle=y"
+            echo "CONFIG_PACKAGE_kmod-tun=y"
+          } >> .config
+          make defconfig
+          grep -E '^CONFIG_PACKAGE_luci-app-csqtt=' .config || {
+            echo "ERROR: luci-app-csqtt не включён в .config"
+            exit 1
+          }
+
+      - name: Build package
+        run: |
+          cd "$SDK_ROOT"
+          make package/luci-app-csqtt/compile V=s -j"$(nproc)"
+          echo "==> Результат:"
+          find bin -name 'luci-app-csqtt*.ipk' -type f
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          find "$SDK_ROOT/bin" -name 'luci-app-csqtt*.ipk' -type f -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
+          find "$SDK_ROOT/bin" -name 'Packages*' -type f -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \; 2>/dev/null || true
+          echo "==> Артефакты:"
+          ls -la "$GITHUB_WORKSPACE/artifacts/"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-OpenWRT-${{ matrix.short_name }}
-          path: /tmp/owrt-client-${{ matrix.short_name }}/
+          name: luci-app-csqtt-ipk
+          path: artifacts/*.ipk
           if-no-files-found: error
+
+      - name: Create Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-luci-csqtt-${{ github.run_number }}
+          name: "luci-app-csqtt build #${{ github.run_number }}"
+          body: |
+            Автоматическая сборка LuCI-приложения `luci-app-csqtt`.
+
+            **Установка на роутер:**
+            ```sh
+            opkg update
+            opkg install luci-app-csqtt_*.ipk
+            /etc/init.d/rpcd restart
+            /etc/init.d/uhttpd restart
+```
+
+Затем LuCI → **Services → CSQTT**.
+
+SDK: `25.12.5 / armsr / armv8`
+files: artifacts/*.ipk
+draft: false
+prerelease: false
+env:
+GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

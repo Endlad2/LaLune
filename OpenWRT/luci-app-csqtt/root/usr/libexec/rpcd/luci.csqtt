@@ -1,0 +1,82 @@
+#!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+#
+# rpc-демон LuCI для luci-app-csqtt.
+# Регистрирует методы luci.csqtt.connect / disconnect / status / logs.
+
+. /usr/share/libubox/jshn.sh
+
+connect() {
+    local link token hashes workers
+    json_init
+    json_load "$(cat)"
+    json_get_var link link
+    json_get_var token token
+    json_get_var hashes hashes
+    json_get_var workers workers
+
+    [ -z "$hashes" ] && hashes=3
+    [ -z "$workers" ] && workers=27
+
+    if [ -z "$link" ]; then
+        json_init
+        json_add_boolean ok 0
+        json_add_string error "Пустая ссылка"
+        json_dump
+        return 0
+    fi
+
+    OUT=$(/usr/bin/csqtt-connect "$link" "$hashes" "$workers" "$token" 2>&1 || true)
+
+    json_init
+    json_add_boolean ok 1
+    json_add_string output "$OUT"
+    json_dump
+}
+
+disconnect() {
+    OUT=$(/usr/bin/csqtt-disconnect 2>&1 || true)
+    json_init
+    json_add_boolean ok 1
+    json_add_string output "$OUT"
+    json_dump
+}
+
+status() {
+    RAW=$(/usr/bin/csqtt-status 2>/dev/null || echo '{"running":false,"pid":0,"connected":false,"core_running":false}')
+    json_init
+    json_add_string raw "$RAW"
+    json_dump
+}
+
+logs() {
+    local n
+    json_init
+    json_load "$(cat)"
+    json_get_var n n
+    [ -z "$n" ] && n=200
+
+    RAW=$(/usr/bin/csqtt-logs "$n" 2>&1 || true)
+
+    json_init
+    json_add_string logs "$RAW"
+    json_dump
+}
+
+case "$1" in
+    list)
+        echo '{ "connect": {}, "disconnect": {}, "status": {}, "logs": { "n": 200 } }'
+        ;;
+    call)
+        case "$2" in
+            connect)    connect ;;
+            disconnect) disconnect ;;
+            status)     status ;;
+            logs)       logs ;;
+            *)          echo '{"error":"unknown method"}' ;;
+        esac
+        ;;
+    *)
+        echo '{"error":"unknown command"}'
+        ;;
+esac

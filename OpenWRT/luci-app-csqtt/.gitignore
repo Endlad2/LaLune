@@ -1,0 +1,20 @@
+# Сборка
+*.ipk
+*.apk
+bin/
+build_dir/
+staging_dir/
+tmp/
+logs/
+.openwrt-sdk/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
