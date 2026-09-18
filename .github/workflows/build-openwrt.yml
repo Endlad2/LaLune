@@ -112,30 +112,3 @@ jobs:
           name: luci-app-csqtt-ipk
           path: artifacts/*.ipk
           if-no-files-found: error
-
-      - name: Create Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: openwrt-luci-csqtt-${{ github.run_number }}
-          name: "luci-app-csqtt build #${{ github.run_number }}"
-          body: |
-            Автоматическая сборка LuCI-приложения `luci-app-csqtt`.
-
-            **Установка на роутер:**
-            ```sh
-            opkg update
-            opkg install luci-app-csqtt_*.ipk
-            /etc/init.d/rpcd restart
-            /etc/init.d/uhttpd restart
-```
-
-Затем LuCI → **Services → CSQTT**.
-
-SDK: `25.12.5 / armsr / armv8`
-files: artifacts/*.ipk
-draft: false
-prerelease: false
-env:
-GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
