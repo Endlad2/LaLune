@@ -16,9 +16,6 @@ env:
   ANDROID_BUILD_TOOLS: '34.0.0'
   PYTHONIOENCODING: 'utf-8'
   PYTHONUTF8: '1'
-  # VS 2022 BuildTools — ставим вручную через winget,
-  # чтобы не зависеть от предустановленного VS 18 на раннере.
-  VS_INSTALLER_PATH: 'C:\Program Files (x86)\Microsoft Visual Studio\Installer'
   CMAKE_GENERATOR: 'Visual Studio 17 2022'
 
 jobs:
@@ -46,10 +43,8 @@ jobs:
           cache: true
 
       # ----------------------------------------------------------
-      #  Устанавливаем VS 2022 BuildTools вручную через winget.
-      #  ilammy/msvc-dev-cmd@v1 не используем: на текущих раннерах
-      #  он цепляется за предустановленный VS 18 (2026 Insider),
-      #  из-за чего Flutter не может найти генератор VS 2022.
+      #  VS 2022 BuildTools ставим вручную, --force чтобы winget
+      #  не пропустил установку, если уже видит VS 18.
       # ----------------------------------------------------------
       - name: Install Visual Studio 2022 BuildTools (winget)
         shell: pwsh
@@ -57,13 +52,16 @@ jobs:
           winget install Microsoft.VisualStudio.2022.BuildTools `
             --accept-package-agreements `
             --accept-source-agreements `
+            --force `
             --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
           Write-Host "winget exit code: $LASTEXITCODE"
 
       # ----------------------------------------------------------
-      #  Находим vcvarsall.bat через vswhere.
+      #  Ищем именно VS 17.x через vswhere -version "[17.0,18.0)".
+      #  Без этого -latest вернёт VS 18 (новее), и мы настроимся
+      #  на неправильный тулчейн.
       # ----------------------------------------------------------
-      - name: Locate vcvarsall.bat
+      - name: Locate vcvarsall.bat (VS 17.x)
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -73,15 +71,18 @@ jobs:
           }
 
           $installPath = & $vswhere -latest -products * `
+            -version "[17.0,18.0)" `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationPath
 
-          Write-Host "VS install path: $installPath"
-
           if (-not $installPath) {
-            Write-Error "Visual Studio with C++ toolchain not found"
+            Write-Error "Visual Studio 17.x with C++ toolchain not found"
+            Write-Host "--- all VS installations ---"
+            & $vswhere -products * -property installationPath
             exit 1
           }
+
+          Write-Host "VS 17 install path: $installPath"
 
           $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
           if (-not (Test-Path $vcvars)) {
@@ -91,11 +92,8 @@ jobs:
 
           Write-Host "vcvarsall.bat: $vcvars"
           "VCVARSALL_PATH=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VS17_INSTALL_PATH=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # ----------------------------------------------------------
-      #  Запускаем vcvarsall.bat x64, вытаскиваем env в GITHUB_ENV
-      #  и печатаем версию cl.exe (MSVC).
-      # ----------------------------------------------------------
       - name: Run vcvarsall.bat and print MSVC version
         shell: pwsh
         run: |
@@ -112,13 +110,26 @@ jobs:
             exit 1
           }
 
-          # Пишем все переменные окружения в GITHUB_ENV, чтобы
-          # следующие шаги видели INCLUDE, LIB, PATH и т.д.
+          $prefix = $env:VS17_INSTALL_PATH
           foreach ($line in $envDump) {
             if ($line -match '^([^=]+)=(.*)$') {
               $name = $matches[1]
               $value = $matches[2]
-              # PATH перезаписываем, остальные — добавляем.
+              # ВАЖНО: VS 18 предустановлен на раннере и его PATH
+              # стоит раньше. Мы фильтруем PATH и INCLUDE/LIB,
+              # оставляя только пути от VS 17.
+              if ($name -eq 'PATH') {
+                $parts = $value -split ';' | Where-Object {
+                  $_ -and -not ($_ -match 'Visual Studio\\18\\')
+                }
+                $value = ($parts -join ';')
+              }
+              if ($name -eq 'INCLUDE' -or $name -eq 'LIB' -or $name -eq 'LIBPATH') {
+                $parts = $value -split ';' | Where-Object {
+                  $_ -and -not ($_ -match 'Visual Studio\\18\\')
+                }
+                $value = ($parts -join ';')
+              }
               "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
           }
@@ -129,48 +140,115 @@ jobs:
           $clVersion | ForEach-Object { Write-Host $_ }
 
           if (-not $clVersion) {
-            Write-Error "cl.exe version not detected — MSVC toolchain broken"
+            Write-Error "cl.exe version not detected"
             exit 1
           }
-
-          Write-Host ""
-          Write-Host "=== VCToolsVersion ==="
           Write-Host "VCToolsVersion=$env:VCToolsVersion"
           Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
 
       # ----------------------------------------------------------
-      #  Кладём scripts/ ПЕРЕД системным cmake в PATH.
-      #  Flutter жёстко передаёт -G "Visual Studio 16 2019",
-      #  враппер подменит на CMAKE_GENERATOR (VS 17 2022).
+      #  ПАТЧ flutter_tools: Flutter хардкодит "Visual Studio 16 2019"
+      #  в исходниках Dart. Ни env-переменная, ни set(... FORCE)
+      #  в CMakeLists.txt не помогают, потому что Flutter передаёт
+      #  -G аргументом в командную строку CMake, и это приоритетнее.
+      #  Единственный способ — заменить строки в dart-исходниках
+      #  flutter_tools и пересобрать tool.
       # ----------------------------------------------------------
+      - name: Patch flutter_tools to use VS 2022
+        shell: pwsh
+        run: |
+          $flutterRoot = $env:FLUTTER_ROOT
+          if (-not $flutterRoot) {
+            Write-Error "FLUTTER_ROOT not set"
+            exit 1
+          }
+          Write-Host "FLUTTER_ROOT=$flutterRoot"
+
+          $targets = @(
+            "$flutterRoot\packages\flutter_tools\lib\src\windows\visual_studio.dart",
+            "$flutterRoot\packages\flutter_tools\lib\src\windows\visual_studio_validator.dart",
+            "$flutterRoot\packages\flutter_tools\lib\src\cmake_project.dart",
+            "$flutterRoot\packages\flutter_tools\lib\src\windows\build_windows.dart"
+          )
+
+          $patched = 0
+          foreach ($f in $targets) {
+            if (-not (Test-Path $f)) {
+              Write-Host "SKIP (not found): $f"
+              continue
+            }
+            $orig = Get-Content $f -Raw
+
+            # Основная замена: "Visual Studio 16 2019" -> "Visual Studio 17 2022"
+            $new = $orig -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022'
+            # Версии вида 16.0 -> 17.0 (проверки версии в visual_studio.dart)
+            $new = $new -replace "'16\.0'", "'17.0'"
+            $new = $new -replace '"16\.0"', '"17.0"'
+            # Если есть ссылки на visualStudioVersion "16" — тоже меняем
+            $new = $new -replace 'VisualStudioVersion:\s*''16''', 'VisualStudioVersion: ''17'''
+
+            if ($new -ne $orig) {
+              Set-Content -Path $f -Value $new -NoNewline -Encoding utf8
+              Write-Host "PATCHED: $f"
+              $patched++
+            } else {
+              Write-Host "no change needed: $f"
+            }
+          }
+
+          if ($patched -eq 0) {
+            Write-Host "WARN: ни один файл flutter_tools не был изменён. " `
+                       "Возможно, версия Flutter уже использует VS 17 — проверьте лог сборки."
+          }
+
+          # Сбрасываем кэш flutter_tools, чтобы Dart перекомпилировал tool.
+          $cacheDir = "$flutterRoot\bin\cache"
+          Remove-Item -Force "$cacheDir\flutter_tools.stamp" -ErrorAction SilentlyContinue
+          Remove-Item -Force "$cacheDir\flutter_tools.snapshot" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$cacheDir\dart-sdk\.dart_tool" -ErrorAction SilentlyContinue
+          Write-Host "flutter_tools cache reset"
+
+      # ----------------------------------------------------------
+      #  Удаляем ephemeral-кэш Windows-сборки: там закэширован
+      #  выбранный генератор. Без этого Flutter может продолжать
+      #  использовать VS 2019 из старого кэша.
+      # ----------------------------------------------------------
+      - name: Clean ephemeral caches
+        shell: pwsh
+        run: |
+          $paths = @(
+            "Frontend\Core\windows\flutter\ephemeral",
+            "Frontend\Core\build\windows",
+            "Frontend\Core\.dart_tool"
+          )
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              Write-Host "Removing: $p"
+              Remove-Item -Recurse -Force $p
+            }
+          }
+
       - name: Prepend scripts/ to PATH (cmake wrapper)
         shell: pwsh
         run: |
           $scripts = (Resolve-Path "scripts").Path
-          Write-Host "Adding to PATH: $scripts"
           "$scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Verify toolchain (cl, cmake, generator)
-        shell: pwsh
-        run: |
-          Write-Host "--- which cl ---"
-          Get-Command cl | Format-List *
-          Write-Host "--- which cmake ---"
-          Get-Command cmake | Format-List *
-          Write-Host "--- CMAKE_GENERATOR ---"
-          Write-Host $env:CMAKE_GENERATOR
-          Write-Host "--- PATH (first 8) ---"
-          $env:PATH -split ';' | Select-Object -First 8
+          Write-Host "Added to PATH: $scripts"
 
       - name: Prepare frontend (pub get + assets)
         run: python build_frontend.py --platform Windows
 
-      - name: Clean stale Windows build cache
+      - name: Verify toolchain
         shell: pwsh
         run: |
-          if (Test-Path "Frontend\Core\build\windows") {
-            Remove-Item -Recurse -Force "Frontend\Core\build\windows"
-          }
+          Write-Host "--- which cl ---"
+          Get-Command cl | Select-Object -ExpandProperty Source
+          Write-Host "--- which cmake ---"
+          Get-Command cmake | Select-Object -ExpandProperty Source
+          Write-Host "--- CMAKE_GENERATOR ---"
+          Write-Host $env:CMAKE_GENERATOR
+          Write-Host "--- VCToolsVersion ---"
+          Write-Host $env:VCToolsVersion
 
       - name: Build desktop (Go + Flutter)
         run: python build_desktop.py --platform Windows
@@ -227,7 +305,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  Android APK
+  #  Android APK (universal, со всеми тремя ABI)
   # ============================================================
   build-android:
     name: Android APK
@@ -271,7 +349,6 @@ jobs:
           fi
 
           echo "Using sdkmanager: $SDKMGR"
-          echo "SDK root: $SDK_ROOT"
 
           yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
 
@@ -284,10 +361,6 @@ jobs:
 
           if [ ! -d "$SDK_ROOT/platforms/android-${ANDROID_COMPILE_SDK}" ]; then
             echo "::error::platforms;android-${ANDROID_COMPILE_SDK} не установился"
-            exit 1
-          fi
-          if [ ! -d "$SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}" ]; then
-            echo "::error::build-tools;${ANDROID_BUILD_TOOLS} не установился"
             exit 1
           fi
           if [ ! -d "$SDK_ROOT/ndk/25.1.8937393" ]; then
@@ -308,12 +381,6 @@ jobs:
             echo "ANDROID_SDK_ROOT=$SDK_ROOT"
           } >> "$GITHUB_ENV"
 
-          echo "--- Installed SDK packages ---"
-          ls -la "$SDK_ROOT"
-          ls -la "$SDK_ROOT/platforms" || true
-          ls -la "$SDK_ROOT/build-tools" || true
-          ls -la "$SDK_ROOT/ndk" || true
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -327,6 +394,44 @@ jobs:
       - name: Clean stale Kotlin caches
         run: |
           rm -rf ~/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin || true
+
+      - name: Download core binaries
+        run: |
+          set -euo pipefail
+
+          JNI_ROOT="Frontend/Core/android/app/src/main/jniLibs"
+          mkdir -p "$JNI_ROOT/arm64-v8a" "$JNI_ROOT/armeabi-v7a" "$JNI_ROOT/x86_64"
+
+          BASE="https://github.com/Endlad2/csqtt-core/releases/latest/download"
+
+          curl -L --fail --retry 3 \
+            -o "$JNI_ROOT/arm64-v8a/libclient-android-arm64-v8a.so" \
+            "$BASE/libclient-android-arm64-v8a.so"
+
+          curl -L --fail --retry 3 \
+            -o "$JNI_ROOT/armeabi-v7a/libclient-android-armeabi-v7a.so" \
+            "$BASE/libclient-android-armeabi-v7a.so"
+
+          curl -L --fail --retry 3 \
+            -o "$JNI_ROOT/x86_64/libclient-android-x86_64.so" \
+            "$BASE/libclient-android-x86_64.so"
+
+      - name: Verify cores are in place
+        run: |
+          JNI_ROOT="Frontend/Core/android/app/src/main/jniLibs"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            f="$JNI_ROOT/$abi/libclient-android-$abi.so"
+            if [ ! -f "$f" ]; then
+              echo "::error::core not found: $f"
+              exit 1
+            fi
+            size=$(stat -c%s "$f")
+            if [ "$size" -lt 100000 ]; then
+              echo "::error::core too small ($size bytes): $f"
+              exit 1
+            fi
+            echo "OK: $f ($size bytes)"
+          done
 
       - name: Prepare frontend (pub get + assets)
         run: python3 build_frontend.py --platform Android
@@ -357,17 +462,33 @@ jobs:
             ls -la "$JAVA_DIR" || true
             exit 1
           fi
-          echo "Java sources OK:"
-          ls -la "$JAVA_DIR"
 
-      - name: Build APK
+      - name: Build universal APK
         working-directory: Frontend/Core
         run: flutter build apk --release
+
+      - name: Verify APK contains all ABIs
+        run: |
+          APK="Frontend/Core/build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found: $APK"
+            exit 1
+          fi
+          echo "APK size: $(stat -c%s "$APK") bytes"
+          unzip -l "$APK" | grep -E 'lib/.*\.so' || true
+
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            if ! unzip -l "$APK" | grep -q "lib/$abi/libclient-android-$abi.so"; then
+              echo "::error::APK does not contain lib/$abi/libclient-android-$abi.so"
+              exit 1
+            fi
+          done
+          echo "All three ABIs present in APK."
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-Android
+          name: LaLune-Android-universal
           path: Frontend/Core/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 

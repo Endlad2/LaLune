@@ -1,19 +1,33 @@
 // SPDX-FileCopyrightText: 2026 luminescq
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// CoreManager — управление нативным ядром CSQTT на Android.
+//
+// Ядро (libclient-android-<abi>.so) поставляется ВНУТРИ APK,
+// в lib/<abi>/ (jniLibs, упакованные Gradle'ом). Запускать его
+// напрямую из nativeLibraryDir нельзя: на Android 10+ SELinux
+// и W^X запрещают execve() файлов из /data/app/.../lib/.
+//
+// Поэтому при первом запуске мы копируем .so в filesDir/la-lune/core/,
+// выставляем права 0755 и запускаем оттуда. Это стандартный подход
+// для VPN-клиентов (Clash, sing-box, Xray и т.д.).
 
 package com.lalune.app
 
 import android.content.Context
+import android.system.Os
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
-import kotlinx.coroutines.*
-import java.io.BufferedReader
-import java.io.InputStreamReader
 
 class CoreManager(private val context: Context) {
+
+    companion object {
+        private const val TAG = "CoreManager"
+    }
+
     private val appDir: File by lazy { File(context.filesDir, "la-lune") }
     private val coreDir: File by lazy { File(appDir, "core") }
 
@@ -23,11 +37,11 @@ class CoreManager(private val context: Context) {
     private var coreProcess: Process? = null
     private var isRunning = false
 
-    private val LATEST_URL = "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
-    private val CORE_URL_TEMPLATE = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
-    private val PROXY_URL = "http://31.77.148.203:8855/?url="
-    private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
+    /**
+     * Имя нативного ядра внутри APK, в зависимости от ABI устройства.
+     * Gradle кладёт файлы из src/main/jniLibs/<abi>/ в lib/<abi>/
+     * внутри APK, и Android распаковывает их в nativeLibraryDir.
+     */
     fun getCoreName(): String? {
         val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
         return when {
@@ -38,118 +52,81 @@ class CoreManager(private val context: Context) {
         }
     }
 
+    /** Путь к ядру, извлечённому из APK в filesDir (откуда можно exec). */
     fun getCorePath(): String? {
         val coreName = getCoreName() ?: return null
-        val nativeDir = context.applicationInfo.nativeLibraryDir
-        val coreFile = File(nativeDir, coreName)
-        return if (coreFile.exists()) coreFile.absolutePath else null
+        val file = File(coreDir, coreName)
+        return if (file.exists()) file.absolutePath else null
     }
 
-    suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
-        val corePath = getCorePath()
-        if (corePath != null) {
-            writeLog("[CORE] Ядро найдено: $corePath")
+    /**
+     * Копирует ядро из nativeLibraryDir (внутри APK) в filesDir,
+     * выставляет права 0755. Идемпотентно: если файл уже скопирован
+     * и его размер совпадает с исходным — ничего не делает.
+     *
+     * Возвращает true при успехе.
+     */
+    suspend fun ensureCoreExtracted(): Boolean = withContext(Dispatchers.IO) {
+        val coreName = getCoreName()
+        if (coreName == null) {
+            writeLog("[CORE] Неизвестная ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
+            return@withContext false
+        }
+
+        val srcFile = File(context.applicationInfo.nativeLibraryDir, coreName)
+        if (!srcFile.exists()) {
+            writeLog("[CORE] Ядро не найдено в APK: ${srcFile.absolutePath}")
+            return@withContext false
+        }
+
+        coreDir.mkdirs()
+        val dstFile = File(coreDir, coreName)
+
+        // Если файл уже извлечён и совпадает по размеру — ничего не делаем.
+        if (dstFile.exists() && dstFile.length() == srcFile.length()) {
+            // Но права всё равно перепроверим — они могли слететь.
+            try {
+                Os.chmod(dstFile.absolutePath, 0b111101101) // 0755
+            } catch (e: Exception) {
+                Log.w(TAG, "chmod failed for existing core: ${e.message}")
+            }
+            writeLog("[CORE] Ядро уже извлечено: ${dstFile.absolutePath}")
             return@withContext true
         }
-        writeLog("[CORE] Ядро не найдено, скачиваю...")
-        return@withContext downloadCore()
-    }
 
-    private suspend fun downloadCore(): Boolean = withContext(Dispatchers.IO) {
-        val coreName = getCoreName() ?: return@withContext false
-        coreDir.mkdirs()
+        writeLog("[CORE] Извлекаю ядро из APK: $coreName")
+        try {
+            srcFile.inputStream().use { input ->
+                FileOutputStream(dstFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
 
-        val version = fetchLatestVersion()
-        if (version == null) {
-            writeLog("[ERROR] Не удалось получить LATEST")
+            // chmod 0755 через android.system.Os — надёжнее, чем
+            // File.setExecutable(true, false), который может не выставить
+            // execute-бит для группы/остальных.
+            Os.chmod(dstFile.absolutePath, 0b111101101) // 0755
+
+            writeLog("[CORE] Ядро извлечено: ${dstFile.absolutePath} " +
+                     "(${dstFile.length()} байт)")
+            return@withContext true
+        } catch (e: Exception) {
+            writeLog("[CORE] Ошибка извлечения ядра: ${e.message}")
+            dstFile.delete()
             return@withContext false
         }
-
-        val url = String.format(CORE_URL_TEMPLATE, version, coreName)
-        writeLog("[CORE] Скачивание: $url")
-
-        val destFile = File(coreDir, coreName)
-        if (!downloadFile(url, destFile)) {
-            writeLog("[ERROR] Не удалось скачать ядро")
-            return@withContext false
-        }
-
-        latestFile.writeText(version)
-        destFile.setExecutable(true, false)
-        writeLog("[CORE] Ядро скачано: ${destFile.absolutePath}")
-        return@withContext true
     }
 
-    private suspend fun fetchLatestVersion(): String? = withContext(Dispatchers.IO) {
-        try {
-            val conn = URL(LATEST_URL).openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-            if (conn.responseCode == 200) {
-                return@withContext BufferedReader(InputStreamReader(conn.inputStream)).readText().trim()
-            }
-        } catch (e: Exception) {
-            writeLog("[NET] Уровень 1: ${e.message}")
+    /** Убедиться, что ядро доступно; при необходимости — извлечь из APK. */
+    suspend fun checkCore(): Boolean = withContext(Dispatchers.IO) {
+        // Уже есть готовый исполняемый файл — ок.
+        val existing = getCorePath()
+        if (existing != null) {
+            writeLog("[CORE] Ядро найдено: $existing")
+            return@withContext true
         }
-
-        try {
-            val proxyUrl = PROXY_URL + URLEncoder.encode(LATEST_URL, "UTF-8")
-            val conn = URL(proxyUrl).openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-            if (conn.responseCode == 200) {
-                return@withContext BufferedReader(InputStreamReader(conn.inputStream)).readText().trim()
-            }
-        } catch (e: Exception) {
-            writeLog("[NET] Уровень 2: ${e.message}")
-        }
-
-        return@withContext null
-    }
-
-    private suspend fun downloadFile(url: String, dest: File): Boolean = withContext(Dispatchers.IO) {
-        dest.parentFile?.mkdirs()
-
-        try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-            if (conn.responseCode == 200) {
-                conn.inputStream.use { input ->
-                    FileOutputStream(dest).use { output -> input.copyTo(output) }
-                }
-                if (dest.length() > 1024) {
-                    writeLog("[DOWNLOAD] Уровень 1 OK (${dest.length()} байт)")
-                    return@withContext true
-                }
-            }
-        } catch (e: Exception) {
-            writeLog("[DOWNLOAD] Уровень 1: ${e.message}")
-        }
-
-        try {
-            val proxyUrl = PROXY_URL + URLEncoder.encode(url, "UTF-8")
-            val conn = URL(proxyUrl).openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-            if (conn.responseCode == 200) {
-                conn.inputStream.use { input ->
-                    FileOutputStream(dest).use { output -> input.copyTo(output) }
-                }
-                if (dest.length() > 1024) {
-                    writeLog("[DOWNLOAD] Уровень 2 OK (${dest.length()} байт)")
-                    return@withContext true
-                }
-            }
-        } catch (e: Exception) {
-            writeLog("[DOWNLOAD] Уровень 2: ${e.message}")
-        }
-
-        return@withContext false
+        // Иначе — извлекаем из APK.
+        return@withContext ensureCoreExtracted()
     }
 
     suspend fun startCore(peer: String, password: String, hashes: String): Boolean = withContext(Dispatchers.IO) {
@@ -214,7 +191,7 @@ class CoreManager(private val context: Context) {
             isRunning = true
 
             val process = coreProcess
-            CoroutineScope(Dispatchers.IO).launch {
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
                 try {
                     process?.inputStream?.bufferedReader()?.use { reader ->
                         var line: String?
@@ -230,7 +207,7 @@ class CoreManager(private val context: Context) {
                 }
             }
 
-            writeLog("[CORE] Процесс запущен")
+            writeLog("[CORE] Процесс запущен: $corePath")
             return@withContext true
         } catch (e: Exception) {
             writeLog("[CORE] Ошибка запуска: ${e.message}")
