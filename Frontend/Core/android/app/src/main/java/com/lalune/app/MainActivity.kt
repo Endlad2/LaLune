@@ -2,16 +2,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // MainActivity — FlutterActivity + MethodChannel «com.lalune.app/bridge».
-//
-// WebView убран полностью. Вся логика UI теперь в Flutter.
-// Kotlin-сторона отвечает только на MethodChannel-вызовы:
-//   getConfigs, saveConfig, deleteConfig, getSettings, saveSettings,
-//   getLogs, clearLogs, getStatus, connect, disconnect,
-//   updateCore, updateCoreAndWait, openLaLuneReleases,
-//   getVKTokenState, validateVKToken, vkLogin, deleteVKToken,
-//   runVkAutoApiCalls, pollAutoApiResult, finishVkCalls,
-//   getDeviceId, regenerateDeviceId,
-//   getSelectedConfigJson, setSelectedConfigJson.
 
 package com.lalune.app
 
@@ -60,7 +50,6 @@ class MainActivity : FlutterActivity() {
     private var isConnected = false
     private var selectedConfigJson: String = "{}"
     private var vkLoginInProgress = false
-    private var pendingVpnResult: MethodChannel.Result? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -121,10 +110,6 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    // ============================================================
-    //  Configs
-    // ============================================================
-
     private fun loadConfigs() {
         if (configsFile.exists()) {
             try { configs = JSONArray(configsFile.readText()) }
@@ -160,10 +145,6 @@ class MainActivity : FlutterActivity() {
         saveConfigs()
         return true
     }
-
-    // ============================================================
-    //  Settings
-    // ============================================================
 
     private fun getSettings(): String {
         val json = if (settingsFile.exists()) {
@@ -221,10 +202,6 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) { default }
     }
 
-    // ============================================================
-    //  Logs
-    // ============================================================
-
     private fun getLogs(): String {
         val logs = if (logsFile.exists()) logsFile.readText() else ""
         val lines = logs.split("\n").filter { it.isNotEmpty() }
@@ -235,10 +212,6 @@ class MainActivity : FlutterActivity() {
         logsFile.writeText("")
         return true
     }
-
-    // ============================================================
-    //  VPN
-    // ============================================================
 
     private fun connect(configId: Long): Boolean {
         var peer = ""
@@ -302,10 +275,6 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-
-    // ============================================================
-    //  VK
-    // ============================================================
 
     private fun computeVkTokenState(): String {
         var hasToken = false
@@ -385,10 +354,6 @@ class MainActivity : FlutterActivity() {
             writeLog("[VK] Ошибка сохранения токена: ${e.message}")
         }
     }
-
-    // ============================================================
-    //  Misc
-    // ============================================================
 
     private fun openLaLuneReleases() {
         try {

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 luminescq
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 package com.lalune.app
 
 import android.content.Context
@@ -9,7 +12,6 @@ import java.net.URLEncoder
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import kotlin.math.ceil
 
 class CoreManager(private val context: Context) {
     private val appDir: File by lazy { File(context.filesDir, "la-lune") }
@@ -25,13 +27,6 @@ class CoreManager(private val context: Context) {
     private val CORE_URL_TEMPLATE = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
     private val PROXY_URL = "http://31.77.148.203:8855/?url="
     private val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    private val DEFAULT_WORKERS = 9
-    private val MIN_WORKERS = 1
-    private val MAX_WORKERS = 127
-    private val DEFAULT_AUTO_API_WORKERS = 9
-    private val MIN_AUTO_API_WORKERS = 9
-    private val MAX_AUTO_API_WORKERS = 27
 
     fun getCoreName(): String? {
         val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
@@ -111,19 +106,6 @@ class CoreManager(private val context: Context) {
             writeLog("[NET] Уровень 2: ${e.message}")
         }
 
-        try {
-            val proxyUrl = PROXY_URL + URLEncoder.encode(LATEST_URL, "UTF-8")
-            val conn = URL(proxyUrl).openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
-            conn.setRequestProperty("User-Agent", "curl/7.68.0")
-            if (conn.responseCode == 200) {
-                return@withContext BufferedReader(InputStreamReader(conn.inputStream)).readText().trim()
-            }
-        } catch (e: Exception) {
-            writeLog("[NET] Уровень 3: ${e.message}")
-        }
-
         return@withContext null
     }
 
@@ -167,25 +149,6 @@ class CoreManager(private val context: Context) {
             writeLog("[DOWNLOAD] Уровень 2: ${e.message}")
         }
 
-        try {
-            val proxyUrl = PROXY_URL + URLEncoder.encode(url, "UTF-8")
-            val conn = URL(proxyUrl).openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", "curl/7.68.0")
-            if (conn.responseCode == 200) {
-                conn.inputStream.use { input ->
-                    FileOutputStream(dest).use { output -> input.copyTo(output) }
-                }
-                if (dest.length() > 1024) {
-                    writeLog("[DOWNLOAD] Уровень 3 OK (${dest.length()} байт)")
-                    return@withContext true
-                }
-            }
-        } catch (e: Exception) {
-            writeLog("[DOWNLOAD] Уровень 3: ${e.message}")
-        }
-
         return@withContext false
     }
 
@@ -209,10 +172,9 @@ class CoreManager(private val context: Context) {
             org.json.JSONObject()
         }
 
-        // Workers — общее число воркеров (напрямую в -n).
-        var workers = settings.optInt("workers", DEFAULT_WORKERS)
-        if (workers < MIN_WORKERS) workers = MIN_WORKERS
-        if (workers > MAX_WORKERS) workers = MAX_WORKERS
+        var workers = settings.optInt("workers", 9)
+        if (workers < 1) workers = 1
+        if (workers > 127) workers = 127
 
         val obfs = settings.optString("obfs", "video")
         val fingerprint = settings.optString("fingerprint", "firefox")
@@ -224,7 +186,6 @@ class CoreManager(private val context: Context) {
         if (deviceId.isBlank()) {
             deviceId = DeviceId.getOrCreate(context)
             DeviceId.syncToSettingsFile(context, deviceId)
-            writeLog("[DEVICE] deviceId отсутствовал, восстановлен: $deviceId")
         }
 
         val args = listOf(
@@ -269,7 +230,7 @@ class CoreManager(private val context: Context) {
                 }
             }
 
-            writeLog("[CORE] Процесс запущен: ${args.joinToString(" ")}")
+            writeLog("[CORE] Процесс запущен")
             return@withContext true
         } catch (e: Exception) {
             writeLog("[CORE] Ошибка запуска: ${e.message}")

@@ -2,48 +2,65 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
 }
 
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
+def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "0.5.0"
+
 android {
-    namespace 'com.lalune.app'
-    compileSdk 34
+    namespace = "com.lalune.app"
+    compileSdk = 34
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 
     defaultConfig {
-        applicationId "com.lalune.app"
-        minSdk 21
-        targetSdk 34
-        versionCode 1
-        versionName "0.5.0"
-
-        // Кастомный Kotlin-код из Frontend/Core/android/app/src/main/java/
+        applicationId = "com.lalune.app"
+        minSdk = 21
+        targetSdk = 34
+        versionCode = flutterVersionCode.toInteger()
+        versionName = flutterVersionName
     }
 
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Подписываем debug-ключом — для internal-раздачи этого хватает.
+            signingConfig = signingConfigs.debug
         }
-    }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = '17'
     }
 }
 
+flutter {
+    source = "../.."
+}
+
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.webkit:webkit:1.10.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation "androidx.appcompat:appcompat:1.6.1"
+    implementation "androidx.core:core-ktx:1.12.0"
+    implementation "androidx.webkit:webkit:1.10.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
 
     // SmartTunnel — Lua 5.1 runtime.
-    implementation 'org.luaj:luaj-jse:3.0.1'
+    implementation "org.luaj:luaj-jse:3.0.1"
 
-    // Flutter embedding — теперь MainActivity наследует FlutterActivity.
-    implementation 'androidx.annotation:annotation:1.7.1'
+    // Аннотации (@NonNull, @Nullable) для Java-кода.
+    implementation "androidx.annotation:annotation:1.7.1"
 }

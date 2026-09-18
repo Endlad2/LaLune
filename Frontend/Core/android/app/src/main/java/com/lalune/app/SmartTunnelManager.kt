@@ -1,12 +1,7 @@
 // SPDX-FileCopyrightText: 2026 luminescq
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// SmartTunnelManager — встроенный Lua 5.1-рантайм для SmartTunnel на Android.
-//
-// Использует org.luaj:luaj-jse:3.0.1.
-//
-// Скрипт копируется из assets/SmartTunnel.lua в filesDir/SmartTunnel.lua
-// при первом запуске, оттуда читается и запускается.
+// SmartTunnelManager — встроенный Lua 5.1-рантайм для SmartTunnel.
 
 package com.lalune.app
 
@@ -106,22 +101,16 @@ class SmartTunnelManager(private val context: Context) {
 
     fun isRunning(): Boolean = running
 
-    fun setArgs(args: List<String>) {
-        tunnelArgs = args.toList()
-    }
-
-    fun getArgs(): List<String> = tunnelArgs
-
-    // ============================================================
-    //  Внутреннее
-    // ============================================================
-
     private fun ensureScriptExists() {
         if (!appDir.exists()) appDir.mkdirs()
-        context.assets.open(SCRIPT_NAME).use { input ->
-            scriptFile.outputStream().use { output ->
-                input.copyTo(output)
+        try {
+            context.assets.open(SCRIPT_NAME).use { input ->
+                scriptFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "SmartTunnel.lua не найден в assets: ${e.message}")
         }
     }
 
@@ -143,17 +132,18 @@ class SmartTunnelManager(private val context: Context) {
         val tbl = LuaTable()
         g.set("smarttunnel", tbl)
 
-        // --- smarttunnel.log(message) ---
         tbl.set("log", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val msg = args.arg(1).tojstring()
-                appendLuaLog(msg)
+                synchronized(luaLogs) {
+                    luaLogs.addLast(msg)
+                    while (luaLogs.size > LOG_LIMIT) luaLogs.removeFirst()
+                }
                 writeLog(msg)
                 return LuaValue.NIL
             }
         })
 
-        // --- smarttunnel.logs() ---
         tbl.set("logs", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val out = LuaTable()
@@ -168,7 +158,6 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.connect() ---
         tbl.set("connect", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 writeLog("[SMART-TUNNEL] connect() — пока не реализовано")
@@ -176,7 +165,6 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.disconnect() ---
         tbl.set("disconnect", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 writeLog("[SMART-TUNNEL] disconnect() — пока не реализовано")
@@ -184,15 +172,12 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.is_connected() ---
         tbl.set("is_connected", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
-                val connected = readSettingBool("_connected", false)
-                return LuaValue.valueOf(connected)
+                return LuaValue.FALSE
             }
         })
 
-        // --- smarttunnel.set_args(table) ---
         tbl.set("set_args", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val t = args.arg(1)
@@ -211,7 +196,6 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.get_args() ---
         tbl.set("get_args", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val out = LuaTable()
@@ -222,7 +206,6 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.get_vk_creds() ---
         tbl.set("get_vk_creds", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val out = LuaTable()
@@ -235,7 +218,6 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.get_setting(key) ---
         tbl.set("get_setting", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val key = args.arg(1).tojstring()
@@ -243,36 +225,22 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.set_setting(key, value) ---
         tbl.set("set_setting", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val key = args.arg(1).tojstring()
                 val value = args.arg(2)
-                writeSettingInMemory(key, value)
+                inMemorySettings[key] = value
                 return LuaValue.NIL
             }
         })
     }
 
-    private fun appendLuaLog(msg: String) {
-        synchronized(luaLogs) {
-            luaLogs.addLast(msg)
-            while (luaLogs.size > LOG_LIMIT) luaLogs.removeFirst()
-        }
-    }
-
     private fun writeLog(msg: String) {
         synchronized(this) {
-            try {
-                logsFile.appendText(msg + "\n")
-            } catch (_: Exception) {}
+            try { logsFile.appendText(msg + "\n") } catch (_: Exception) {}
         }
         Log.d(TAG, msg)
     }
-
-    // ============================================================
-    //  Чтение/запись настроек
-    // ============================================================
 
     private fun readSetting(key: String): LuaValue {
         inMemorySettings[key]?.let { return it }
@@ -294,23 +262,11 @@ class SmartTunnelManager(private val context: Context) {
         }
     }
 
-    private fun writeSettingInMemory(key: String, value: LuaValue) {
-        inMemorySettings[key] = value
-    }
-
-    private fun readSettingBool(key: String, default: Boolean): Boolean {
-        val v = readSetting(key)
-        return if (v.isboolean()) v.toboolean() else default
-    }
-
     private fun readVkToken(): String {
         return try {
             val tokenFile = File(appDir, "token.json")
             if (!tokenFile.exists()) return ""
-            val json = JSONObject(tokenFile.readText())
-            json.optString("Token", "")
-        } catch (_: Exception) {
-            ""
-        }
+            JSONObject(tokenFile.readText()).optString("Token", "")
+        } catch (_: Exception) { "" }
     }
 }
