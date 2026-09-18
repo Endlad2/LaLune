@@ -1,0 +1,4 @@
+module CSQTTCore {
+    header "csqtt_bridge.h"
+    export *
+}

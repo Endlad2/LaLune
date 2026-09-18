@@ -2,457 +2,259 @@ name: Build LaLune
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [main, release]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
-  FLUTTER_VERSION: '3.24.5'
-  GO_VERSION: '1.22.12'
-  JAVA_VERSION: '17'
-  ANDROID_COMPILE_SDK: '34'
-  ANDROID_BUILD_TOOLS: '34.0.0'
-  PYTHONIOENCODING: 'utf-8'
-  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
 
 jobs:
-  # ============================================================
-  #  Desktop Windows
-  # ============================================================
-  build-windows:
-    name: Desktop Windows
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: Desktop/Libs/go.sum
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      # ----------------------------------------------------------
-      #  Ставим VS 2022 BuildTools вручную через winget.
-      #  ilammy/msvc-dev-cmd@v1 цепляется за предустановленный VS 18
-      #  на раннере, из-за чего Flutter не находит генератор VS 2019/2022.
-      # ----------------------------------------------------------
-      - name: Install Visual Studio 2022 BuildTools (winget)
-        shell: pwsh
-        run: |
-          winget install Microsoft.VisualStudio.2022.BuildTools `
-            --accept-package-agreements `
-            --accept-source-agreements `
-            --force `
-            --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-          Write-Host "winget exit code: $LASTEXITCODE"
-
-      # ----------------------------------------------------------
-      #  Находим vcvarsall.bat именно от VS 17.x через
-      #  vswhere -version "[17.0,18.0)".
-      # ----------------------------------------------------------
-      - name: Locate vcvarsall.bat (VS 17.x)
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) {
-            Write-Error "vswhere.exe not found at $vswhere"
-            exit 1
-          }
-
-          $installPath = & $vswhere -latest -products * `
-            -version "[17.0,18.0)" `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-
-          if (-not $installPath) {
-            Write-Error "Visual Studio 17.x with C++ toolchain not found"
-            Write-Host "--- all VS installations ---"
-            & $vswhere -products * -property installationPath
-            exit 1
-          }
-
-          Write-Host "VS 17 install path: $installPath"
-
-          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
-          if (-not (Test-Path $vcvars)) {
-            Write-Error "vcvarsall.bat not found at $vcvars"
-            exit 1
-          }
-
-          Write-Host "vcvarsall.bat: $vcvars"
-          "VCVARSALL_PATH=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "VS17_INSTALL_PATH=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      # ----------------------------------------------------------
-      #  Запускаем vcvarsall.bat x64, вытаскиваем env в GITHUB_ENV,
-      #  фильтруем PATH/INCLUDE/LIB от путей VS 18.
-      # ----------------------------------------------------------
-      - name: Run vcvarsall.bat and print MSVC version
-        shell: pwsh
-        run: |
-          $vcvars = $env:VCVARSALL_PATH
-          if (-not $vcvars -or -not (Test-Path $vcvars)) {
-            Write-Error "VCVARSALL_PATH not set or file missing: $vcvars"
-            exit 1
-          }
-
-          Write-Host "=== Calling vcvarsall.bat x64 ==="
-          $envDump = cmd /c "call `"$vcvars`" x64 >nul 2>&1 && set"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "vcvarsall.bat failed with exit code $LASTEXITCODE"
-            exit 1
-          }
-
-          foreach ($line in $envDump) {
-            if ($line -match '^([^=]+)=(.*)$') {
-              $name = $matches[1]
-              $value = $matches[2]
-              # Выкидываем пути от VS 18, чтобы они не перебивали VS 17.
-              if ($name -eq 'PATH' -or $name -eq 'INCLUDE' -or $name -eq 'LIB' -or $name -eq 'LIBPATH') {
-                $parts = $value -split ';' | Where-Object {
-                  $_ -and -not ($_ -match 'Visual Studio\\18\\')
-                }
-                $value = ($parts -join ';')
-              }
-              "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            }
-          }
-
-          Write-Host ""
-          Write-Host "=== MSVC version ==="
-          $clVersion = cmd /c "call `"$vcvars`" x64 >nul 2>&1 && cl 2>&1 | findstr /C:`"Version`""
-          $clVersion | ForEach-Object { Write-Host $_ }
-          if (-not $clVersion) {
-            Write-Error "cl.exe version not detected"
-            exit 1
-          }
-          Write-Host "VCToolsVersion=$env:VCToolsVersion"
-          Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
-
-      # ----------------------------------------------------------
-      #  ПАТЧ flutter_tools: Flutter хардкодит "Visual Studio 16 2019"
-      #  в исходниках Dart. Ни env-переменная, ни set(... FORCE)
-      #  в CMakeLists.txt не помогают, потому что Flutter передаёт
-      #  -G аргументом в командную строку CMake.
-      # ----------------------------------------------------------
-      - name: Patch flutter_tools to use VS 2022
-        shell: pwsh
-        run: |
-          $flutterRoot = $env:FLUTTER_ROOT
-          if (-not $flutterRoot) { Write-Error "FLUTTER_ROOT not set"; exit 1 }
-          Write-Host "FLUTTER_ROOT=$flutterRoot"
-
-          $targets = @(
-            "$flutterRoot\packages\flutter_tools\lib\src\windows\visual_studio.dart",
-            "$flutterRoot\packages\flutter_tools\lib\src\windows\visual_studio_validator.dart",
-            "$flutterRoot\packages\flutter_tools\lib\src\cmake_project.dart",
-            "$flutterRoot\packages\flutter_tools\lib\src\windows\build_windows.dart"
-          )
-
-          $patched = 0
-          foreach ($f in $targets) {
-            if (-not (Test-Path $f)) { Write-Host "SKIP (not found): $f"; continue }
-            $orig = Get-Content $f -Raw
-            $new = $orig -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022'
-            $new = $new -replace "'16\.0'", "'17.0'"
-            $new = $new -replace '"16\.0"', '"17.0"'
-            if ($new -ne $orig) {
-              Set-Content -Path $f -Value $new -NoNewline -Encoding utf8
-              Write-Host "PATCHED: $f"
-              $patched++
-            }
-          }
-          Write-Host "Patched files: $patched"
-
-          # Сбрасываем кэш flutter_tools, чтобы Dart перекомпилировал tool.
-          $cacheDir = "$flutterRoot\bin\cache"
-          Remove-Item -Force "$cacheDir\flutter_tools.stamp" -ErrorAction SilentlyContinue
-          Remove-Item -Force "$cacheDir\flutter_tools.snapshot" -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "$cacheDir\dart-sdk\.dart_tool" -ErrorAction SilentlyContinue
-          Write-Host "flutter_tools cache reset"
-
-      # ----------------------------------------------------------
-      #  Удаляем ephemeral-кэш Windows-сборки: там закэширован
-      #  выбранный генератор.
-      # ----------------------------------------------------------
-      - name: Clean ephemeral caches
-        shell: pwsh
-        run: |
-          $paths = @(
-            "Frontend\Core\windows\flutter\ephemeral",
-            "Frontend\Core\build\windows",
-            "Frontend\Core\.dart_tool"
-          )
-          foreach ($p in $paths) {
-            if (Test-Path $p) {
-              Write-Host "Removing: $p"
-              Remove-Item -Recurse -Force $p
-            }
-          }
-
-      # ----------------------------------------------------------
-      #  Кладём scripts/ перед системным cmake в PATH.
-      #  Враппер cmake.cmd подменит -G "Visual Studio 16 2019".
-      # ----------------------------------------------------------
-      - name: Prepend scripts/ to PATH (cmake wrapper)
-        shell: pwsh
-        run: |
-          $scripts = (Resolve-Path "scripts").Path
-          "$scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Prepare SmartTunnel.lua
-        run: python prepare_st.py --platform=all
-
-      - name: Prepare frontend (pub get + assets)
-        run: python build_frontend.py --platform Windows
-
-      - name: Verify toolchain
-        shell: pwsh
-        run: |
-          Write-Host "--- which cl ---"
-          Get-Command cl | Select-Object -ExpandProperty Source
-          Write-Host "--- which cmake ---"
-          Get-Command cmake | Select-Object -ExpandProperty Source
-          Write-Host "--- CMAKE_GENERATOR ---"
-          Write-Host $env:CMAKE_GENERATOR
-          Write-Host "--- VCToolsVersion ---"
-          Write-Host $env:VCToolsVersion
-
-      - name: Build desktop (Go + Flutter)
-        run: python build_desktop.py --platform Windows
-
-      - name: Upload Windows bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-Windows
-          path: Frontend/Core/build/windows/x64/runner/Release/
-          if-no-files-found: error
-
-  # ============================================================
-  #  Desktop Linux
-  # ============================================================
-  build-linux:
+  build-desktop-linux:
     name: Desktop Linux
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config gcc build-essential
+      - name: Setup Wails
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev \
-            libstdc++-12-dev
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: Desktop/Libs/go.sum
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
       - name: Prepare SmartTunnel.lua
         run: python3 prepare_st.py --platform=all
-
-      - name: Prepare frontend
+      - name: Build Dart frontend for Linux
         run: python3 build_frontend.py --platform Linux
-
-      - name: Build desktop
+      - name: Build Desktop (Linux)
         run: python3 build_desktop.py --platform Linux
-
-      - name: Upload Linux bundle
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: LaLune-Linux
-          path: Frontend/Core/build/linux/x64/release/bundle/
+          path: Desktop/Linux/build/bin/*
           if-no-files-found: error
 
-  # ============================================================
-  #  Android APK
-  # ============================================================
+  build-desktop-windows:
+    name: Desktop Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Prepare SmartTunnel.lua
+        run: python prepare_st.py --platform=all
+      - name: Build Dart frontend for Windows
+        run: python build_frontend.py --platform Windows
+      - name: Build Desktop (Windows)
+        run: python build_desktop.py --platform Windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Windows
+          path: Desktop/Windows/build/bin/*
+          if-no-files-found: error
+
   build-android:
-    name: Android APK
+    name: Android APK (universal)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-
-      - name: Install Android SDK manually
-        shell: bash
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - name: Use preinstalled Android SDK
         run: |
-          set -euo pipefail
-          SDK_ROOT="/usr/local/lib/android/sdk"
-          if [ ! -d "$SDK_ROOT" ]; then SDK_ROOT="$HOME/Android/Sdk"; fi
-          SDKMGR=""
-          for candidate in \
-            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager" \
-            "$SDK_ROOT/cmdline-tools/bin/sdkmanager" \
-            "$(command -v sdkmanager || true)"; do
-            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-              SDKMGR="$candidate"; break
-            fi
-          done
-          if [ -z "$SDKMGR" ]; then echo "::error::sdkmanager not found"; exit 1; fi
-          yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
-          yes | "$SDKMGR" --sdk_root="$SDK_ROOT" \
-            "platform-tools" \
-            "platforms;android-${ANDROID_COMPILE_SDK}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}" \
-            "ndk;25.1.8937393" \
-            >/dev/null 2>&1 || true
-          {
-            echo "ANDROID_HOME=$SDK_ROOT"
-            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
-            echo "$SDK_ROOT/platform-tools"
-            echo "$SDK_ROOT/cmdline-tools/latest/bin"
-            echo "$SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
-          } >> "$GITHUB_PATH"
-          {
-            echo "ANDROID_HOME=$SDK_ROOT"
-            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
-          } >> "$GITHUB_ENV"
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Clean stale Kotlin caches
-        run: rm -rf ~/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin || true
-
+          if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
+            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME"
+      - name: Accept Android licenses
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          yes | "$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.9' }
+      - name: Prepare Android Core
+        run: python prepare_android_core.py
+      - name: Prepare SmartTunnel.lua
+        run: python prepare_st.py --platform=all
+      - name: Build Dart frontend for Android
+        run: python build_frontend.py --platform Android
+      - name: Copy frontend to Android assets
+        run: |
+          ASSETS_DIR="Mobile/Android/app/src/main/assets"
+          # не удаляем всё — в assets уже лежит SmartTunnel.lua от prepare_st.py.
+          mkdir -p "$ASSETS_DIR"
+          cp -r Frontend/output/. "$ASSETS_DIR/"
+          test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/SmartTunnel.lua" || { echo "SmartTunnel.lua MISSING"; exit 1; }
       - name: Download core binaries
         run: |
-          set -euo pipefail
-          JNI_ROOT="Frontend/Core/android/app/src/main/jniLibs"
-          mkdir -p "$JNI_ROOT/arm64-v8a" "$JNI_ROOT/armeabi-v7a" "$JNI_ROOT/x86_64"
-          BASE="https://github.com/Endlad2/csqtt-core/releases/latest/download"
-          curl -L --fail --retry 3 -o "$JNI_ROOT/arm64-v8a/libclient-android-arm64-v8a.so"   "$BASE/libclient-android-arm64-v8a.so"
-          curl -L --fail --retry 3 -o "$JNI_ROOT/armeabi-v7a/libclient-android-armeabi-v7a.so" "$BASE/libclient-android-armeabi-v7a.so"
-          curl -L --fail --retry 3 -o "$JNI_ROOT/x86_64/libclient-android-x86_64.so"        "$BASE/libclient-android-x86_64.so"
-
-      - name: Prepare frontend (pub get + assets)
-        run: python3 build_frontend.py --platform Android
-
-      - name: Prepare Android Core (Java sources)
-        run: python3 prepare_android_core.py
-
-      - name: Verify no .kts duplicates
+          mkdir -p Mobile/Android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
+          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
+          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+      - name: Build Android APK
+        working-directory: Mobile/Android
+        run: gradle assembleDebug --stacktrace --no-daemon
+      - name: Locate APK
+        id: find_apk
         run: |
-          for f in \
-            Frontend/Core/android/settings.gradle.kts \
-            Frontend/Core/android/build.gradle.kts \
-            Frontend/Core/android/app/build.gradle.kts; do
-            if [ -f "$f" ]; then echo "::error::$f exists"; exit 1; fi
-          done
-
-      - name: Verify no duplicate styles
-        run: |
-          if [ -f "Frontend/Core/android/app/src/main/res/values/themes.xml" ]; then
-            echo "::error::themes.xml exists — удалите его, он дублирует styles.xml"; exit 1
-          fi
-
-      - name: Build universal APK
-        working-directory: Frontend/Core
-        run: flutter build apk --release
-
-      # ------------------------------------------------------------
-      #  Ищем APK. На AGP 8.x APK может оказаться в
-      #  build/app/outputs/apk/release/ вместо flutter-apk/.
-      # ------------------------------------------------------------
-      - name: Find APK
-        run: |
-          echo "=== Все .apk в build/ ==="
-          find Frontend/Core/build -name "*.apk" -type f -exec ls -la {} \; || true
-
-          APK=$(find Frontend/Core/build -name "app-release.apk" -type f | head -n1)
-          if [ -z "$APK" ]; then
-            echo "::error::APK не найден нигде в build/"
-            exit 1
-          fi
-          echo "APK найден: $APK"
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
-
-          EXPECTED="Frontend/Core/build/app/outputs/flutter-apk/app-release.apk"
-          if [ "$APK" != "$EXPECTED" ]; then
-            echo "Копирую $APK → $EXPECTED"
-            mkdir -p "$(dirname "$EXPECTED")"
-            cp "$APK" "$EXPECTED"
-          fi
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+          APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
+          [ -z "$APK" ] && exit 1
+          echo "apk=$APK" >> $GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
         with:
-          name: LaLune-Android-universal
-          path: Frontend/Core/build/app/outputs/flutter-apk/app-release.apk
+          name: LaLune-Android
+          path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  # ============================================================
-  #  Token Fetcher
-  # ============================================================
   build-token-fetcher:
-    name: Token Fetcher
+    name: "Token Fetcher - ${{ matrix.platform }}"
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            platform: Windows
-          - os: ubuntu-22.04
-            platform: Linux
-    runs-on: ${{ matrix.os }}
-    env:
-      PYTHONIOENCODING: 'utf-8'
-      PYTHONUTF8: '1'
+          - platform: Windows
+            runner: windows-latest
+          - platform: Linux
+            runner: ubuntu-22.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET 8
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+        with: { dotnet-version: '8.0.x' }
 
-      - name: Install Linux helper deps
+      - name: Install WebKitGTK (Linux only)
         if: matrix.platform == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential pkg-config \
-            libgtk-3-dev libwebkit2gtk-4.1-dev
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config || true
 
-      - name: Build token grabber
-        run: python build_token_grabber.py --platform=${{ matrix.platform }}
+      - name: Show dotnet version
+        run: dotnet --info
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Sanity check
+        shell: bash
+        run: ls -la Core/LaLuneTokenFetcher
+
+      - name: Build fetcher
+        run: python build_token_grabber.py --platform ${{ matrix.platform }}
+
+      - name: Package into vk-token-fetcher.zip
+        shell: bash
+        run: |
+          set -e
+          OUTPUT_BIN="Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher"
+          ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
+
+          if [ ! -d "$OUTPUT_BIN" ]; then
+            echo "Не найдена папка с результатом сборки: $OUTPUT_BIN"
+            find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
+            exit 1
+          fi
+
+          STAGING_DIR="Core/LaLuneTokenFetcher/output/_staging"
+          rm -rf "$STAGING_DIR"
+          mkdir -p "$STAGING_DIR/vk-token-fetcher"
+          cp -r "$OUTPUT_BIN/." "$STAGING_DIR/vk-token-fetcher/"
+
+          if [ "${{ matrix.platform }}" = "Linux" ]; then
+            chmod +x "$STAGING_DIR/vk-token-fetcher/LaLuneTokenFetcher" || true
+            chmod +x "$STAGING_DIR/vk-token-fetcher/la-lune-webview-helper" || true
+          fi
+
+          rm -f "$ZIP_PATH"
+
+          pushd "$STAGING_DIR" >/dev/null
+          if [ "${{ matrix.platform }}" = "Windows" ]; then
+            popd >/dev/null
+            powershell -Command "Compress-Archive -Path 'Core/LaLuneTokenFetcher/output/_staging/vk-token-fetcher' -DestinationPath '$ZIP_PATH' -Force"
+          else
+            zip -r "../../LaLuneTokenFetcher_${{ matrix.platform }}.zip" "vk-token-fetcher"
+            popd >/dev/null
+          fi
+
+          echo "=== $ZIP_PATH ==="
+          ls -la "$ZIP_PATH"
+
+      - name: Verify zip
+        shell: bash
+        run: |
+          ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
+          test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
+
+          if [ "${{ matrix.platform }}" = "Windows" ]; then
+            powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
+            ls -la verify_zip/vk-token-fetcher
+          else
+            unzip -l "$ZIP"
+          fi
+
+      - uses: actions/upload-artifact@v4
         with:
           name: LaLuneTokenFetcher-${{ matrix.platform }}
-          path: Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/
+          path: Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip
           if-no-files-found: error
+
+  create-release:
+    name: Create Release
+    needs:
+      - build-desktop-linux
+      - build-desktop-windows
+      - build-android
+      - build-token-fetcher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: release }
+      - run: find release -type f | head -50
+      - name: Create ZIP archives
+        run: |
+          cd release
+          zip -r LaLune-Linux.zip LaLune-Linux || true
+          zip -r LaLune-Windows.zip LaLune-Windows || true
+          zip -r LaLune-Android.zip LaLune-Android || true
+          cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
+          cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
+          ls -la
+      - id: date
+        run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.date.outputs.date }}
+          name: Release ${{ steps.date.outputs.date }}
+          files: release/*.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

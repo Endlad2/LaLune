@@ -11,7 +11,21 @@ import (
 	"strings"
 )
 
-// Bridge — мост между C-ABI и ядром.
+// TunInterface — интерфейс для платформозависимого TUN.
+type TunInterface interface {
+	Setup() error
+	Start(udpConn net.Conn, running *bool)
+	Stop()
+	SetupRoutes(tunIP string, tunDNS string)
+	CleanupRoutes()
+}
+
+// CoreRunner — интерфейс для платформозависимого запуска ядра.
+type CoreRunner interface {
+	StartCore(cmdArgs []string, listenPort int, bridge *Bridge)
+}
+
+// Bridge — мост между JS и Go.
 type Bridge struct {
 	Core          *AppCore
 	Tun           TunInterface
@@ -121,6 +135,15 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 	}
 }
 
+// buildCommand — CLI-флаги ядра CSQTT.
+//
+// Режимы:
+//   manual  → --vk <hashes> --vk-hash-mode manual --vk-auth-mode vkcalls
+//   autoApi → --vk <hashes из calls.start> --vk-hash-mode manual
+//   autoVk  → БЕЗ --vk; --vk-hash-mode auto_js --vk-auth-mode auto_js
+//             + --token "<Token из token.json>"
+//
+// -n = settings.Workers напрямую (без умножения на количество хешей).
 func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int) []string {
 	normalizedHashes := strings.ReplaceAll(config.Hashes, " ", ",")
 	normalizedHashes = strings.ReplaceAll(normalizedHashes, "\t", ",")
@@ -160,6 +183,7 @@ func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int)
 		hashMode = "manual"
 	}
 
+	// -n = Workers напрямую.
 	workers := settings.Workers
 	if workers < MinWorkers {
 		workers = DefaultWorkers

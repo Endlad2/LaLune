@@ -83,6 +83,7 @@ func (a *AppCore) IsFetcherInstalled() bool {
 }
 
 // HasValidVKToken — для UI: есть ли валидный токен.
+// Используется в ValidateVKToken и GetVKTokenState.
 func (a *AppCore) HasValidVKToken() bool {
 	return a.ReadTokenFromFile() != ""
 }
@@ -243,52 +244,6 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 	}()
 
 	return ch
-}
-
-// LoginVK — публичная обёртка над StartVKTokenFetcher для C-API.
-//
-// Возвращает true, если запуск fetcher'а прошёл. Логи и прогресс
-// стримятся в AddLog, чтобы пользователь видел их во вкладке «Логи».
-//
-// Вызывается из cmd/capi.go через //export lalune_vk_login.
-func (a *AppCore) LoginVK() bool {
-	ch := a.StartVKTokenFetcher()
-
-	// Забираем первое состояние, чтобы понять, был ли запуск успешным.
-	first, ok := <-ch
-	if !ok {
-		a.AddLog("[VK] LoginVK: канал закрыт сразу — ошибка")
-		return false
-	}
-
-	if first.Message != "" {
-		a.AddLog("[VK] " + first.Message)
-	}
-
-	// Если сразу есть токен — уже залогинены, ничего не запускаем.
-	if first.HasToken {
-		a.AddLog("[VK] LoginVK: токен уже есть")
-		return true
-	}
-
-	// Если fetcher не установлен и его не удалось поставить —
-	// в first.Message будет ошибка, а Fetching=false.
-	if !first.FetcherOK && !first.Fetching {
-		a.AddLog("[VK] LoginVK: не удалось запустить fetcher")
-		return false
-	}
-
-	// Дальше читаем канал в фоне — стримим логи в AddLog.
-	go func() {
-		for st := range ch {
-			if st.Message != "" {
-				a.AddLog("[VK] " + st.Message)
-			}
-		}
-		a.AddLog("[VK] LoginVK: поток состояний завершён")
-	}()
-
-	return true
 }
 
 // DeleteVKToken — удаляет token.json.

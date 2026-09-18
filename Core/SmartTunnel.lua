@@ -1,40 +1,39 @@
 -- SPDX-FileCopyrightText: 2026 luminescq
 -- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 --
--- SmartTunnel.lua — скрипт для встроенного Lua 5.1-рантайма SmartTunnel.
+-- SmartTunnel.lua — MVP-скрипт для управления туннелем CSQTT.
 --
--- Эмбедится в Go-бинарник через //go:embed SmartTunnel.lua
--- в Desktop/Libs/smarttunnel.go. Копируется в Desktop/Libs/ скриптом
--- prepare_st.py ПЕРЕД сборкой Go.
+-- Рантайм: Lua 5.1 (совместимо с gopher-lua и LuaJ).
 --
--- Этот файл — заглушка. Если у вас есть настоящий скрипт — замените.
+-- Доступное API (глобальная таблица `smarttunnel`):
+--   smarttunnel.log(message)                  — записать строку в общий лог
+--   smarttunnel.logs()                        — вернуть массив последних строк лога
+--   smarttunnel.connect()                     — запустить туннель
+--   smarttunnel.disconnect()                  — остановить туннель
+--   smarttunnel.is_connected()                — true/false
+--   smarttunnel.set_args(table)               — заменить аргументы запуска ядра
+--   smarttunnel.get_args()                    — вернуть текущие аргументы
+--   smarttunnel.get_vk_creds()                — { token=..., hashes=..., userId=..., expiresIn=... }
+--   smarttunnel.get_setting(key)              — прочитать настройку из settings.json
+--   smarttunnel.set_setting(key, value)       — записать настройку (в память, не сохраняется)
 --
--- Доступный API (см. smarttunnel.go / registerAPI):
---   smarttunnel.log(msg)              — писать в лог
---   smarttunnel.logs()                — вернуть массив накопленных логов
---   smarttunnel.connect()             — (не реализовано) → false
---   smarttunnel.disconnect()          — (не реализовано) → false
---   smarttunnel.is_connected()        — bool
---   smarttunnel.set_args(list)        — сохранить список строк
---   smarttunnel.get_args()            — вернуть список строк
---   smarttunnel.get_vk_creds()        — { token, hashes, userId, expiresIn }
---   smarttunnel.get_setting(key)      — значение настройки или nil
---   smarttunnel.set_setting(key, val) — записать настройку (в память)
+-- Точки входа (опциональные):
+--   function on_load()      — вызывается один раз при старте
+--   function on_tick()      — вызывается раз в секунду
+--   function on_connect()   — вызывается при подключении
+--   function on_disconnect()— вызывается при отключении
+--   function on_log(line)   — вызывается на каждую новую строку лога
 
--- Вызывается один раз при старте рантайма.
+local tick_counter = 0
+
 function on_load()
-    smarttunnel.log("[SMART-TUNNEL] on_load")
+    smarttunnel.log("[SMART-TUNNEL] Загружен")
 end
 
--- Вызывается раз в секунду (tickInterval = 1s в smarttunnel.go).
 function on_tick()
-    -- Заглушка: ничего не делаем каждую секунду.
-    --
-    -- Здесь может быть логика вида:
-    --   if not smarttunnel.is_connected() then
-    --       local creds = smarttunnel.get_vk_creds()
-    --       if creds.token ~= "" then
-    --           smarttunnel.connect()
-    --       end
-    --   end
+    tick_counter = tick_counter + 1
+    if tick_counter >= 10 then
+        tick_counter = 0
+        smarttunnel.log("[SMART-TUNNEL] Еще не реализовано")
+    end
 end

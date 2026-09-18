@@ -1,0 +1,64 @@
+name: LaLune
+options:
+  bundleIdPrefix: com.lalune
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+targets:
+  LaLune:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/App
+        buildPhase: sources
+        excludes:
+          - "Info.plist"
+      - path: ../../Frontend/app.html
+        buildPhase: resources
+        type: file
+      - path: ../../Frontend/ios.js
+        buildPhase: resources
+        type: file
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app
+        INFOPLIST_FILE: Sources/App/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
+        LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/Core"
+        OTHER_LDFLAGS: "-lcsqtt_ios_core"
+    dependencies:
+      - sdk: Core/libcsqtt_ios_core.a
+
+  LaLuneTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/Tunnel
+        buildPhase: sources
+        excludes:
+          - "Info.plist"
+          - "LaLune-Bridging-Header.h"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app.tunnel
+        INFOPLIST_FILE: Sources/Tunnel/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
+        LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/Core"
+        OTHER_LDFLAGS: "-lcsqtt_ios_core"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Tunnel/LaLune-Bridging-Header.h
+    dependencies:
+      - sdk: Core/libcsqtt_ios_core.a
+
+schemes:
+  LaLune:
+    build:
+      targets:
+        LaLune: all
+        LaLuneTunnel: all
+    run:
+      config: Debug
+    archive:
+      config: Release

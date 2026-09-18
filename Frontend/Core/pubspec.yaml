@@ -1,5 +1,5 @@
 name: lalune_core
-description: LaLune frontend (Flutter native)
+description: LaLune frontend (Dart/Flutter Web)
 version: 0.5.0
 publish_to: 'none'
 
@@ -10,10 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  ffi: ^2.1.2
-  path: ^1.9.0
-  path_provider: ^2.1.4
-  url_launcher: ^6.3.0
+  web: ^1.0.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0

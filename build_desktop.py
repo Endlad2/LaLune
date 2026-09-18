@@ -1,318 +1,293 @@
 #!/usr/bin/env python3
 """
-build_desktop.py — сборка нативного Desktop-приложения LaLune.
-
-Структура модуля:
-  Desktop/Libs/go.mod        (module lalune-libs)
-  Desktop/Libs/cmd/main.go   (package main для c-shared)
-  Desktop/Libs/*.go          (package libs — вся логика)
-
-Порядок:
-  1. go build -buildmode=c-shared из Desktop/Libs/ → Desktop/Libs/build/liblalune.so / lalune.dll
-  2. flutter build linux|windows --release из Frontend/Core/
-  3. Копируем .so/.dll рядом с Flutter-бинарником (в bundle)
+build_desktop.py — сборка Wails-приложения LaLune для Desktop.
 
 Требования:
-  - Go 1.22+
-  - Flutter 3.22+ (с desktop support)
-  - Windows: Visual Studio 2022 или новее с workload
-             "Desktop development with C++"
+    - Python 3.8+
+    - Wails v2 установлен в PATH
+    - Frontend/output/ уже собран через build_frontend.py
+
+Что делает:
+  1. Проверяет, что Frontend/output/ существует
+  2. Копирует Frontend/output/* в Desktop/<platform>/frontend/
+  3. Копирует Desktop/Libs/* (включая SmartTunnel.lua) в Desktop/<platform>/Libs/
+  4. Копирует ресурсы Windows (icon.ico, manifest)
+  5. Запускает wails build
+  6. Убирает временные файлы
 """
 
 import argparse
-import os
-import platform
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import List
 
-# Windows Python по умолчанию использует cp1252 для stdout/stderr —
-# русские буквы в логах падают с UnicodeEncodeError. Форсируем UTF-8.
-if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-if sys.stderr.encoding and sys.stderr.encoding.lower() not in ("utf-8", "utf8"):
-    try:
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+# ============================================================
+#  Progress
+# ============================================================
 
-def log(msg: str) -> None:
-    print(f"[build] {msg}", flush=True)
+class ProgressBar:
+    def __init__(self, total_steps: int, desc: str = "Progress"):
+        self.total_steps = total_steps
+        self.current_step = 0
+        self.desc = desc
+        self.start_time = time.time()
 
-def err(msg: str) -> None:
-    print(f"[build] ошибка: {msg}", file=sys.stderr, flush=True)
+    def update(self, step_desc: str = "") -> None:
+        self.current_step += 1
+        percent = (self.current_step / self.total_steps) * 100
+        bar_width = 50
+        filled = int(bar_width * self.current_step / self.total_steps)
+        bar = "#" * filled + "-" * (bar_width - filled)
 
-def which_or_die(name: str, hint: str = "") -> str:
-    """Возвращает полный путь к исполняемому файлу или падает."""
-    path = shutil.which(name)
-    if path:
-        return path
-    msg = f"{name} не найден в PATH"
-    if hint:
-        msg += f"\n  {hint}"
-    raise FileNotFoundError(msg)
+        elapsed = time.time() - self.start_time
+        sys.stdout.write(
+            f"\r{self.desc}: [{bar}] {percent:.1f}% "
+            f"({self.current_step}/{self.total_steps}) {step_desc}  [{elapsed:.1f}s]"
+        )
+        sys.stdout.flush()
 
-def detect_vs_generator() -> str | None:
-    """
-    Возвращает имя CMake-генератора для установленной Visual Studio,
-    либо None, если vswhere не нашёл ни одной инсталляции.
+        if self.current_step == self.total_steps:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
-    Поддерживаемые мажорные версии: 16 (2019), 17 (2022), 18+ (2026 Insider).
-    Для неизвестного мажора возвращаем генератор VS 2022 как наиболее
-    совместимый — CMake обычно умеет работать с более новой VS через него.
-    """
-    if platform.system() != "Windows":
-        return None
+# ============================================================
+#  Builder
+# ============================================================
 
-    vswhere_candidates = [
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
-        / "Microsoft Visual Studio" / "Installer" / "vswhere.exe",
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-        / "Microsoft Visual Studio" / "Installer" / "vswhere.exe",
-    ]
-    vswhere = next((p for p in vswhere_candidates if p.exists()), None)
-    if vswhere is None:
-        return None
+class WailsBuilder:
+    def __init__(self, platform: str, wails_flags: str = ""):
+        if platform not in ("Linux", "Windows"):
+            raise ValueError(f"Неподдерживаемая платформа: {platform}")
 
-    try:
-        out = subprocess.check_output(
-            [
-                str(vswhere),
-                "-latest",
-                "-products", "*",
-                "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                "-property", "installationVersion",
-            ],
+        self.platform = platform
+        self.wails_flags = wails_flags
+
+        self.root_dir = Path.cwd()
+        self.frontend_output = self.root_dir / "Frontend" / "output"
+        self.desktop_dir = self.root_dir / "Desktop"
+        self.platform_dir = self.desktop_dir / platform
+        self.frontend_dir = self.platform_dir / "frontend"
+        self.libs_platform_dir = self.platform_dir / "Libs"
+        self.desktop_libs_dir = self.desktop_dir / "Libs"
+
+        self.icon_ico_source = self.platform_dir / "icon.ico"
+        self.manifest_source = self.platform_dir / "wails.exe.manifest"
+        self.build_windows_dir = self.platform_dir / "build" / "windows"
+
+        self._created_frontend = False
+        self._created_libs = False
+        self._created_build_windows = False
+
+    # ---------- setup ----------
+
+    def check_prerequisites(self) -> None:
+        if not self.frontend_output.exists():
+            raise FileNotFoundError(
+                f"Не найден {self.frontend_output}\n"
+                f"Сначала соберите фронтенд:\n"
+                f"  python build_frontend.py --platform {self.platform}"
+            )
+
+        index = self.frontend_output / "index.html"
+        if not index.exists():
+            raise FileNotFoundError(
+                f"В {self.frontend_output} нет index.html — сборка фронта пустая"
+            )
+
+        # Проверяем, что SmartTunnel.lua лежит в Desktop/Libs/ (его читает go:embed).
+        smart_lua = self.desktop_libs_dir / "SmartTunnel.lua"
+        if not smart_lua.exists():
+            raise FileNotFoundError(
+                f"Не найден {smart_lua}\n"
+                f"Сначала подготовьте SmartTunnel:\n"
+                f"  python prepare_st.py --platform={self.platform}"
+            )
+
+    def setup_frontend(self) -> None:
+        """Копирует Frontend/output/* в Desktop/<platform>/frontend/."""
+        if self.frontend_dir.exists():
+            shutil.rmtree(self.frontend_dir)
+        self.frontend_dir.mkdir(parents=True, exist_ok=True)
+        self._created_frontend = True
+
+        for item in self.frontend_output.iterdir():
+            dst = self.frontend_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, dst)
+            else:
+                shutil.copy2(item, dst)
+
+        count = len(list(self.frontend_dir.rglob("*")))
+        print(f"  Фронтенд: {count} файлов → {self.frontend_dir}")
+
+    def copy_libs(self) -> None:
+        """Копирует Desktop/Libs/* → Desktop/<platform>/Libs/.
+
+        Копирует ВСЁ содержимое папки — включая SmartTunnel.lua, который
+        нужен для go:embed в smarttunnel.go.
+        """
+        if not self.desktop_libs_dir.exists():
+            print(f"\n  [WARN] {self.desktop_libs_dir} не найден, пропускаю")
+            return
+
+        if self.libs_platform_dir.exists():
+            shutil.rmtree(self.libs_platform_dir)
+        self.libs_platform_dir.mkdir(parents=True, exist_ok=True)
+        self._created_libs = True
+
+        count = 0
+        for item in self.desktop_libs_dir.iterdir():
+            dst = self.libs_platform_dir / item.name
+            if item.is_file():
+                shutil.copy2(item, dst)
+                count += 1
+                print(f"  Libs: {item.name}")
+            elif item.is_dir():
+                shutil.copytree(item, dst, dirs_exist_ok=True)
+                count += 1
+                print(f"  Libs: {item.name}/")
+
+        # Явно проверяем, что SmartTunnel.lua попал в целевой Libs/.
+        target_lua = self.libs_platform_dir / "SmartTunnel.lua"
+        if not target_lua.exists():
+            raise FileNotFoundError(
+                f"После копирования SmartTunnel.lua не найден в {self.libs_platform_dir}\n"
+                f"Проверьте {self.desktop_libs_dir}"
+            )
+
+    def copy_windows_resources(self) -> None:
+        """Копирует icon.ico и wails.exe.manifest в build/windows/."""
+        if self.platform != "Windows":
+            return
+
+        if self.build_windows_dir.exists():
+            shutil.rmtree(self.build_windows_dir)
+        self.build_windows_dir.mkdir(parents=True, exist_ok=True)
+        self._created_build_windows = True
+
+        if self.icon_ico_source.exists():
+            shutil.copy2(
+                self.icon_ico_source,
+                self.build_windows_dir / "icon.ico",
+            )
+            print(f"  icon.ico → {self.build_windows_dir}")
+        else:
+            print(f"  [WARN] {self.icon_ico_source} не найден")
+
+        if self.manifest_source.exists():
+            shutil.copy2(
+                self.manifest_source,
+                self.build_windows_dir / "wails.exe.manifest",
+            )
+            print(f"  wails.exe.manifest → {self.build_windows_dir}")
+        else:
+            print(f"  [WARN] {self.manifest_source} не найден")
+
+    # ---------- build ----------
+
+    def build_wails(self) -> None:
+        cmd = ["wails", "build"]
+        if self.wails_flags:
+            cmd.extend(self.wails_flags.split())
+
+        print("\n" + "=" * 60)
+        print(f"Running: {' '.join(cmd)}")
+        print(f"  cwd: {self.platform_dir}")
+        print("=" * 60 + "\n")
+
+        use_shell = sys.platform == "win32"
+
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(self.platform_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
-        ).strip()
-    except subprocess.CalledProcessError:
-        return None
-
-    if not out:
-        return None
-
-    # installationVersion вида "17.9.34714.143", "18.9.12120.119"
-    major = out.split(".", 1)[0]
-    if major == "16":
-        return "Visual Studio 16 2019"
-    if major == "17":
-        return "Visual Studio 17 2022"
-    if major == "18":
-        # VS 2026 Insider / "18.0" — генератор CMake 3.30+ знает его как 18 2026.
-        return "Visual Studio 18 2026"
-    # Неизвестный мажор — пробуем генератор VS 2022, CMake достаточно умён.
-    return "Visual Studio 17 2022"
-
-class DesktopBuilder:
-    def __init__(self, platform_name: str):
-        if platform_name not in ("Linux", "Windows"):
-            raise ValueError(f"Неподдерживаемая платформа: {platform_name}")
-        self.platform = platform_name
-        self.root = Path.cwd()
-        self.desktop_dir = self.root / "Desktop"
-        self.libs_dir = self.desktop_dir / "Libs"
-        self.build_dir = self.libs_dir / "build"
-        self.flutter_dir = self.root / "Frontend" / "Core"
-
-        if platform_name == "Linux":
-            self.lib_name = "liblalune.so"
-            self.flutter_target = "linux"
-            self.bundle_lib_dir = (
-                self.flutter_dir / "build" / "linux" / "x64" / "release" / "bundle" / "lib"
-            )
-        else:
-            self.lib_name = "lalune.dll"
-            self.flutter_target = "windows"
-            self.bundle_lib_dir = (
-                self.flutter_dir / "build" / "windows" / "x64" / "runner" / "Release"
-            )
-
-    def preflight(self) -> None:
-        """Проверяет, что все нужные пути и инструменты на месте."""
-        if not self.libs_dir.exists():
-            raise FileNotFoundError(
-                f"Не найдена папка {self.libs_dir}\n"
-                f"  Ожидается структура:\n"
-                f"    Desktop/Libs/go.mod\n"
-                f"    Desktop/Libs/cmd/main.go\n"
-                f"    Desktop/Libs/*.go"
-            )
-
-        if not (self.libs_dir / "go.mod").exists():
-            raise FileNotFoundError(
-                f"Не найден {self.libs_dir / 'go.mod'}"
-            )
-
-        if not (self.libs_dir / "cmd" / "main.go").exists():
-            raise FileNotFoundError(
-                f"Не найден {self.libs_dir / 'cmd' / 'main.go'}"
-            )
-
-        if not self.flutter_dir.exists():
-            raise FileNotFoundError(
-                f"Не найдена папка Flutter-проекта: {self.flutter_dir}"
-            )
-
-        if not (self.flutter_dir / "pubspec.yaml").exists():
-            raise FileNotFoundError(
-                f"Не найден {self.flutter_dir / 'pubspec.yaml'}"
-            )
-
-        self.go_path = which_or_die(
-            "go",
-            "Установите Go 1.22+ (https://go.dev/dl/) и добавьте в PATH"
-        )
-        self.flutter_path = which_or_die(
-            "flutter",
-            "Установите Flutter 3.22+ (https://docs.flutter.dev/get-started/install) "
-            "и добавьте в PATH"
+            bufsize=1,
+            shell=use_shell,
         )
 
-        # Windows: определяем генератор CMake.
-        # Приоритет у CMAKE_GENERATOR из окружения (его ставит CI),
-        # иначе — автоопределение через vswhere.
-        self.cmake_generator: str | None = None
-        if self.platform == "Windows":
-            env_gen = os.environ.get("CMAKE_GENERATOR", "").strip()
-            if env_gen:
-                self.cmake_generator = env_gen
-                log(f"CMake generator (from env): {self.cmake_generator}")
-            else:
-                gen = detect_vs_generator()
-                if gen is None:
-                    raise RuntimeError(
-                        "Не найдена Visual Studio с C++ toolchain.\n"
-                        "  Установите Visual Studio 2022+ с workload "
-                        "'Desktop development with C++'.\n"
-                        "  Скачать: https://visualstudio.microsoft.com/downloads/"
-                    )
-                self.cmake_generator = gen
-                log(f"CMake generator (detected): {self.cmake_generator}")
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
 
-        log(f"go:      {self.go_path}")
-        log(f"flutter: {self.flutter_path}")
+        process.wait()
 
-    def build_go(self) -> None:
-        self.build_dir.mkdir(parents=True, exist_ok=True)
-        out_lib = self.build_dir / self.lib_name
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd)
 
-        env = os.environ.copy()
-        env["CGO_ENABLED"] = "1"
-        if self.platform == "Windows":
-            env["GOOS"] = "windows"
-            env["GOARCH"] = "amd64"
-        else:
-            env["GOOS"] = "linux"
-            env["GOARCH"] = "amd64"
+    # ---------- cleanup ----------
 
-        cmd = [
-            self.go_path,
-            "build",
-            "-buildmode=c-shared",
-            "-o", str(out_lib),
-            "./cmd",
-        ]
-        log(f"go build (c-shared) → {out_lib}")
-        log(f"  cwd: {self.libs_dir}")
-        log(f"  CGO_ENABLED={env['CGO_ENABLED']} GOOS={env['GOOS']} GOARCH={env['GOARCH']}")
+    def cleanup(self) -> None:
+        if self._created_frontend and self.frontend_dir.exists():
+            shutil.rmtree(self.frontend_dir, ignore_errors=True)
 
-        try:
-            subprocess.run(
-                cmd,
-                cwd=str(self.libs_dir),
-                env=env,
-                check=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                f"Не удалось запустить go: {e}\n"
-                f"  Путь: {self.go_path}\n"
-                f"  cwd:  {self.libs_dir}"
-            )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"go build завершился с кодом {e.returncode}")
+        if self._created_libs and self.libs_platform_dir.exists():
+            shutil.rmtree(self.libs_platform_dir, ignore_errors=True)
 
-        if not out_lib.exists():
-            raise FileNotFoundError(f"Go не создал {out_lib}")
+        if self._created_build_windows and self.build_windows_dir.exists():
+            shutil.rmtree(self.build_windows_dir, ignore_errors=True)
 
-        h_file = out_lib.with_suffix(".h")
-        if h_file.exists():
-            h_file.unlink()
-
-    def build_flutter(self) -> None:
-        cmd = [self.flutter_path, "build", self.flutter_target, "--release"]
-        log(f"flutter build {self.flutter_target} --release")
-        log(f"  cwd: {self.flutter_dir}")
-
-        env = os.environ.copy()
-        if self.platform == "Windows" and self.cmake_generator:
-            env["CMAKE_GENERATOR"] = self.cmake_generator
-            log(f"  CMAKE_GENERATOR={env['CMAKE_GENERATOR']}")
-
-        try:
-            subprocess.run(
-                cmd,
-                cwd=str(self.flutter_dir),
-                env=env,
-                check=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                f"Не удалось запустить flutter: {e}\n"
-                f"  Путь: {self.flutter_path}\n"
-                f"  cwd:  {self.flutter_dir}"
-            )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"flutter build завершился с кодом {e.returncode}")
-
-    def copy_lib_to_bundle(self) -> None:
-        src = self.build_dir / self.lib_name
-        if not src.exists():
-            raise FileNotFoundError(f"Не найден {src} — сначала соберите Go")
-
-        self.bundle_lib_dir.mkdir(parents=True, exist_ok=True)
-        dst = self.bundle_lib_dir / self.lib_name
-        shutil.copy2(src, dst)
-        log(f"{self.lib_name} → {dst}")
-
-    def build(self) -> None:
-        self.preflight()
-        self.build_go()
-        self.build_flutter()
-        self.copy_lib_to_bundle()
-        log(f"Готово. Bundle: {self.bundle_lib_dir.parent}")
+# ============================================================
+#  main
+# ============================================================
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--platform", required=True, choices=["Linux", "Windows"])
+    parser = argparse.ArgumentParser(description="Wails Builder Script")
+    parser.add_argument(
+        "--platform",
+        required=True,
+        choices=["Linux", "Windows"],
+        help="Target platform",
+    )
+    parser.add_argument(
+        "--wails-flags",
+        default="",
+        help="Additional flags for wails build (в виде строки)",
+    )
     args = parser.parse_args()
 
+    builder = WailsBuilder(args.platform, args.wails_flags)
+
+    total_steps = 6
+    progress = ProgressBar(total_steps, f"Building for {args.platform}")
+
     try:
-        DesktopBuilder(args.platform).build()
+        progress.update("Проверка Frontend/output/...")
+        builder.check_prerequisites()
+
+        progress.update("Копирование фронтенда...")
+        builder.setup_frontend()
+
+        progress.update("Копирование Libs (включая SmartTunnel.lua)...")
+        builder.copy_libs()
+
+        progress.update("Копирование Windows-ресурсов...")
+        builder.copy_windows_resources()
+
+        progress.update("Запуск wails build...")
+        builder.build_wails()
+
+        progress.update("Очистка временных файлов...")
+        builder.cleanup()
+
+        print(f"\nСборка успешно завершена для {args.platform}")
         return 0
-    except FileNotFoundError as e:
-        err(str(e))
-        return 1
-    except RuntimeError as e:
-        err(str(e))
-        return 1
+
     except subprocess.CalledProcessError as e:
-        err(f"команда завершилась с кодом {e.returncode}")
+        progress.update(f"Ошибка wails build (exit={e.returncode})")
+        builder.cleanup()
         return e.returncode or 1
+
     except Exception as e:
-        err(f"{type(e).__name__}: {e}")
+        progress.update(f"Ошибка: {e}")
+        builder.cleanup()
         return 1
 
 if __name__ == "__main__":

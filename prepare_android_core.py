@@ -3,19 +3,15 @@
 prepare_android_core.py — копирует Java-классы из Core/ в Android-проект
 с заменой package на com.lalune.app.
 
-После миграции Android-проект живёт в Frontend/Core/android/.
-
 Что делает:
-  1. Читает все .java в Core/.
-  2. Заменяет `package com.lalune.tokenfetcher;` (или уже `com.lalune.app`)
-     на целевой package.
+  1. Читает все .java в Core/ (включая LaLuneTokenFetcherAndroid.java).
+  2. Заменяет `package com.lalune.tokenfetcher;` на `package com.lalune.app;`.
   3. Копирует результат в
-     Frontend/Core/android/app/src/main/java/com/lalune/app/
+     Mobile/Android/app/src/main/java/com/lalune/app/
 
 Использование:
     python prepare_android_core.py
     python prepare_android_core.py --package com.custom.pkg
-    python prepare_android_core.py --dest /custom/path
 """
 
 import argparse
@@ -27,11 +23,6 @@ ROOT = Path(__file__).resolve().parent
 CORE_DIR = ROOT / "Core"
 DEFAULT_PACKAGE = "com.lalune.app"
 DEFAULT_SRC_PACKAGE = "com.lalune.tokenfetcher"
-
-# Куда копируем по умолчанию.
-DEFAULT_DEST = (
-    ROOT / "Frontend" / "Core" / "android" / "app" / "src" / "main" / "java"
-)
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     try:
@@ -55,9 +46,10 @@ def package_to_dir(pkg: str) -> Path:
 
 def rewrite_package(content: str, src_pkg: str, dst_pkg: str) -> str:
     """
-    Заменяет package-декларацию. Поддерживает три варианта исходного пакета:
-      - com.lalune.tokenfetcher (дефолт)
-      - com.lalune.app         (если файл уже в целевом пакете)
+    Заменяет package-декларацию.
+    Поддерживает два варианта:
+      - package com.lalune.tokenfetcher;   (дефолт)
+      - package com.lalune.app;            (если файл уже в целевом пакете)
     """
     pattern = re.compile(
         r"^(\s*package\s+)(?:com\.lalune\.tokenfetcher|com\.lalune\.app)(\s*;)",
@@ -74,9 +66,6 @@ def main() -> int:
                         help=f"Целевой package (по умолчанию {DEFAULT_PACKAGE})")
     parser.add_argument("--src-package", default=DEFAULT_SRC_PACKAGE,
                         help=f"Исходный package в Core/ (по умолчанию {DEFAULT_SRC_PACKAGE})")
-    parser.add_argument("--dest", default=str(DEFAULT_DEST),
-                        help=f"Куда копировать java-файлы "
-                             f"(по умолчанию {DEFAULT_DEST.relative_to(ROOT)})")
     args = parser.parse_args()
 
     if not CORE_DIR.exists():
@@ -88,11 +77,8 @@ def main() -> int:
         log("Core/ пуст, пропускаю")
         return 0
 
-    base_dest = Path(args.dest)
-    if not base_dest.is_absolute():
-        base_dest = ROOT / base_dest
-
-    dst_dir = base_dest / package_to_dir(args.package)
+    dst_dir = (ROOT / "Mobile" / "Android" / "app" / "src" / "main" / "java"
+               / package_to_dir(args.package))
     dst_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"Package: {args.src_package} -> {args.package}")
@@ -104,7 +90,7 @@ def main() -> int:
         rewritten = rewrite_package(content, args.src_package, args.package)
         dst = dst_dir / src.name
         dst.write_text(rewritten, encoding="utf-8")
-        log(f"  {src.name} -> {dst.relative_to(ROOT)}")
+        log(f"  {src.name} -> {dst}")
         count += 1
 
     log(f"Готово: {count} файл(ов)")
