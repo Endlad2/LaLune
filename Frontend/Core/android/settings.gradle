@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 luminescq
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-
 pluginManagement {
     def flutterSdkPath = {
         def properties = new Properties()
@@ -10,7 +7,7 @@ pluginManagement {
         return flutterSdkPath
     }()
 
-    includeBuild("${flutterSdkPath}/packages/flutter_tools/gradle")
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
         google()
@@ -21,8 +18,9 @@ pluginManagement {
 
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
-    id "com.android.application" version "7.3.0" apply false
-    id "org.jetbrains.kotlin.android" version "1.7.10" apply false
+    // KGP 1.9.24 — совместим с kotlin-stdlib 1.9.x, которые тянут androidx-зависимости.
+    id "com.android.application" version "8.3.2" apply false
+    id "org.jetbrains.kotlin.android" version "1.9.24" apply false
 }
 
 include ":app"

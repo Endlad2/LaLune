@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 luminescq
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-
 allprojects {
     repositories {
         google()
@@ -9,14 +6,15 @@ allprojects {
 }
 
 rootProject.buildDir = "../build"
-
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
-
 subprojects {
     project.evaluationDependsOn(":app")
 }
+
+// ВАЖНО: KGP 1.9.24, иначе kotlin-stdlib 1.9.x не соберётся.
+ext.kotlin_version = '1.9.24'
 
 tasks.register("clean", Delete) {
     delete rootProject.buildDir

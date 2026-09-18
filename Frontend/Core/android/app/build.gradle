@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 luminescq
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-
 plugins {
     id "com.android.application"
     id "kotlin-android"
@@ -15,8 +12,15 @@ if (localPropertiesFile.exists()) {
     }
 }
 
-def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
-def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "0.5.0"
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode")
+if (flutterVersionCode == null) {
+    flutterVersionCode = "1"
+}
+
+def flutterVersionName = localProperties.getProperty("flutter.versionName")
+if (flutterVersionName == null) {
+    flutterVersionName = "1.0"
+}
 
 android {
     namespace = "com.lalune.app"
@@ -30,20 +34,37 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // Подавляем предупреждения о metadata-version, если какая-то
+        // транзитивная зависимость окажется собрана Kotlin 2.0.
+        freeCompilerArgs += [
+            "-Xjvm-default=all",
+            "-Xskip-metadata-version-check",
+        ]
     }
 
     defaultConfig {
         applicationId = "com.lalune.app"
-        minSdk = 21
+        minSdk = 24
         targetSdk = 34
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
+        ndk {
+            // Под наши нативные ядра
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+        }
     }
 
     buildTypes {
         release {
-            // Подписываем debug-ключом — для internal-раздачи этого хватает.
             signingConfig = signingConfigs.debug
+            minifyEnabled = false
+            shrinkResources = false
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }
@@ -53,14 +74,24 @@ flutter {
 }
 
 dependencies {
-    implementation "androidx.appcompat:appcompat:1.6.1"
-    implementation "androidx.core:core-ktx:1.12.0"
-    implementation "androidx.webkit:webkit:1.10.0"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    // Kotlin stdlib — явно, чтобы Gradle не тащил 1.9.24 из транзитивных
+    // зависимостей в обход KGP.
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
 
-    // SmartTunnel — Lua 5.1 runtime.
+    implementation "androidx.core:core-ktx:1.13.1"
+    implementation "androidx.annotation:annotation:1.9.1"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+
+    // Lua 5.1 рантайм для SmartTunnel
     implementation "org.luaj:luaj-jse:3.0.1"
+}
 
-    // Аннотации (@NonNull, @Nullable) для Java-кода.
-    implementation "androidx.annotation:annotation:1.7.1"
+// Форсируем одну версию kotlin-stdlib во всём дереве, чтобы избежать
+// конфликта metadata 1.7.1 vs 1.9.0.
+configurations.all {
+    resolutionStrategy {
+        force "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+        force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24"
+        force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24"
+    }
 }
