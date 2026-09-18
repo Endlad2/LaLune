@@ -7,28 +7,19 @@
 //
 // Скрипт копируется из assets/SmartTunnel.lua в filesDir/SmartTunnel.lua
 // при первом запуске, оттуда читается и запускается.
-//
-// API, доступное из Lua (глобальная таблица smarttunnel):
-//   smarttunnel.log(message)
-//   smarttunnel.logs()
-//   smarttunnel.connect()
-//   smarttunnel.disconnect()
-//   smarttunnel.is_connected()
-//   smarttunnel.set_args(table)
-//   smarttunnel.get_args()
-//   smarttunnel.get_vk_creds()
-//   smarttunnel.get_setting(key)
-//   smarttunnel.set_setting(key, value)
 
 package com.lalune.app
 
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.*
+import org.json.JSONObject
 import org.luaj.vm2.Globals
 import org.luaj.vm2.LuaError
 import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
+import org.luaj.vm2.Varargs
+import org.luaj.vm2.lib.VarArgFunction
 import org.luaj.vm2.lib.jse.JsePlatform
 import java.io.File
 
@@ -52,12 +43,12 @@ class SmartTunnelManager(private val context: Context) {
     @Volatile
     private var running = false
 
-    // Логи, которые читает Lua через smarttunnel.logs().
     private val luaLogs = ArrayDeque<String>()
 
-    // Аргументы cmd для ядра. Могут быть переопределены из Lua.
     @Volatile
     private var tunnelArgs: List<String> = emptyList()
+
+    private val inMemorySettings = mutableMapOf<String, LuaValue>()
 
     @Synchronized
     fun start() {
@@ -127,7 +118,6 @@ class SmartTunnelManager(private val context: Context) {
 
     private fun ensureScriptExists() {
         if (!appDir.exists()) appDir.mkdirs()
-        // Всегда перезаписываем из assets — на случай обновления приложения.
         context.assets.open(SCRIPT_NAME).use { input ->
             scriptFile.outputStream().use { output ->
                 input.copyTo(output)
@@ -154,7 +144,7 @@ class SmartTunnelManager(private val context: Context) {
         g.set("smarttunnel", tbl)
 
         // --- smarttunnel.log(message) ---
-        tbl.set("log", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("log", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val msg = args.arg(1).tojstring()
                 appendLuaLog(msg)
@@ -163,8 +153,8 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.logs() → table of strings ---
-        tbl.set("logs", object : org.luaj.vm2.lib.VarArgFunction() {
+        // --- smarttunnel.logs() ---
+        tbl.set("logs", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val out = LuaTable()
                 synchronized(luaLogs) {
@@ -179,7 +169,7 @@ class SmartTunnelManager(private val context: Context) {
         })
 
         // --- smarttunnel.connect() ---
-        tbl.set("connect", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("connect", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 writeLog("[SMART-TUNNEL] connect() — пока не реализовано")
                 return LuaValue.FALSE
@@ -187,7 +177,7 @@ class SmartTunnelManager(private val context: Context) {
         })
 
         // --- smarttunnel.disconnect() ---
-        tbl.set("disconnect", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("disconnect", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 writeLog("[SMART-TUNNEL] disconnect() — пока не реализовано")
                 return LuaValue.FALSE
@@ -195,7 +185,7 @@ class SmartTunnelManager(private val context: Context) {
         })
 
         // --- smarttunnel.is_connected() ---
-        tbl.set("is_connected", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("is_connected", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val connected = readSettingBool("_connected", false)
                 return LuaValue.valueOf(connected)
@@ -203,7 +193,7 @@ class SmartTunnelManager(private val context: Context) {
         })
 
         // --- smarttunnel.set_args(table) ---
-        tbl.set("set_args", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("set_args", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val t = args.arg(1)
                 if (!t.istable()) return LuaValue.NIL
@@ -221,8 +211,8 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.get_args() → table ---
-        tbl.set("get_args", object : org.luaj.vm2.lib.VarArgFunction() {
+        // --- smarttunnel.get_args() ---
+        tbl.set("get_args", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val out = LuaTable()
                 tunnelArgs.forEachIndexed { idx, s ->
@@ -232,8 +222,8 @@ class SmartTunnelManager(private val context: Context) {
             }
         })
 
-        // --- smarttunnel.get_vk_creds() → { token, hashes, userId, expiresIn } ---
-        tbl.set("get_vk_creds", object : org.luaj.vm2.lib.VarArgFunction() {
+        // --- smarttunnel.get_vk_creds() ---
+        tbl.set("get_vk_creds", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val out = LuaTable()
                 val token = readVkToken()
@@ -246,7 +236,7 @@ class SmartTunnelManager(private val context: Context) {
         })
 
         // --- smarttunnel.get_setting(key) ---
-        tbl.set("get_setting", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("get_setting", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val key = args.arg(1).tojstring()
                 return readSetting(key)
@@ -254,7 +244,7 @@ class SmartTunnelManager(private val context: Context) {
         })
 
         // --- smarttunnel.set_setting(key, value) ---
-        tbl.set("set_setting", object : org.luaj.vm2.lib.VarArgFunction() {
+        tbl.set("set_setting", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 val key = args.arg(1).tojstring()
                 val value = args.arg(2)
@@ -281,22 +271,17 @@ class SmartTunnelManager(private val context: Context) {
     }
 
     // ============================================================
-    //  Чтение/запись настроек (в памяти)
+    //  Чтение/запись настроек
     // ============================================================
 
-    private val inMemorySettings = mutableMapOf<String, LuaValue>()
-
     private fun readSetting(key: String): LuaValue {
-        // Приоритет — in-memory (то, что Lua сама записала).
         inMemorySettings[key]?.let { return it }
-        // Иначе — из settings.json.
         return try {
             val settingsFile = File(appDir, "settings.json")
             if (!settingsFile.exists()) return LuaValue.NIL
-            val json = org.json.JSONObject(settingsFile.readText())
+            val json = JSONObject(settingsFile.readText())
             if (!json.has(key)) return LuaValue.NIL
-            val v = json.get(key)
-            when (v) {
+            when (val v = json.get(key)) {
                 is Boolean -> LuaValue.valueOf(v)
                 is Int -> LuaValue.valueOf(v)
                 is Long -> LuaValue.valueOf(v.toDouble())
@@ -322,7 +307,7 @@ class SmartTunnelManager(private val context: Context) {
         return try {
             val tokenFile = File(appDir, "token.json")
             if (!tokenFile.exists()) return ""
-            val json = org.json.JSONObject(tokenFile.readText())
+            val json = JSONObject(tokenFile.readText())
             json.optString("Token", "")
         } catch (_: Exception) {
             ""

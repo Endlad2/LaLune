@@ -30,8 +30,12 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
-      - run: python3 build_frontend.py --platform Linux
-      - run: python3 build_desktop.py --platform Linux
+      - name: Prepare SmartTunnel.lua (Linux + Android)
+        run: python3 prepare_st.py --platform=all
+      - name: Build Dart frontend for Linux
+        run: python3 build_frontend.py --platform Linux
+      - name: Build Desktop (Linux)
+        run: python3 build_desktop.py --platform Linux
       - uses: actions/upload-artifact@v4
         with:
           name: LaLune-Linux
@@ -51,8 +55,12 @@ jobs:
         with: { flutter-version: '3.24.5', channel: stable, cache: true }
       - run: flutter config --enable-web
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-      - run: python build_frontend.py --platform Windows
-      - run: python build_desktop.py --platform Windows
+      - name: Prepare SmartTunnel.lua (Linux + Windows + Android)
+        run: python prepare_st.py --platform=all
+      - name: Build Dart frontend for Windows
+        run: python build_frontend.py --platform Windows
+      - name: Build Desktop (Windows)
+        run: python build_desktop.py --platform Windows
       - uses: actions/upload-artifact@v4
         with:
           name: LaLune-Windows
@@ -86,16 +94,19 @@ jobs:
         with: { gradle-version: '8.9' }
       - name: Prepare Android Core
         run: python prepare_android_core.py
+      - name: Prepare SmartTunnel.lua (Linux + Windows + Android)
+        run: python prepare_st.py --platform=all
       - name: Build Dart frontend for Android
         run: python build_frontend.py --platform Android
       - name: Copy frontend to Android assets
         run: |
           ASSETS_DIR="Mobile/Android/app/src/main/assets"
-          rm -rf "$ASSETS_DIR"
+          # не удаляем всё подряд — в assets уже лежит SmartTunnel.lua от prepare_st.py.
           mkdir -p "$ASSETS_DIR"
           cp -r Frontend/output/. "$ASSETS_DIR/"
           test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
           test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/SmartTunnel.lua" || { echo "SmartTunnel.lua MISSING"; exit 1; }
       - name: Download core binaries
         run: |
           mkdir -p Mobile/Android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
@@ -158,10 +169,6 @@ jobs:
       - name: Build fetcher
         run: python build_token_grabber.py --platform ${{ matrix.platform }}
 
-      # Твой build_token_grabber.py кладёт результат в output/LaLuneTokenFetcher/
-      # целиком (бинарник + native helper + native/ + pdb). Надо упаковать
-      # всё это в zip с корневой папкой vk-token-fetcher/, чтобы vktoken.go
-      # мог распаковать в appDir и запустить LaLuneTokenFetcher[.exe].
       - name: Package into vk-token-fetcher.zip
         shell: bash
         run: |
@@ -175,29 +182,20 @@ jobs:
             exit 1
           fi
 
-          # Формируем staging-папку vk-token-fetcher/ ровно с тем содержимым,
-          # которое vktoken.go ожидает увидеть после распаковки.
           STAGING_DIR="Core/LaLuneTokenFetcher/output/_staging"
           rm -rf "$STAGING_DIR"
           mkdir -p "$STAGING_DIR/vk-token-fetcher"
           cp -r "$OUTPUT_BIN/." "$STAGING_DIR/vk-token-fetcher/"
 
-          # На Linux/Unix выставляем executable-бит бинарнику и хелперу,
-          # потому что zip может потерять права при распаковке.
           if [ "${{ matrix.platform }}" = "Linux" ]; then
             chmod +x "$STAGING_DIR/vk-token-fetcher/LaLuneTokenFetcher" || true
             chmod +x "$STAGING_DIR/vk-token-fetcher/la-lune-webview-helper" || true
           fi
 
-          # Удаляем zip, если уже был (для повторных запусков)
           rm -f "$ZIP_PATH"
 
-          # Заворачиваем содержимое staging в zip.
-          # ВАЖНО: cd в staging, чтобы корнем архива стала именно vk-token-fetcher/.
           pushd "$STAGING_DIR" >/dev/null
           if [ "${{ matrix.platform }}" = "Windows" ]; then
-            # На windows-runner используем PowerShell, но shell: bash уже активен,
-            # поэтому утилита zip на windows недоступна. Используем powershell для zip.
             popd >/dev/null
             powershell -Command "Compress-Archive -Path 'Core/LaLuneTokenFetcher/output/_staging/vk-token-fetcher' -DestinationPath '$ZIP_PATH' -Force"
           else
@@ -214,7 +212,6 @@ jobs:
           ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
           test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
 
-          # На Linux есть unzip, на Windows в runner'е тоже
           if [ "${{ matrix.platform }}" = "Windows" ]; then
             powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
             ls -la verify_zip/vk-token-fetcher
@@ -246,7 +243,6 @@ jobs:
           zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
-          # Token fetcher'ы уже готовые zip'ы — копируем как есть
           cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
           cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
           ls -la
