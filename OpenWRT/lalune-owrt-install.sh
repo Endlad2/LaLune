@@ -4,25 +4,22 @@
 #
 # LaLune OpenWRT — однокомандник.
 #
+# Фронтенд вкомпилирован в бинарник (go:embed web), поэтому сюда его
+# отдельно качать не надо.
+#
 # Устанавливает:
 #   - зависимости (curl, ca-bundle, kmod-tun)
 #   - бинарник LaLune-owrt_aarch64 в /usr/bin/lalune-owrt
 #   - init-скрипт /etc/init.d/lalune-owrt
-#   - статику фронтенда в /usr/share/lalune-owrt/web (если есть в архиве)
 #
 # Запуск:
 #   wget -qO- https://raw.githubusercontent.com/Endlad2/LaLune/main/OpenWRT/lalune-owrt-install.sh | sh
-#
-# После установки:
-#   /etc/init.d/lalune-owrt start
-#   Открыть http://<router>:6543
 
 set -e
 
 BIN_URL="https://github.com/Endlad2/LaLune/releases/latest/download/LaLune-owrt_aarch64"
 BIN_PATH="/usr/bin/lalune-owrt"
 INIT_PATH="/etc/init.d/lalune-owrt"
-WEB_DIR="/usr/share/lalune-owrt/web"
 CONF_DIR="/etc/csqtt"
 
 log() { echo "[LaLune] $*"; }
@@ -39,7 +36,7 @@ log "Устанавливаю зависимости..."
 opkg install curl ca-bundle kmod-tun || die "не удалось установить зависимости"
 
 # ============================================================
-#  2. Бинарник
+#  2. Бинарник (фронтенд уже внутри)
 # ============================================================
 
 log "Скачиваю $BIN_URL ..."
@@ -52,7 +49,6 @@ log "Бинарник: $BIN_PATH"
 # ============================================================
 
 mkdir -p "$CONF_DIR"
-mkdir -p "$WEB_DIR"
 mkdir -p /var/run/csqtt
 touch "$CONF_DIR/csqtt.log"
 

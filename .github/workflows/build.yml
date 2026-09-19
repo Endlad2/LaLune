@@ -135,6 +135,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+
+      # 1) Собираем Dart-фронтенд под OpenWRT.
+      #    Результат: Frontend/output/ (index.html, api.js, flutter_bootstrap.js, assets/)
+      - name: Build Dart frontend for OpenWRT
+        run: python3 build_frontend.py --platform OpenWRT
+
+      # 2) Копируем Frontend/output/ в OpenWRT/web/ — именно эту папку
+      #    вкомпилирует //go:embed web в бинарник.
+      - name: Copy frontend into OpenWRT/web
+        run: |
+          set -euo pipefail
+          test -f Frontend/output/index.html || { echo "Frontend/output/index.html MISSING"; exit 1; }
+          test -f Frontend/output/api.js     || { echo "Frontend/output/api.js MISSING"; exit 1; }
+
+          rm -rf OpenWRT/web
+          mkdir -p OpenWRT/web
+          cp -r Frontend/output/. OpenWRT/web/
+
+          echo "--- OpenWRT/web ---"
+          find OpenWRT/web -maxdepth 2 -type f | head -50
+          test -f OpenWRT/web/index.html       || { echo "web/index.html MISSING"; exit 1; }
+          test -f OpenWRT/web/api.js           || { echo "web/api.js MISSING"; exit 1; }
+          test -f OpenWRT/web/flutter_bootstrap.js || echo "warn: flutter_bootstrap.js не найден"
 
       - name: Cache OpenWRT SDK
         id: sdk-cache
@@ -154,8 +182,6 @@ jobs:
           tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
           rm -f sdk.tar.zst
 
-      # Регистрируем SDK-тулчейн в GITHUB_PATH и GITHUB_ENV, чтобы
-      # следующие шаги (в т.ч. `go build`) видели aarch64-openwrt-linux-gcc.
       - name: Export SDK toolchain to environment
         run: |
           set -euo pipefail
@@ -167,29 +193,23 @@ jobs:
           fi
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
 
-          # PATH — на следующие шаги
           echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
-
-          # STAGING_DIR — переменная окружения
           echo "STAGING_DIR=$GITHUB_WORKSPACE/sdk/staging_dir" >> "$GITHUB_ENV"
 
-          # Кросс-компилятор для Go
-          echo "CC=aarch64-openwrt-linux-gcc"             >> "$GITHUB_ENV"
-          echo "CXX=aarch64-openwrt-linux-g++"            >> "$GITHUB_ENV"
-          echo "AR=aarch64-openwrt-linux-ar"              >> "$GITHUB_ENV"
-          echo "LD=aarch64-openwrt-linux-ld"              >> "$GITHUB_ENV"
-          echo "RANLIB=aarch64-openwrt-linux-ranlib"      >> "$GITHUB_ENV"
-          echo "STRIP=aarch64-openwrt-linux-strip"        >> "$GITHUB_ENV"
+          echo "CC=aarch64-openwrt-linux-gcc"          >> "$GITHUB_ENV"
+          echo "CXX=aarch64-openwrt-linux-g++"         >> "$GITHUB_ENV"
+          echo "AR=aarch64-openwrt-linux-ar"           >> "$GITHUB_ENV"
+          echo "LD=aarch64-openwrt-linux-ld"           >> "$GITHUB_ENV"
+          echo "RANLIB=aarch64-openwrt-linux-ranlib"   >> "$GITHUB_ENV"
+          echo "STRIP=aarch64-openwrt-linux-strip"     >> "$GITHUB_ENV"
 
-          # Go: цель + CGO
-          echo "CGO_ENABLED=1"    >> "$GITHUB_ENV"
-          echo "GOOS=linux"       >> "$GITHUB_ENV"
-          echo "GOARCH=arm64"     >> "$GITHUB_ENV"
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+          echo "GOOS=linux"    >> "$GITHUB_ENV"
+          echo "GOARCH=arm64"  >> "$GITHUB_ENV"
 
       - name: Verify toolchain visible
         run: |
           set -euo pipefail
-          echo "PATH=$PATH"
           which aarch64-openwrt-linux-gcc
           aarch64-openwrt-linux-gcc --version
           go env CC GOOS GOARCH CGO_ENABLED
@@ -199,6 +219,7 @@ jobs:
           set -euo pipefail
           cd OpenWRT
           go mod tidy
+          # Фронт уже лежит в OpenWRT/web/ и подхватится через //go:embed web
           go build -trimpath -ldflags="-s -w" -o ../LaLune-owrt_aarch64 .
           cd ..
           file LaLune-owrt_aarch64
@@ -349,14 +370,12 @@ jobs:
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
 
-          # OpenWRT: собираем zip с бинарником и установочным скриптом
-          mkdir -p _owrt_pack
-          cp -r LaLune-OpenWRT/. _owrt_pack/ || true
-          # в релиз кладём имя, которое ищет установщик LaLune
-          if [ -f "_owrt_pack/LaLune-owrt_aarch64" ]; then
-            cp "_owrt_pack/LaLune-owrt_aarch64" ./LaLune-owrt_aarch64
+          # OpenWRT: бинарник уже самодостаточный (фронт вкомпилирован),
+          # кладём его в корень релиза под именем, которое ждёт установщик.
+          if [ -f "LaLune-OpenWRT/LaLune-owrt_aarch64" ]; then
+            cp "LaLune-OpenWRT/LaLune-owrt_aarch64" ./LaLune-owrt_aarch64
           fi
-          zip -r LaLune-OpenWRT.zip _owrt_pack || true
+          zip -r LaLune-OpenWRT.zip LaLune-OpenWRT || true
 
           cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
           cp LaLuneTokenFetcher-Linux/*.zip   ./LaLuneTokenFetcher_Linux.zip   || true

@@ -3,6 +3,11 @@
 //
 // LaLune OpenWRT — встроенный веб-сервер с API и фронтендом.
 //
+// Фронтенд (Dart/Flutter Web) вкомпилирован в бинарник через //go:embed web.
+// Папка OpenWRT/web заполняется на этапе сборки:
+//   python build_frontend.py --platform OpenWRT
+//   cp -r Frontend/output/. OpenWRT/web/
+//
 // Слушает на порту 6543:
 //   GET  /                — отдаёт index.html + assets (Flutter/Dart-сборка)
 //   GET  /api/status      — {"connected":bool,"installerRunning":bool,"coreRunning":bool}
@@ -31,9 +36,11 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -56,8 +63,12 @@ const (
 	coreLogFile   = "csqtt.log"
 	installerURL  = "https://raw.githubusercontent.com/redline-keen/csqtt-openwrt/main/csqtt-github-install-openwrt.sh"
 	installerPath = "/tmp/csqtt-install.sh"
-	webDir        = "/usr/share/lalune-owrt/web"
 )
+
+// embedFS — весь фронтенд (index.html, api.js, flutter_bootstrap.js, assets/...).
+//
+//go:embed all:web
+var embedFS embed.FS
 
 // ============================================================
 //  Структуры
@@ -74,17 +85,16 @@ type Config struct {
 }
 
 type Settings struct {
-	AuthMode     string `json:"authMode"`     // "manual" | "autoVk"
-	Workers      int    `json:"workers"`      // 1..127
-	Hashes       int    `json:"hashes"`       // 1..6 (число хешей, воркеры на хеш = workers/hashes)
-	VkAuthMode   string `json:"vkAuthMode"`   // legacy
-	Obfs         string `json:"obfs"`
-	Fingerprint  string `json:"fingerprint"`
-	ClientIds    string `json:"clientIds"`
-	CaptchaMode  string `json:"captchaMode"`
-	TurnTransport string `json:"turnTransport"`
-	DeviceID     string `json:"deviceId"`
-	EnableSmartTunnel bool `json:"enableSmartTunnel"`
+	AuthMode          string `json:"authMode"`   // "manual" | "autoVk"
+	Workers           int    `json:"workers"`    // общее число воркеров
+	VkAuthMode        string `json:"vkAuthMode"` // legacy
+	Obfs              string `json:"obfs"`
+	Fingerprint       string `json:"fingerprint"`
+	ClientIds         string `json:"clientIds"`
+	CaptchaMode       string `json:"captchaMode"`
+	TurnTransport     string `json:"turnTransport"`
+	DeviceID          string `json:"deviceId"`
+	EnableSmartTunnel bool   `json:"enableSmartTunnel"`
 }
 
 type TokenFile struct {
@@ -93,11 +103,11 @@ type TokenFile struct {
 }
 
 type App struct {
-	mu         sync.RWMutex
-	configs    []Config
-	settings   Settings
-	installer  *exec.Cmd
-	corePID    int
+	mu               sync.RWMutex
+	configs          []Config
+	settings         Settings
+	installer        *exec.Cmd
+	corePID          int
 	installerRunning bool
 }
 
@@ -116,7 +126,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// --- статика ---
+	// --- статика из вкомпилированного фронтенда ---
 	mux.HandleFunc("/", app.serveStatic)
 
 	// --- api ---
@@ -135,7 +145,6 @@ func main() {
 		Handler: mux,
 	}
 
-	// graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -154,36 +163,55 @@ func main() {
 }
 
 // ============================================================
-//  Статика
+//  Статика из embed.FS
 // ============================================================
 
 func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
+	// webFS — корень внутри embed.FS (убираем префикс "web/").
+	webFS, err := fs.Sub(embedFS, "web")
+	if err != nil {
+		http.Error(w, "embed broken", http.StatusInternalServerError)
+		return
+	}
+
 	path := r.URL.Path
 	if path == "/" {
 		path = "/index.html"
 	}
 
-	full := filepath.Join(webDir, filepath.Clean(path))
-	if _, err := os.Stat(full); err != nil {
-		// SPA fallback
-		full = filepath.Join(webDir, "index.html")
-		if _, err := os.Stat(full); err != nil {
-			http.Error(w, "frontend not installed", http.StatusNotFound)
+	// SPA-fallback: если файла нет — отдаём index.html.
+	f, err := webFS.Open(strings.TrimPrefix(path, "/"))
+	if err != nil {
+		f, err = webFS.Open("index.html")
+		if err != nil {
+			http.Error(w, "frontend not embedded", http.StatusNotFound)
 			return
 		}
+		path = "/index.html"
 	}
+	_ = f.Close()
 
-	if strings.HasSuffix(full, ".js") {
+	// Заголовки кэширования/типов.
+	switch {
+	case strings.HasSuffix(path, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	} else if strings.HasSuffix(full, ".html") {
+	case strings.HasSuffix(path, ".html"):
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	} else if strings.HasSuffix(full, ".css") {
+	case strings.HasSuffix(path, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	} else if strings.HasSuffix(full, ".json") {
+	case strings.HasSuffix(path, ".json"):
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	case strings.HasSuffix(path, ".png"):
+		w.Header().Set("Content-Type", "image/png")
+	case strings.HasSuffix(path, ".jpg"), strings.HasSuffix(path, ".jpeg"):
+		w.Header().Set("Content-Type", "image/jpeg")
+	case strings.HasSuffix(path, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case strings.HasSuffix(path, ".wasm"):
+		w.Header().Set("Content-Type", "application/wasm")
 	}
 
-	http.ServeFile(w, r, full)
+	http.FileServer(http.FS(webFS)).ServeHTTP(w, r)
 }
 
 // ============================================================
@@ -307,7 +335,6 @@ func (a *App) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	// последние 500 строк
 	if len(lines) > 500 {
 		lines = lines[len(lines)-500:]
 	}
@@ -363,7 +390,7 @@ func (a *App) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Вычисляем параметры
+	// M = workers, N = round(workers/9) * 3 (кратно 3), мин 3.
 	workers := settings.Workers
 	if workers < 1 {
 		workers = 27
@@ -372,36 +399,25 @@ func (a *App) handleConnect(w http.ResponseWriter, r *http.Request) {
 		workers = 127
 	}
 
-	hashes := settings.Hashes
-	if hashes < 1 {
-		hashes = 3
-	}
-	if hashes > 6 {
-		hashes = 6
-	}
-
-	// воркеры на хеш = round(workers/hashes) кратно 3, мин 3
-	perHash := workers / hashes
+	perHash := (workers + 8) / 9 // ceil(workers / 9)
 	if perHash < 3 {
 		perHash = 3
 	}
-	// округляем до кратного 3
 	perHash = (perHash / 3) * 3
 	if perHash < 3 {
 		perHash = 3
 	}
 
-	// Ссылка — берём rawLink, если есть; иначе собираем из peer/password/hashes
+	// Ссылка: rawLink, иначе собираем из peer/password/hashes.
 	link := cfg.RawLink
 	if link == "" {
+		host, port := splitHostPort(cfg.Peer)
 		link = fmt.Sprintf("csqtt://connect?v=2&host=%s&peer=%s&password=%s&hashes=%s",
-			strings.Split(cfg.Peer, ":")[0],
-			strings.Split(cfg.Peer, ":")[1],
-			cfg.Password,
+			host, port, cfg.Password,
 			strings.ReplaceAll(cfg.Hashes, ",", "+"))
 	}
 
-	// Токен для autoVk
+	// Токен для autoVk.
 	token := ""
 	if settings.AuthMode == "autoVk" {
 		token = a.readVkToken()
@@ -411,19 +427,17 @@ func (a *App) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Запускаем установщик
-	go a.runInstaller(link, perHash, hashes, token)
+	go a.runInstaller(link, perHash, token)
 
 	writeJSON(w, map[string]interface{}{
-		"ok":       true,
-		"perHash":  perHash,
-		"hashes":   hashes,
-		"workers":  perHash * hashes,
+		"ok":      true,
+		"workers": workers,
+		"hashes":  perHash,
 	})
 }
 
 // runInstaller скачивает и запускает установочный скрипт CSQTT.
-func (a *App) runInstaller(link string, perHash, hashes int, token string) {
+func (a *App) runInstaller(link string, hashes int, token string) {
 	a.mu.Lock()
 	a.installerRunning = true
 	a.mu.Unlock()
@@ -449,7 +463,6 @@ func (a *App) runInstaller(link string, perHash, hashes int, token string) {
 
 	appendLog("Скачиваю установщик CSQTT...")
 
-	// curl -fsSL -o /tmp/csqtt-install.sh <URL>
 	curlCmd := exec.Command("curl", "-fsSL", "-o", installerPath, installerURL)
 	curlCmd.Stdout = os.Stdout
 	curlCmd.Stderr = os.Stderr
@@ -462,7 +475,7 @@ func (a *App) runInstaller(link string, perHash, hashes int, token string) {
 
 	// sh /tmp/csqtt-install.sh '<link>' --workers N --hashes M [--vk-token T]
 	args := []string{installerPath, link,
-		"--workers", strconv.Itoa(perHash),
+		"--workers", strconv.Itoa(hashes),
 		"--hashes", strconv.Itoa(hashes),
 	}
 	if token != "" {
@@ -484,7 +497,6 @@ func (a *App) runInstaller(link string, perHash, hashes int, token string) {
 		return
 	}
 
-	// Установщик запустит ядро сам; запомним его PID из /var/run/csqtt
 	go a.watchCore()
 
 	_ = cmd.Wait()
@@ -518,12 +530,10 @@ func (a *App) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	logPath := filepath.Join(csqttDir, coreLogFile)
 	appendLogFile(logPath, "[LaLune] Отключение...")
 
-	// Убиваем ядро по имени
 	for _, name := range []string{"csqtt", "csqtt-client", "csqtt-client-arm64"} {
 		_ = exec.Command("killall", "-9", name).Run()
 	}
 
-	// Убираем TUN-интерфейс
 	_ = exec.Command("ip", "link", "del", "csqtt0").Run()
 
 	a.mu.Lock()
@@ -593,7 +603,6 @@ func (a *App) handleVkToken(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleUpdates(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		// Заглушка: обновления ядра пока не поддерживаются на OpenWRT
 		writeJSON(w, map[string]interface{}{
 			"update":  false,
 			"version": "0.5.0",
@@ -667,14 +676,13 @@ func (a *App) readVkToken() string {
 
 func defaultSettings() Settings {
 	return Settings{
-		AuthMode:     "manual",
-		Workers:      27,
-		Hashes:       3,
-		VkAuthMode:   "vkcalls",
-		Obfs:         "video",
-		Fingerprint:  "firefox",
-		ClientIds:    "8202606,6287487",
-		CaptchaMode:  "auto",
+		AuthMode:      "manual",
+		Workers:       27,
+		VkAuthMode:    "vkcalls",
+		Obfs:          "video",
+		Fingerprint:   "firefox",
+		ClientIds:     "8202606,6287487",
+		CaptchaMode:   "auto",
 		TurnTransport: "udp",
 	}
 }
@@ -688,12 +696,6 @@ func normalizeSettings(s *Settings) {
 	}
 	if s.Workers > 127 {
 		s.Workers = 127
-	}
-	if s.Hashes < 1 {
-		s.Hashes = 3
-	}
-	if s.Hashes > 6 {
-		s.Hashes = 6
 	}
 	if s.Obfs == "" {
 		s.Obfs = "video"
@@ -743,7 +745,6 @@ func parseCsqttLink(link string) Config {
 		return cfg
 	}
 
-	// user:pass@host:port
 	at := strings.Index(rest, "@")
 	if at < 0 {
 		cfg.Peer = link
@@ -783,6 +784,14 @@ func parseQuery(q string) map[string]string {
 	return out
 }
 
+func splitHostPort(s string) (string, string) {
+	i := strings.LastIndex(s, ":")
+	if i < 0 {
+		return s, "46000"
+	}
+	return s[:i], s[i+1:]
+}
+
 // ============================================================
 //  Утилиты
 // ============================================================
@@ -810,7 +819,6 @@ func processAlive(pid int) bool {
 }
 
 func findCorePID() int {
-	// Ищем процесс ядра в /proc
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return 0
