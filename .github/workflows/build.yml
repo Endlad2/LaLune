@@ -169,10 +169,16 @@ jobs:
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export STAGING_DIR="$GITHUB_WORKSPACE/sdk/staging_dir"
 
+          # CGO нужен, потому что ядро линкуется с musl через SDK-тулчейн.
           export CGO_ENABLED=1
+
+          # ВАЖНО: GOARM валиден ТОЛЬКО для GOARCH=arm (32-bit).
+          # Для GOARCH=arm64 его выставлять НЕЛЬЗЯ — go build падает:
+          #   "invalid GOARM: must start with 5, 6, or 7..."
+          # Поэтому здесь только GOOS/GOARCH.
           export GOOS=linux
           export GOARCH=arm64
-          export GOARM=8
+          unset GOARM
 
           export CC=aarch64-openwrt-linux-gcc
           export CXX=aarch64-openwrt-linux-g++
