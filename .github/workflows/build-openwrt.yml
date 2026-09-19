@@ -1,114 +1,98 @@
-name: Build OpenWRT LuCI package
+# SPDX-FileCopyrightText: 2026 luminescq
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+#
+# Сборка LaLune-owrt_aarch64 для OpenWRT.
+#
+# Использует официальный OpenWRT SDK:
+#   openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+#
+# Артефакт: LaLune-owrt_aarch64 (в релизе — именно так).
+
+name: Build OpenWRT
 
 on:
   push:
-    branches: [ main, master ]
-    paths:
-      - 'OpenWRT/luci-app-csqtt/**'
-      - '.github/workflows/build-openwrt.yml'
-  pull_request:
-    branches: [ main, master ]
-    paths:
-      - 'OpenWRT/luci-app-csqtt/**'
+    tags:
+      - 'v*'
   workflow_dispatch:
-
-env:
-  SDK_URL: "https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
-  SDK_ARCHIVE: "openwrt-sdk.tar.zst"
-  PKG_DIR: "OpenWRT/luci-app-csqtt"
 
 jobs:
   build:
-    name: Build luci-app-csqtt (.ipk)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential gawk gettext libncurses-dev libssl-dev \
-            python3 python3-pip rsync unzip file wget zstd time git ca-certificates
+      - name: Setup Go (для сборки бинарника)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
-      - name: Download OpenWRT SDK
+      - name: Скачивание OpenWRT SDK
         run: |
-          echo "==> Скачиваю SDK: $SDK_URL"
-          wget -q --show-progress -O "$SDK_ARCHIVE" "$SDK_URL"
-          ls -la "$SDK_ARCHIVE"
-
-      - name: Extract SDK
-        run: |
-          echo "==> Распаковываю SDK"
+          set -e
+          SDK_URL="https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          echo "Downloading $SDK_URL"
+          curl -fsSL -o sdk.tar.zst "$SDK_URL"
           mkdir -p sdk
-          tar --zstd -xf "$SDK_ARCHIVE" -C sdk
-          SDK_ROOT="$(find sdk -maxdepth 1 -mindepth 1 -type d -name 'openwrt-sdk-*' | head -n1)"
-          if [ -z "$SDK_ROOT" ]; then
-            echo "ERROR: не нашёл распакованную папку SDK"
-            ls -la sdk
-            exit 1
+          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+          ls -la sdk/
+          ls -la sdk/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl/bin/ | head -20
+
+      - name: Сборка бинарника через SDK-тулчейн
+        run: |
+          set -e
+          SDK="$GITHUB_WORKSPACE/sdk"
+          TOOLCHAIN="$SDK/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl"
+          export PATH="$TOOLCHAIN/bin:$PATH"
+          export STAGING_DIR="$SDK/staging_dir"
+          export CGO_ENABLED=1
+          export GOOS=linux
+          export GOARCH=arm64
+          export GOARM=8
+          export CC=aarch64-openwrt-linux-gcc
+          export CXX=aarch64-openwrt-linux-g++
+          export AR=aarch64-openwrt-linux-ar
+          export LD=aarch64-openwrt-linux-ld
+
+          cd OpenWRT
+          go mod tidy
+          go build -ldflags="-s -w" -o ../LaLune-owrt_aarch64 .
+          cd ..
+
+          file LaLune-owrt_aarch64
+          ls -la LaLune-owrt_aarch64
+
+      - name: Сборка фронтенда для OpenWRT
+        run: |
+          set -e
+          # Установка Flutter (или можно использовать предварительно собранный output)
+          if [ -d "Frontend/output" ] && [ -f "Frontend/output/index.html" ]; then
+            echo "Использую готовый Frontend/output"
+          else
+            echo "Flutter не установлен — пропускаю сборку фронта"
           fi
-          echo "SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "==> SDK: $SDK_ROOT"
 
-      - name: Configure SDK (feeds)
+      - name: Упаковка артефакта
         run: |
-          cd "$SDK_ROOT"
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          set -e
+          mkdir -p dist
+          cp LaLune-owrt_aarch64 dist/
+          cp OpenWRT/lalune-owrt-install.sh dist/
+          chmod +x dist/lalune-owrt-install.sh
+          ls -la dist/
 
-      - name: Copy package into SDK
-        run: |
-          cd "$SDK_ROOT"
-          rm -rf package/luci-app-csqtt
-          cp -r "$GITHUB_WORKSPACE/$PKG_DIR" package/luci-app-csqtt
-          echo "==> Package contents:"
-          find package/luci-app-csqtt -type f | sort
-
-      - name: Select package in config
-        run: |
-          cd "$SDK_ROOT"
-          make defconfig
-          {
-            echo "CONFIG_PACKAGE_luci-app-csqtt=y"
-            echo "CONFIG_PACKAGE_luci-base=y"
-            echo "CONFIG_PACKAGE_luci-compat=y"
-            echo "CONFIG_PACKAGE_luci-mod-admin-full=y"
-            echo "CONFIG_PACKAGE_luci-theme-bootstrap=y"
-            echo "CONFIG_PACKAGE_rpcd=y"
-            echo "CONFIG_PACKAGE_rpcd-mod-file=y"
-            echo "CONFIG_PACKAGE_rpcd-mod-luci=y"
-            echo "CONFIG_PACKAGE_curl=y"
-            echo "CONFIG_PACKAGE_unzip=y"
-            echo "CONFIG_PACKAGE_ca-bundle=y"
-            echo "CONFIG_PACKAGE_kmod-tun=y"
-          } >> .config
-          make defconfig
-          grep -E '^CONFIG_PACKAGE_luci-app-csqtt=' .config || {
-            echo "ERROR: luci-app-csqtt не включён в .config"
-            exit 1
-          }
-
-      - name: Build package
-        run: |
-          cd "$SDK_ROOT"
-          make package/luci-app-csqtt/compile V=s -j"$(nproc)"
-          echo "==> Результат:"
-          find bin -name 'luci-app-csqtt*.ipk' -type f
-
-      - name: Collect artifacts
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          find "$SDK_ROOT/bin" -name 'luci-app-csqtt*.ipk' -type f -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
-          find "$SDK_ROOT/bin" -name 'Packages*' -type f -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \; 2>/dev/null || true
-          echo "==> Артефакты:"
-          ls -la "$GITHUB_WORKSPACE/artifacts/"
-
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-csqtt-ipk
-          path: artifacts/*.ipk
-          if-no-files-found: error
+          name: LaLune-OpenWRT-aarch64
+          path: dist/
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/LaLune-owrt_aarch64
+            dist/lalune-owrt-install.sh
