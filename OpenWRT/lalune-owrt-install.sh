@@ -8,7 +8,8 @@
 # отдельно качать не надо.
 #
 # Что делает:
-#   1) opkg update + ставит curl, ca-bundle, kmod-tun
+#   1) обновляет индекс пакетов и ставит curl, ca-bundle, kmod-tun
+#      (opkg на OpenWRT <= 24.x, apk на OpenWRT >= 25.x)
 #   2) Если уже стоит LaLune (бинарник + процесс на :6543):
 #        - останавливает старый init-скрипт
 #        - убивает процессы по PID-файлу и по порту 6543
@@ -37,14 +38,35 @@ warn() { echo "[LaLune] ПРЕДУПРЕЖДЕНИЕ: $*" >&2; }
 die()  { echo "[LaLune] ОШИБКА: $*" >&2; exit 1; }
 
 # ============================================================
+#  0. Определяем пакетный менеджер: opkg (старые OpenWRT) или apk (новые)
+# ============================================================
+
+if command -v opkg >/dev/null 2>&1; then
+    PKG=opkg
+    PKG_UPDATE="opkg update"
+    PKG_INSTALL="opkg install"
+elif command -v apk >/dev/null 2>&1; then
+    PKG=apk
+    # apk update тянет индексы; update вообще необязателен,
+    # но для свежих индексов полезен.
+    PKG_UPDATE="apk update"
+    PKG_INSTALL="apk add"
+else
+    die "ни opkg, ни apk не найдены — не знаю, чем ставить пакеты"
+fi
+
+log "Пакетный менеджер: $PKG"
+
+# ============================================================
 #  1. Зависимости
 # ============================================================
 
-log "opkg update..."
-opkg update || die "opkg update failed"
+log "$PKG_UPDATE ..."
+$PKG_UPDATE || warn "$PKG_UPDATE завершился с ошибкой — продолжаю"
 
-log "Устанавливаю зависимости..."
-opkg install curl ca-bundle kmod-tun || die "не удалось установить зависимости"
+log "Устанавливаю зависимости (curl ca-bundle kmod-tun)..."
+# shellcheck disable=SC2086
+$PKG_INSTALL curl ca-bundle kmod-tun || die "не удалось установить зависимости"
 
 # ============================================================
 #  2. Обнаружение и удаление старой версии
@@ -188,6 +210,7 @@ cat <<MSG
   Init:      $INIT_PATH
   Веб-UI:    http://$IP:$PORT
   Конфиги:   $CONF_DIR
+  Пакеты:    $PKG
 
   Управление:
     /etc/init.d/lalune-owrt start
