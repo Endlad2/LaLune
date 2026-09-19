@@ -154,54 +154,61 @@ jobs:
           tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
           rm -f sdk.tar.zst
 
-      - name: Verify SDK toolchain
+      # Регистрируем SDK-тулчейн в GITHUB_PATH и GITHUB_ENV, чтобы
+      # следующие шаги (в т.ч. `go build`) видели aarch64-openwrt-linux-gcc.
+      - name: Export SDK toolchain to environment
         run: |
           set -euo pipefail
-          TOOLCHAIN_DIR="$(find sdk/staging_dir -maxdepth 1 -type d -name 'toolchain-*' | head -n1)"
+          TOOLCHAIN_DIR="$(find "$GITHUB_WORKSPACE/sdk/staging_dir" -maxdepth 1 -type d -name 'toolchain-*' | head -n1)"
+          if [ -z "$TOOLCHAIN_DIR" ]; then
+            echo "Не нашёл toolchain-* в sdk/staging_dir"
+            ls -la "$GITHUB_WORKSPACE/sdk/staging_dir" || true
+            exit 1
+          fi
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
-          "$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-gcc" --version
+
+          # PATH — на следующие шаги
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          # STAGING_DIR — переменная окружения
+          echo "STAGING_DIR=$GITHUB_WORKSPACE/sdk/staging_dir" >> "$GITHUB_ENV"
+
+          # Кросс-компилятор для Go
+          echo "CC=aarch64-openwrt-linux-gcc"             >> "$GITHUB_ENV"
+          echo "CXX=aarch64-openwrt-linux-g++"            >> "$GITHUB_ENV"
+          echo "AR=aarch64-openwrt-linux-ar"              >> "$GITHUB_ENV"
+          echo "LD=aarch64-openwrt-linux-ld"              >> "$GITHUB_ENV"
+          echo "RANLIB=aarch64-openwrt-linux-ranlib"      >> "$GITHUB_ENV"
+          echo "STRIP=aarch64-openwrt-linux-strip"        >> "$GITHUB_ENV"
+
+          # Go: цель + CGO
+          echo "CGO_ENABLED=1"    >> "$GITHUB_ENV"
+          echo "GOOS=linux"       >> "$GITHUB_ENV"
+          echo "GOARCH=arm64"     >> "$GITHUB_ENV"
+
+      - name: Verify toolchain visible
+        run: |
+          set -euo pipefail
+          echo "PATH=$PATH"
+          which aarch64-openwrt-linux-gcc
+          aarch64-openwrt-linux-gcc --version
+          go env CC GOOS GOARCH CGO_ENABLED
 
       - name: Build LaLune-owrt_aarch64
         run: |
           set -euo pipefail
-
-          TOOLCHAIN_DIR="$(find sdk/staging_dir -maxdepth 1 -type d -name 'toolchain-*' | head -n1)"
-          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          export STAGING_DIR="$GITHUB_WORKSPACE/sdk/staging_dir"
-
-          # CGO нужен, потому что ядро линкуется с musl через SDK-тулчейн.
-          export CGO_ENABLED=1
-
-          # ВАЖНО: GOARM валиден ТОЛЬКО для GOARCH=arm (32-bit).
-          # Для GOARCH=arm64 его выставлять НЕЛЬЗЯ — go build падает:
-          #   "invalid GOARM: must start with 5, 6, or 7..."
-          # Поэтому здесь только GOOS/GOARCH.
-          export GOOS=linux
-          export GOARCH=arm64
-          unset GOARM
-
-          export CC=aarch64-openwrt-linux-gcc
-          export CXX=aarch64-openwrt-linux-g++
-          export AR=aarch64-openwrt-linux-ar
-          export LD=aarch64-openwrt-linux-ld
-          export RANLIB=aarch64-openwrt-linux-ranlib
-          export STRIP=aarch64-openwrt-linux-strip
-
           cd OpenWRT
           go mod tidy
           go build -trimpath -ldflags="-s -w" -o ../LaLune-owrt_aarch64 .
           cd ..
-
           file LaLune-owrt_aarch64
           ls -la LaLune-owrt_aarch64
 
       - name: Strip binary
         run: |
           set -euo pipefail
-          TOOLCHAIN_DIR="$(find sdk/staging_dir -maxdepth 1 -type d -name 'toolchain-*' | head -n1)"
-          STRIP_BIN="$TOOLCHAIN_DIR/bin/aarch64-openwrt-linux-strip"
-          if [ -x "$STRIP_BIN" ]; then
-            "$STRIP_BIN" LaLune-owrt_aarch64 || true
+          if command -v aarch64-openwrt-linux-strip >/dev/null 2>&1; then
+            aarch64-openwrt-linux-strip LaLune-owrt_aarch64 || true
           fi
           file LaLune-owrt_aarch64
           ls -la LaLune-owrt_aarch64
