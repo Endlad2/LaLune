@@ -2,15 +2,21 @@
 # SPDX-FileCopyrightText: 2026 luminescq
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
-# LaLune OpenWRT — однокомандник.
+# LaLune OpenWRT — установщик / обновлятор.
 #
 # Фронтенд вкомпилирован в бинарник (go:embed web), поэтому сюда его
 # отдельно качать не надо.
 #
-# Устанавливает:
-#   - зависимости (curl, ca-bundle, kmod-tun)
-#   - бинарник LaLune-owrt_aarch64 в /usr/bin/lalune-owrt
-#   - init-скрипт /etc/init.d/lalune-owrt
+# Что делает:
+#   1) opkg update + ставит curl, ca-bundle, kmod-tun
+#   2) Если уже стоит LaLune (бинарник + процесс на :6543):
+#        - останавливает старый init-скрипт
+#        - убивает процессы по PID-файлу и по порту 6543
+#        - если есть /etc/csqtt/uninstall.sh — вызывает его
+#          (он чистит ядро CSQTT и TUN; сам LaLune его не трогает)
+#        - удаляет старый бинарник и init-скрипт
+#   3) Качает свежий LaLune-owrt_aarch64 из последнего релиза
+#   4) Создаёт init-скрипт, включает автозапуск, стартует
 #
 # Запуск:
 #   wget -qO- https://raw.githubusercontent.com/Endlad2/LaLune/main/OpenWRT/lalune-owrt-install.sh | sh
@@ -21,9 +27,14 @@ BIN_URL="https://github.com/Endlad2/LaLune/releases/latest/download/LaLune-owrt_
 BIN_PATH="/usr/bin/lalune-owrt"
 INIT_PATH="/etc/init.d/lalune-owrt"
 CONF_DIR="/etc/csqtt"
+RUN_DIR="/var/run/csqtt"
+PID_FILE="/var/run/lalune-owrt.pid"
+PORT=6543
+CSQTT_UNINSTALL="/etc/csqtt/uninstall.sh"
 
-log() { echo "[LaLune] $*"; }
-die() { echo "[LaLune] ОШИБКА: $*" >&2; exit 1; }
+log()  { echo "[LaLune] $*"; }
+warn() { echo "[LaLune] ПРЕДУПРЕЖДЕНИЕ: $*" >&2; }
+die()  { echo "[LaLune] ОШИБКА: $*" >&2; exit 1; }
 
 # ============================================================
 #  1. Зависимости
@@ -36,7 +47,84 @@ log "Устанавливаю зависимости..."
 opkg install curl ca-bundle kmod-tun || die "не удалось установить зависимости"
 
 # ============================================================
-#  2. Бинарник (фронтенд уже внутри)
+#  2. Обнаружение и удаление старой версии
+# ============================================================
+
+# Проверяем, есть ли процесс, слушающий наш порт.
+# netstat есть почти везде (busybox). lsof — редко. Пробуем по очереди.
+port_in_use() {
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -tlnp 2>/dev/null | grep -q ":${PORT}[[:space:]]"
+        return $?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -i ":${PORT}" >/dev/null 2>&1
+        return $?
+    fi
+    # Если ни netstat, ни lsof нет — считаем, что порт не занят.
+    return 1
+}
+
+# Убиваем процессы LaLune: сначала по PID-файлу, потом общим killall.
+kill_lalune_processes() {
+    if [ -f "$PID_FILE" ]; then
+        OLD_PID="$(cat "$PID_FILE" 2>/dev/null || echo)"
+        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            log "Убиваю процесс LaLune по PID $OLD_PID..."
+            kill "$OLD_PID" 2>/dev/null || true
+            sleep 1
+            kill -9 "$OLD_PID" 2>/dev/null || true
+        fi
+    fi
+
+    # На случай, если PID-файл потерялся, но процесс живёт.
+    killall lalune-owrt 2>/dev/null || true
+    sleep 1
+    killall -9 lalune-owrt 2>/dev/null || true
+}
+
+OLD_BIN=0
+OLD_PORT=0
+
+[ -f "$BIN_PATH" ] && OLD_BIN=1
+port_in_use && OLD_PORT=1
+
+if [ "$OLD_BIN" = "1" ] || [ "$OLD_PORT" = "1" ]; then
+    log "Обнаружена установленная версия LaLune (бинарник=$OLD_BIN, порт :$PORT занят=$OLD_PORT)."
+    log "Останавливаю и удаляю старую версию..."
+
+    # 2.1 init-скрипт
+    if [ -x "$INIT_PATH" ]; then
+        "$INIT_PATH" stop 2>/dev/null || true
+        "$INIT_PATH" disable 2>/dev/null || true
+    fi
+
+    # 2.2 процессы
+    kill_lalune_processes
+
+    # 2.3 чужой uninstall.sh от redline-keen/csqtt-openwrt
+    if [ -x "$CSQTT_UNINSTALL" ]; then
+        log "Вызываю $CSQTT_UNINSTALL ..."
+        sh "$CSQTT_UNINSTALL" || warn "$CSQTT_UNINSTALL завершился с ошибкой — продолжаю"
+    elif [ -f "$CSQTT_UNINSTALL" ]; then
+        log "Вызываю $CSQTT_UNINSTALL ..."
+        sh "$CSQTT_UNINSTALL" || warn "$CSQTT_UNINSTALL завершился с ошибкой — продолжаю"
+    else
+        warn "$CSQTT_UNINSTALL не найден — ядро CSQTT и TUN не тронуты"
+    fi
+
+    # 2.4 старый бинарник и init
+    rm -f "$BIN_PATH"
+    rm -f "$INIT_PATH"
+    rm -f "$PID_FILE"
+
+    log "Старая версия удалена."
+else
+    log "Установленная версия LaLune не обнаружена — чистая установка."
+fi
+
+# ============================================================
+#  3. Скачиваем свежий бинарник
 # ============================================================
 
 log "Скачиваю $BIN_URL ..."
@@ -45,16 +133,12 @@ chmod +x "$BIN_PATH"
 log "Бинарник: $BIN_PATH"
 
 # ============================================================
-#  3. Директории и конфиги
+#  4. Директории и init-скрипт
 # ============================================================
 
 mkdir -p "$CONF_DIR"
-mkdir -p /var/run/csqtt
-touch "$CONF_DIR/csqtt.log"
-
-# ============================================================
-#  4. Init-скрипт
-# ============================================================
+mkdir -p "$RUN_DIR"
+[ -f "$CONF_DIR/csqtt.log" ] || : > "$CONF_DIR/csqtt.log"
 
 cat > "$INIT_PATH" <<'EOF'
 #!/bin/sh /etc/rc.common
@@ -86,11 +170,11 @@ EOF
 chmod +x "$INIT_PATH"
 
 # ============================================================
-#  5. Автозапуск
+#  5. Автозапуск и старт
 # ============================================================
 
-/etc/init.d/lalune-owrt enable 2>/dev/null || true
-/etc/init.d/lalune-owrt start 2>/dev/null || true
+"$INIT_PATH" enable 2>/dev/null || true
+"$INIT_PATH" start  2>/dev/null || true
 
 IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}' || echo "<router-ip>")
 
@@ -102,7 +186,7 @@ cat <<MSG
 
   Бинарник:  $BIN_PATH
   Init:      $INIT_PATH
-  Веб-UI:    http://$IP:6543
+  Веб-UI:    http://$IP:$PORT
   Конфиги:   $CONF_DIR
 
   Управление:
