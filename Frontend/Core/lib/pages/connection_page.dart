@@ -5,8 +5,6 @@ import '../widgets/glass_card.dart';
 import '../widgets/toast.dart';
 
 class ConnectionPage extends StatefulWidget {
-  /// Вызывается, когда конфиг добавлен/удалён — родитель должен
-  /// пересоздать эту страницу (инкрементить свой version-key).
   final VoidCallback? onReload;
 
   const ConnectionPage({super.key, this.onReload});
@@ -76,7 +74,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final downloading = Api.isCoreDownloading();
       if (downloading && !_wasDownloading) {
         _wasDownloading = true;
-        // Тост в стиле остальных сообщений (жёлтый, снизу).
         Toast.show(
           context,
           'Подождите, скачивается ядро. VPN запустится через 10 сек',
@@ -162,7 +159,21 @@ class _ConnectionPageState extends State<ConnectionPage> {
         controller.dispose();
         return;
       }
+
+      // ВАЖНО: сначала вытаскиваем &token= (если есть) и передаём в бэкенд.
+      // На OpenWRT это сохранит токен в /etc/csqtt/token.json.
+      // На desktop/android Go-бэкенд сделает то же самое сам при SaveConfig.
+      // На iOS — тоже сам Swift.
+      final extractedToken = Api.extractTokenFromLink(link);
+
       final saved = Api.saveConfig(link);
+
+      if (saved && extractedToken != null && extractedToken.isNotEmpty) {
+        // OpenWRT — сохранит; desktop/android/ios — метод отсутствует, вернёт false.
+        // Не страшно, у них это делает бэкенд.
+        Api.setVKToken(extractedToken);
+      }
+
       if (saved) {
         _toast('Конфиг сохранён');
         _reload();

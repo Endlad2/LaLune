@@ -16,6 +16,9 @@
     let cachedSelectedConfig = '{}';
 
     window.api = {
+        // ---------- платформа ----------
+        IsOpenWRT: () => false,
+
         GetConfigsJson: () => { const l = lalune(); if (!l) return '[]'; try { return l.getConfigs(); } catch (_) { return '[]'; } },
         SaveConfig: (link) => { const l = lalune(); if (!l) return false; try { return l.saveConfig(link); } catch (_) { return false; } },
         DeleteConfig: (id) => { const l = lalune(); if (!l) return false; try { return l.deleteConfig(id); } catch (_) { return false; } },
@@ -91,9 +94,6 @@
             return cachedVKTokenState;
         },
 
-        // VkLogin — открывает нативный WebView с OAuth ВК.
-        // После успеха Kotlin сохраняет токен в token.json и вызывает
-        // window._vkLoginCallback(true, token) через evaluateJavascript.
         VkLogin: () => {
             const l = lalune();
             if (!l) return false;
@@ -128,6 +128,9 @@
             return cachedVKTokenState;
         },
 
+        // SetVKToken на Android НЕ реализован — токен из &token= сохраняет
+        // Kotlin-бэкенд при saveConfig. Метод отсутствует намеренно.
+
         RunVkAutoApiCalls: () => {
             const l = lalune(); if (!l) return '{"error":"not supported"}';
             try {
@@ -154,10 +157,8 @@
         RegenerateDeviceId: () => { const l = lalune(); if (!l) return ''; try { return l.regenerateDeviceId(); } catch (_) { return ''; } },
     };
 
-    // Callback из Kotlin — вызывается после успешной авторизации.
     window._vkLoginCallback = function (success, payload) {
         console.log('[vk-login] callback success=' + success + ' payload=' + payload);
-        // Dart поллит ValidateVKToken — здесь только логируем.
     };
 
     console.log('[api/android] AndroidBridge ready (VkLogin → native WebView)');

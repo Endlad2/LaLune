@@ -47,6 +47,9 @@ type Config struct {
 	Hashes   string `json:"hashes"`
 	Name     string `json:"name"`
 	RawLink  string `json:"rawLink"`
+	// Token извлекается из csqtt://...&token=... при добавлении конфига
+	// и сохраняется в token.json. В БД не хранится (не нужно).
+	Token string `json:"-"`
 }
 
 type Settings struct {
@@ -316,18 +319,35 @@ func (a *AppCore) GetLogsJson() string {
 	return string(data)
 }
 
+// SaveConfig — сохраняет конфиг из ссылки.
+//
+// Если в ссылке есть &token=..., токен извлекается и сразу пишется
+// в token.json (см. tokenfile.go). Это тот же формат, что использует
+// LaLuneTokenFetcher, поэтому автоВК-режим подхватит его без лишних действий.
 func (a *AppCore) SaveConfig(link string) bool {
 	config := ParseCsqttLink(link)
 	config.RawLink = link
+
 	result, err := a.db.Exec(
 		"INSERT INTO configs (protocol, peer, password, hashes, name) VALUES (?, ?, ?, ?, ?)",
 		config.Protocol, config.Peer, config.Password, config.Hashes, config.Name,
 	)
 	if err != nil {
+		a.AddLog(fmt.Sprintf("[API] Ошибка сохранения конфига: %v", err))
 		return false
 	}
 	id, _ := result.LastInsertId()
 	a.AddLog(fmt.Sprintf("[API] Конфиг сохранён с ID: %d", id))
+
+	// Если из ссылки пришёл токен — сразу пишем в token.json.
+	if strings.TrimSpace(config.Token) != "" {
+		if path, err := a.SaveTokenToFile(config.Token); err != nil {
+			a.AddLog(fmt.Sprintf("[VK] Не удалось сохранить токен из ссылки: %v", err))
+		} else {
+			a.AddLog(fmt.Sprintf("[VK] Токен из ссылки сохранён: %s", path))
+		}
+	}
+
 	a.LoadConfigs()
 	return true
 }
@@ -503,6 +523,14 @@ func (a *AppCore) GetCorePath() string   { return a.corePath }
 func (a *AppCore) GetLatestFile() string { return a.latestFile }
 func (a *AppCore) GetWintunPath() string { return a.wintunPath }
 
+// ParseCsqttLink — разбирает csqtt:// ссылку.
+//
+// Поддерживает два формата:
+//   1. csqtt://connect?v=2&host=...&peer=...&password=...&hashes=...&token=...
+//   2. csqtt://user:password@host:port
+//
+// Если в query есть &token=..., он попадает в Config.Token и используется
+// в SaveConfig для записи в token.json.
 func ParseCsqttLink(link string) Config {
 	config := Config{Protocol: "CSQTT", Name: "Config"}
 	link = strings.TrimSpace(link)
@@ -544,6 +572,10 @@ func ParseCsqttLink(link string) Config {
 				}
 			}
 			config.Hashes = strings.Join(clean, ",")
+		}
+		// ВК-токен прямо в ссылке.
+		if tok := params.Get("token"); tok != "" {
+			config.Token = tok
 		}
 		config.Name = config.Peer
 	} else {

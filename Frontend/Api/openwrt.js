@@ -11,6 +11,7 @@
 
     const BASE = '';          // тот же origin
     const REFRESH_MS = 1500;
+    const OWRT_PORT = '6543'; // порт LaLune-owrt
 
     let cachedConfigs = '[]';
     let cachedSettings = '{}';
@@ -54,7 +55,25 @@
     setInterval(refresh, REFRESH_MS);
     setTimeout(refresh, 200);
 
+    // Определяем OpenWRT по URL: либо порт 6543, либо /api/status отвечает.
+    // Порт — самый надёжный признак: LaLune-owrt всегда слушает 6543.
+    function isOpenWRT() {
+        try {
+            if (window.location.port === OWRT_PORT) return true;
+            // На случай обратного прокси — если этот мост загружен, значит
+            // мы уже на OpenWRT-бэкенде.
+            return typeof window.api !== 'undefined' &&
+                   typeof window.api.SetVKToken === 'function' &&
+                   window.location.port === OWRT_PORT;
+        } catch (_) {
+            return false;
+        }
+    }
+
     window.api = {
+        // ---------- платформа ----------
+        IsOpenWRT: () => isOpenWRT(),
+
         // ---------- конфиги ----------
         GetConfigsJson: () => cachedConfigs,
 
@@ -133,8 +152,7 @@
         // ---------- VK-токен ----------
         GetVKTokenState: () => cachedVkState,
 
-        // На OpenWRT токен вводится вручную — VkLogin не открывает окно,
-        // просто возвращает true, чтобы UI не падал.
+        // На OpenWRT токен вводится вручную — VkLogin не открывает окно.
         VkLogin: () => false,
 
         DeleteVKToken: () => {
@@ -144,7 +162,7 @@
 
         ValidateVKToken: () => cachedVkState,
 
-        // Прямая установка токена — используется кастомным UI.
+        // Прямая установка токена — используется UI-полем ввода.
         SetVKToken: (token) => {
             post('/api/vktoken', { token }).then(refresh).catch(() => {});
             return true;

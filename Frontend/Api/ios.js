@@ -54,6 +54,9 @@
     setInterval(refreshAll, 800);
 
     window.api = {
+        // ---------- платформа ----------
+        IsOpenWRT: () => false,
+
         GetConfigsJson: () => cachedConfigs,
         GetSettingsJson: () => cachedSettings,
         GetLogsJson: () => cachedLogs,
@@ -66,7 +69,6 @@
         Connect: (id) => { send('connect', { configId: Number(id) }); setTimeout(refreshAll, 500); return true; },
         Disconnect: () => { send('disconnect'); setTimeout(refreshAll, 500); return true; },
 
-        // ---------- глобально выбранный конфиг ----------
         SetSelectedConfigJson: (json) => {
             send('setSelectedConfigJson', { json: String(json) });
             try { cachedSelectedConfig = json; } catch (_) {}
@@ -74,19 +76,13 @@
         },
         GetSelectedConfigJson: () => cachedSelectedConfig,
 
-        // ---------- флаг «ядро скачивается» ----------
         IsCoreDownloading: () => false,
 
-        // ---------- ядро: на iOS update НЕ поддерживается ----------
         CheckCoreUpdate: () => EMPTY_UPDATE,
         UpdateCore: () => false,
         UpdateCoreAndWait: () => false,
 
-        // ---------- LaLune ----------
-        CheckLaLuneUpdate: () => {
-            // iOS: заглушка — реальная проверка не реализована.
-            return EMPTY_UPDATE;
-        },
+        CheckLaLuneUpdate: () => EMPTY_UPDATE,
         OpenLaLuneReleases: () => {
             try {
                 window.open('https://github.com/Endlad2/LaLune/releases/latest', '_blank');
@@ -94,7 +90,6 @@
             } catch (_) { return false; }
         },
 
-        // ---------- VK авторизация ----------
         GetVKTokenState: () => {
             let result = EMPTY_TOKEN_STATE;
             send('getVKTokenState', null, (r) => { if (r) result = r; });
@@ -114,7 +109,8 @@
             return result;
         },
 
-        // ---------- Auto API ----------
+        // SetVKToken на iOS не реализован — токен из &token= сохраняет Swift.
+
         RunVkAutoApiCalls: () => '{"error":"ios not supported"}',
         PollAutoApiResult: () => '{"pending":true}',
         FinishVkCalls: () => false,

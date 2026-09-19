@@ -18,9 +18,12 @@ package libs
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 // TokenFilePath — полный путь к token.json в папке приложения.
@@ -54,4 +57,43 @@ func (a *AppCore) ReadTokenFromFileStrict() (string, error) {
 		return "", os.ErrNotExist
 	}
 	return token, nil
+}
+
+// SaveTokenToFile — пишет токен в token.json в формате, который читает
+// ReadTokenFromFile (ключ "Token"). На Linux выставляет 0600.
+//
+// Возвращает полный путь к сохранённому файлу.
+func (a *AppCore) SaveTokenToFile(token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", fmt.Errorf("пустой токен")
+	}
+
+	path := a.TokenFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return "", err
+	}
+
+	payload := struct {
+		Token   string `json:"Token"`
+		SavedAt string `json:"SavedAt"`
+	}{
+		Token:   token,
+		SavedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return "", err
+	}
+
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(path, 0600)
+	}
+
+	return path, nil
 }

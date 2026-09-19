@@ -82,11 +82,14 @@ type Config struct {
 	Hashes   string `json:"hashes"`
 	Name     string `json:"name"`
 	RawLink  string `json:"rawLink"`
+	// Token извлекается из csqtt://...&token=... при добавлении конфига
+	// и сразу сохраняется в /etc/csqtt/token.json. В configs.json не пишется.
+	Token string `json:"-"`
 }
 
 type Settings struct {
 	AuthMode          string `json:"authMode"`   // "manual" | "autoVk"
-	Workers           int    `json:"workers"`    // общее число воркеров
+	Workers           int    `json:"workers"`    // общее число воркеров (1..127)
 	VkAuthMode        string `json:"vkAuthMode"` // legacy
 	Obfs              string `json:"obfs"`
 	Fingerprint       string `json:"fingerprint"`
@@ -167,7 +170,6 @@ func main() {
 // ============================================================
 
 func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
-	// webFS — корень внутри embed.FS (убираем префикс "web/").
 	webFS, err := fs.Sub(embedFS, "web")
 	if err != nil {
 		http.Error(w, "embed broken", http.StatusInternalServerError)
@@ -191,7 +193,6 @@ func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = f.Close()
 
-	// Заголовки кэширования/типов.
 	switch {
 	case strings.HasSuffix(path, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -257,8 +258,16 @@ func (a *App) handleConfigs(w http.ResponseWriter, r *http.Request) {
 
 		a.mu.Lock()
 		cfg.ID = time.Now().UnixNano()
+		// Токен не храним в configs.json — он уже улетел в token.json.
+		tokenFromLink := strings.TrimSpace(cfg.Token)
+		cfg.Token = ""
 		a.configs = append(a.configs, cfg)
 		a.saveConfigsLocked()
+
+		// Если из ссылки пришёл токен — сразу пишем в token.json.
+		if tokenFromLink != "" {
+			a.saveVkTokenLocked(tokenFromLink)
+		}
 		a.mu.Unlock()
 
 		writeJSON(w, map[string]interface{}{"ok": true, "id": cfg.ID})
@@ -390,7 +399,7 @@ func (a *App) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// M = workers, N = round(workers/9) * 3 (кратно 3), мин 3.
+	// M = workers, N = ceil(workers/9), округлённое до кратного 3, мин 3.
 	workers := settings.Workers
 	if workers < 1 {
 		workers = 27
@@ -574,16 +583,9 @@ func (a *App) handleVkToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		tf := TokenFile{
-			Token:   tok,
-			SavedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		data, _ := json.MarshalIndent(tf, "", "  ")
-		path := filepath.Join(csqttDir, tokenFile)
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			httpError(w, 500, "save failed")
-			return
-		}
+		a.mu.Lock()
+		a.saveVkTokenLocked(tok)
+		a.mu.Unlock()
 
 		writeJSON(w, map[string]interface{}{"ok": true})
 
@@ -674,6 +676,21 @@ func (a *App) readVkToken() string {
 	return strings.TrimSpace(tf.Token)
 }
 
+// saveVkTokenLocked — пишет токен в /etc/csqtt/token.json.
+// Вызывать только с захваченным a.mu.
+func (a *App) saveVkTokenLocked(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	tf := TokenFile{
+		Token:   token,
+		SavedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, _ := json.MarshalIndent(tf, "", "  ")
+	_ = os.WriteFile(filepath.Join(csqttDir, tokenFile), data, 0600)
+}
+
 func defaultSettings() Settings {
 	return Settings{
 		AuthMode:      "manual",
@@ -742,6 +759,11 @@ func parseCsqttLink(link string) Config {
 		cfg.Password = password
 		cfg.Hashes = hashes
 		cfg.Name = cfg.Peer
+
+		// Токен прямо в ссылке — сохранится в token.json.
+		if tok := params["token"]; tok != "" {
+			cfg.Token = tok
+		}
 		return cfg
 	}
 

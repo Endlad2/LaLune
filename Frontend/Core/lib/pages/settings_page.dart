@@ -24,12 +24,15 @@ class _SettingsPageState extends State<SettingsPage> {
   final _vkHashesCtl = TextEditingController();
   final _passwordCtl = TextEditingController();
   final _workersCtl = TextEditingController();
-  final _autoApiWorkersCtl = TextEditingController();
   final _clientIdsCtl = TextEditingController();
   final _deviceIdCtl = TextEditingController();
+  final _vkTokenCtl = TextEditingController();
 
   String _authMode = 'manual';
   bool _enableSmartTunnel = false;
+
+  bool _isOpenWRT = false;
+  bool _vkTokenDirty = false;
 
   VkTokenState _vkState = VkTokenState.empty;
   Timer? _vkPollTimer;
@@ -38,6 +41,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    _isOpenWRT = Api.isOpenWRT();
     _load();
     _startVkPolling();
   }
@@ -49,9 +53,9 @@ class _SettingsPageState extends State<SettingsPage> {
     _vkHashesCtl.dispose();
     _passwordCtl.dispose();
     _workersCtl.dispose();
-    _autoApiWorkersCtl.dispose();
     _clientIdsCtl.dispose();
     _deviceIdCtl.dispose();
+    _vkTokenCtl.dispose();
     super.dispose();
   }
 
@@ -78,7 +82,6 @@ class _SettingsPageState extends State<SettingsPage> {
     }
 
     _workersCtl.text = s.workers.toString();
-    _autoApiWorkersCtl.text = s.autoApiWorkers.toString();
     _clientIdsCtl.text = s.clientIds;
     _deviceIdCtl.text = s.deviceId;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
@@ -124,19 +127,13 @@ class _SettingsPageState extends State<SettingsPage> {
     if (w < kMinWorkers) w = kMinWorkers;
     if (w > kMaxWorkers) w = kMaxWorkers;
 
-    var aw = int.tryParse(_autoApiWorkersCtl.text) ?? kDefaultAutoApiWorkers;
-    if (aw < kMinAutoApiWorkers) aw = kMinAutoApiWorkers;
-    if (aw > kMaxAutoApiWorkers) aw = kMaxAutoApiWorkers;
-
     _workersCtl.text = w.toString();
-    _autoApiWorkersCtl.text = aw.toString();
 
     final s = _s.copyWith(
       peer: cfg?.peer ?? _peerCtl.text.trim(),
       vkHashes: cfg?.hashes ?? _vkHashesCtl.text.trim(),
       password: cfg?.password ?? _passwordCtl.text,
       workers: w,
-      autoApiWorkers: aw,
       clientIds: _clientIdsCtl.text.trim(),
       deviceId: _s.deviceId,
       authMode: _authMode,
@@ -172,17 +169,19 @@ class _SettingsPageState extends State<SettingsPage> {
   // ============================================================
 
   void _setAuthMode(String mode) {
-    if (mode == 'autoApi' || mode == 'autoVk') {
+    if (mode == 'autoVk') {
       final st = Api.validateVKToken();
       setState(() => _vkState = st);
       if (!st.hasToken) {
-        Toast.show(context, 'Требуется авторизация ВК', isError: true);
+        Toast.show(context, 'Требуется VK-токен', isError: true);
         return;
       }
     }
     setState(() => _authMode = mode);
     _markDirty();
   }
+
+  // ---- Desktop / Android / iOS: обычный вход через WebView ----
 
   Future<void> _onLoginTap() async {
     final st = Api.validateVKToken();
@@ -221,139 +220,261 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Widget _buildAuthBlock() {
+  // ---- OpenWRT: поле ручного ввода токена ----
+
+  void _saveVkTokenOpenWRT() {
+    final t = _vkTokenCtl.text.trim();
+    if (t.isEmpty) {
+      Toast.show(context, 'Введите токен', isError: true);
+      return;
+    }
+    final ok = Api.setVKToken(t);
+    if (ok) {
+      Toast.show(context, 'Токен сохранён');
+      setState(() => _vkTokenDirty = false);
+    } else {
+      Toast.show(context, 'Не удалось сохранить токен', isError: true);
+    }
+  }
+
+  void _clearVkTokenOpenWRT() {
+    Api.deleteVKToken();
+    _vkTokenCtl.clear();
+    setState(() {
+      _vkState = VkTokenState.empty;
+      _vkTokenDirty = false;
+      if (_authMode == 'autoVk') _authMode = 'manual';
+    });
+    Toast.show(context, 'Токен удалён');
+  }
+
+  Widget _buildOpenWrtTokenBlock() {
     final hasToken = _vkState.hasToken;
-    final isAutoApi = _authMode == 'autoApi';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        GlassCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('РЕЖИМ АВТОРИЗАЦИИ',
-                style: TextStyle(fontSize: 10.5, letterSpacing: 0.7,
-                  fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
-              const SizedBox(height: 10),
-
-              _authOption('manual', 'Ручной', 'Ввести хеши вручную', enabled: true),
-              _authOption('autoApi', 'Авто API', 'Создавать звонки через VK API',
-                  enabled: hasToken),
-              _authOption('autoVk', 'Авто ВК', 'Ядро само авторизуется через VK',
-                  enabled: hasToken),
-
-              const SizedBox(height: 12),
-
-              if (!hasToken)
-                _buildLoginButton()
-              else
-                _buildTokenActiveBadge(),
-
-              if (_vkState.fetching) ...[
-                const SizedBox(height: 10),
-                LinearProgressIndicator(
-                  value: _vkState.progress / 100.0,
-                  backgroundColor: Colors.white.withOpacity(0.1),
-                  valueColor: const AlwaysStoppedAnimation(Color(0xFFF7E84E)),
-                  minHeight: 4,
+        // Метка состояния
+        if (hasToken)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF7CFF9A).withOpacity(0.10),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF7CFF9A).withOpacity(0.45)),
+            ),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('Токен активен',
+                    style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
                 ),
-                const SizedBox(height: 6),
-                Text(_vkState.message,
-                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
+                IconButton(
+                  tooltip: 'Удалить токен',
+                  onPressed: _clearVkTokenOpenWRT,
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                ),
               ],
-
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF7E84E).withOpacity(0.14),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: const Color(0xFFF7E84E).withOpacity(0.55),
-                    width: 1,
+            ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.04),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withOpacity(0.12)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.key_outlined, size: 16, color: Colors.white.withOpacity(0.6)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'VK-токен не задан',
+                    style: TextStyle(fontSize: 13, color: Colors.white.withOpacity(0.75)),
                   ),
                 ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.tips_and_updates_outlined,
-                        size: 16, color: Color(0xFFF7E84E)),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Если зависло получение токена — нажмите на «Войти» заново',
-                        style: TextStyle(
-                          fontSize: 12,
-                          height: 1.45,
-                          color: Colors.white.withOpacity(0.85),
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              if (_authMode == 'manual') ...[
-                const SizedBox(height: 14),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('Хеши (через запятую или +)',
-                    style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65))),
-                ),
-                TextField(
-                  controller: _vkHashesCtl,
-                  minLines: 2, maxLines: 4,
-                  style: const TextStyle(fontSize: 13),
-                  decoration: const InputDecoration(hintText: 'hash1,hash2,hash3'),
-                  onChanged: (_) => _markDirty(),
-                ),
               ],
-            ],
+            ),
+          ),
+
+        const SizedBox(height: 12),
+
+        // Поле ввода
+        TextField(
+          controller: _vkTokenCtl,
+          obscureText: false,
+          maxLines: 1,
+          style: const TextStyle(fontSize: 13),
+          decoration: const InputDecoration(
+            hintText: 'vk1.a.xxxxxxxxxxxxxxxxxxxxxxxx',
+            labelText: 'VK Token',
+          ),
+          onChanged: (_) {
+            final nonEmpty = _vkTokenCtl.text.trim().isNotEmpty;
+            if (nonEmpty != _vkTokenDirty) {
+              setState(() => _vkTokenDirty = nonEmpty);
+            }
+          },
+          onSubmitted: (_) => _saveVkTokenOpenWRT(),
+        ),
+
+        const SizedBox(height: 8),
+
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _vkTokenDirty ? _saveVkTokenOpenWRT : null,
+            icon: const Icon(Icons.save_outlined, size: 16),
+            label: const Text('Сохранить токен'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: BorderSide(color: Colors.white.withOpacity(0.2)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
           ),
         ),
 
-        if (isAutoApi) ...[
-          const SizedBox(height: 14),
-          _buildAutoApiBlock(),
-        ],
+        const SizedBox(height: 12),
+
+        // Инструкция
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF7E84E).withOpacity(0.10),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: const Color(0xFFF7E84E).withOpacity(0.45),
+              width: 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.tips_and_updates_outlined,
+                      size: 16, color: Color(0xFFF7E84E)),
+                  const SizedBox(width: 10),
+                  Text('Как получить VK-токен',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white.withOpacity(0.9),
+                    )),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '1. Скачайте LaLune для Windows.\n'
+                '2. Войдите в аккаунт ВК (Настройки → Авторизация → Войти).\n'
+                '3. Откройте файл:\n'
+                '   %APPDATA%\\.la-lune\\token.json\n'
+                '4. Скопируйте значение из строки "Token": и вставьте сюда.',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.5,
+                  color: Colors.white.withOpacity(0.85),
+                ),
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
 
-  Widget _buildAutoApiBlock() {
+  Widget _buildAuthBlock() {
+    final hasToken = _vkState.hasToken;
+
     return GlassCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('АВТО API',
+          Text('РЕЖИМ АВТОРИЗАЦИИ',
             style: TextStyle(fontSize: 10.5, letterSpacing: 0.7,
               fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
           const SizedBox(height: 10),
 
-          Row(
-            children: [
-              SizedBox(
-                width: 170,
-                child: Text('Воркеров на хеш',
-                  style: TextStyle(color: Colors.white.withOpacity(0.7))),
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _autoApiWorkersCtl,
-                  keyboardType: TextInputType.number,
-                  style: const TextStyle(fontSize: 13.5),
-                  decoration: const InputDecoration(
-                    hintText: '9',
-                    helperText: 'От 9 до 27',
-                    helperStyle: TextStyle(fontSize: 10.5),
-                  ),
-                  onChanged: (_) => _markDirty(),
+          _authOption('manual', 'Ручной', 'Ввести хеши вручную', enabled: true),
+          _authOption('autoVk', 'Авто ВК', 'Ядро само авторизуется через VK',
+              enabled: hasToken),
+
+          const SizedBox(height: 12),
+
+          // OpenWRT — поле ввода токена.
+          // Desktop/Android/iOS — кнопка «Войти» / бейдж «Активно».
+          if (_isOpenWRT)
+            _buildOpenWrtTokenBlock()
+          else if (!hasToken)
+            _buildLoginButton()
+          else
+            _buildTokenActiveBadge(),
+
+          if (!_isOpenWRT && _vkState.fetching) ...[
+            const SizedBox(height: 10),
+            LinearProgressIndicator(
+              value: _vkState.progress / 100.0,
+              backgroundColor: Colors.white.withOpacity(0.1),
+              valueColor: const AlwaysStoppedAnimation(Color(0xFFF7E84E)),
+              minHeight: 4,
+            ),
+            const SizedBox(height: 6),
+            Text(_vkState.message,
+              style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
+          ],
+
+          if (!_isOpenWRT) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7E84E).withOpacity(0.14),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: const Color(0xFFF7E84E).withOpacity(0.55),
+                  width: 1,
                 ),
               ),
-            ],
-          ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.tips_and_updates_outlined,
+                      size: 16, color: Color(0xFFF7E84E)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Если зависло получение токена — нажмите на «Войти» заново',
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.45,
+                        color: Colors.white.withOpacity(0.85),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          if (_authMode == 'manual') ...[
+            const SizedBox(height: 14),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text('Хеши (через запятую или +)',
+                style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65))),
+            ),
+            TextField(
+              controller: _vkHashesCtl,
+              minLines: 2, maxLines: 4,
+              style: const TextStyle(fontSize: 13),
+              decoration: const InputDecoration(hintText: 'hash1,hash2,hash3'),
+              onChanged: (_) => _markDirty(),
+            ),
+          ],
         ],
       ),
     );
@@ -418,7 +539,7 @@ class _SettingsPageState extends State<SettingsPage> {
               Api.deleteVKToken();
               setState(() {
                 _vkState = VkTokenState.empty;
-                if (_authMode == 'autoApi' || _authMode == 'autoVk') {
+                if (_authMode == 'autoVk') {
                   _authMode = 'manual';
                 }
               });
@@ -559,7 +680,7 @@ class _SettingsPageState extends State<SettingsPage> {
                               keyboardType: TextInputType.number,
                               style: const TextStyle(fontSize: 13.5),
                               decoration: const InputDecoration(
-                                hintText: '9',
+                                hintText: '27',
                                 helperText: 'От 1 до 127',
                                 helperStyle: TextStyle(fontSize: 10.5),
                               ),
@@ -647,7 +768,6 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               const SizedBox(height: 18),
 
-              // --------- Экспериментальные ---------
               _sectionTitle('Экспериментальные'),
               GlassCard(
                 child: Column(
