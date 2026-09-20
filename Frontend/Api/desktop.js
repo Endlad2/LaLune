@@ -38,9 +38,6 @@
     setTimeout(refresh, 200);
 
     window.api = {
-        // ---------- платформа ----------
-        IsOpenWRT: () => false,
-
         GetConfigsJson: () => cachedConfigs,
         GetSettingsJson: () => cachedSettings,
         GetLogsJson: () => cachedLogs,
@@ -176,6 +173,7 @@
         },
 
         // VkLogin — открывает LaLuneTokenFetcher.exe (Desktop).
+        // На Android это же имя открывает WebView.
         VkLogin: () => {
             const api = go();
             if (api && api.LoginVK) {
@@ -204,10 +202,6 @@
             }
             return cachedVKTokenState;
         },
-
-        // SetVKToken на десктопе НЕ реализован — токен сохраняется
-        // самим Go-бэкендом при SaveConfig, если в ссылке есть &token=.
-        // Метод отсутствует намеренно.
 
         RunVkAutoApiCalls: () => {
             const api = go();

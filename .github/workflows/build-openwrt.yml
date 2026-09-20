@@ -1,98 +1,67 @@
-# SPDX-FileCopyrightText: 2026 luminescq
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-#
-# Сборка LaLune-owrt_aarch64 для OpenWRT.
-#
-# Использует официальный OpenWRT SDK:
-#   openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-#
-# Артефакт: LaLune-owrt_aarch64 (в релизе — именно так).
-
 name: Build OpenWRT
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+      - release
+    paths:
+      - 'OpenWRT/**'
+      - '.github/workflows/build-openwrt.yml'
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "RouteRich 24.10.8"
+            short_name: "RouteRich"
+            rust_target: "aarch64-unknown-linux-musl"
+
+    name: "OpenWRT - ${{ matrix.name }}"
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Go (для сборки бинарника)
-        uses: actions/setup-go@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: '1.22'
+          targets: ${{ matrix.rust_target }}
 
-      - name: Скачивание OpenWRT SDK
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build owrt-client
+        working-directory: OpenWRT
         run: |
-          set -e
-          SDK_URL="https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
-          echo "Downloading $SDK_URL"
-          curl -fsSL -o sdk.tar.zst "$SDK_URL"
-          mkdir -p sdk
-          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
-          ls -la sdk/
-          ls -la sdk/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl/bin/ | head -20
+          cross build --release --target ${{ matrix.rust_target }}
+          ls -la target/${{ matrix.rust_target }}/release/
 
-      - name: Сборка бинарника через SDK-тулчейн
+      - name: Verify binary
+        working-directory: OpenWRT
         run: |
-          set -e
-          SDK="$GITHUB_WORKSPACE/sdk"
-          TOOLCHAIN="$SDK/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl"
-          export PATH="$TOOLCHAIN/bin:$PATH"
-          export STAGING_DIR="$SDK/staging_dir"
-          export CGO_ENABLED=1
-          export GOOS=linux
-          export GOARCH=arm64
-          export GOARM=8
-          export CC=aarch64-openwrt-linux-gcc
-          export CXX=aarch64-openwrt-linux-g++
-          export AR=aarch64-openwrt-linux-ar
-          export LD=aarch64-openwrt-linux-ld
+          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
+          file "$BIN"
+          file "$BIN" | grep -q "ARM aarch64" || { echo "Not ARM64!"; exit 1; }
 
-          cd OpenWRT
-          go mod tidy
-          go build -ldflags="-s -w" -o ../LaLune-owrt_aarch64 .
-          cd ..
-
-          file LaLune-owrt_aarch64
-          ls -la LaLune-owrt_aarch64
-
-      - name: Сборка фронтенда для OpenWRT
+      - name: Prepare package
+        working-directory: OpenWRT
         run: |
-          set -e
-          # Установка Flutter (или можно использовать предварительно собранный output)
-          if [ -d "Frontend/output" ] && [ -f "Frontend/output/index.html" ]; then
-            echo "Использую готовый Frontend/output"
-          else
-            echo "Flutter не установлен — пропускаю сборку фронта"
-          fi
+          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
+          OUT="/tmp/owrt-client-${{ matrix.short_name }}"
+          mkdir -p "$OUT"
+          cp "$BIN" "$OUT/owrt-client"
+          cp README.md "$OUT/README.md"
+          printf '%s\n' '# Скопируй в файл config (без .example) рядом с бинарником.' 'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' > "$OUT/config.example"
+          ls -la "$OUT"
 
-      - name: Упаковка артефакта
-        run: |
-          set -e
-          mkdir -p dist
-          cp LaLune-owrt_aarch64 dist/
-          cp OpenWRT/lalune-owrt-install.sh dist/
-          chmod +x dist/lalune-owrt-install.sh
-          ls -la dist/
-
-      - name: Upload artifact
+      - name: Upload OpenWRT Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-OpenWRT-aarch64
-          path: dist/
-
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/LaLune-owrt_aarch64
-            dist/lalune-owrt-install.sh
+          name: LaLune-OpenWRT-${{ matrix.short_name }}
+          path: /tmp/owrt-client-${{ matrix.short_name }}/
+          if-no-files-found: error

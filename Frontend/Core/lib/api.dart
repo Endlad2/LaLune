@@ -29,13 +29,12 @@ import 'dart:js_interop';
 @JS('window.api.GetSelectedConfigJson') external String _getSelectedConfigJson();
 @JS('window.api.IsCoreDownloading') external bool _isCoreDownloading();
 
-// --- платформенные проверки ---
-@JS('window.api.IsOpenWRT') external bool _isOpenWRT();
-@JS('window.api.SetVKToken') external bool _setVKToken(String token);
-
 const int kDefaultWorkers = 9;
 const int kMinWorkers = 1;
 const int kMaxWorkers = 127;
+const int kDefaultAutoApiWorkers = 9;
+const int kMinAutoApiWorkers = 9;
+const int kMaxAutoApiWorkers = 27;
 
 class SelectedConfig {
   static ConfigItem? _current;
@@ -100,6 +99,7 @@ class Settings {
   final String vkHashes;
   final String vkJsToken;
   final int workers;
+  final int autoApiWorkers;
   final String password;
   final String obfs;
   final String fingerprint;
@@ -113,6 +113,8 @@ class Settings {
   final String vkAuthMode;
   final bool allowHashRedistribution;
   final bool validateVkHashes;
+
+  /// Экспериментальные функции.
   final bool enableSmartTunnel;
 
   Settings({
@@ -120,6 +122,7 @@ class Settings {
     this.vkHashes = '',
     this.vkJsToken = '',
     this.workers = kDefaultWorkers,
+    this.autoApiWorkers = kDefaultAutoApiWorkers,
     this.password = '',
     this.obfs = 'audio',
     this.fingerprint = 'chrome',
@@ -141,11 +144,16 @@ class Settings {
     if (w < kMinWorkers) w = kMinWorkers;
     if (w > kMaxWorkers) w = kMaxWorkers;
 
+    var aw = ((j['autoApiWorkers'] ?? kDefaultAutoApiWorkers) as num).toInt();
+    if (aw < kMinAutoApiWorkers) aw = kMinAutoApiWorkers;
+    if (aw > kMaxAutoApiWorkers) aw = kMaxAutoApiWorkers;
+
     return Settings(
       peer: (j['peer'] ?? '') as String,
       vkHashes: (j['vkHashes'] ?? '') as String,
       vkJsToken: (j['vkJsToken'] ?? '') as String,
       workers: w,
+      autoApiWorkers: aw,
       password: (j['password'] ?? '') as String,
       obfs: (j['obfs'] ?? 'audio') as String,
       fingerprint: (j['fingerprint'] ?? 'chrome') as String,
@@ -168,6 +176,7 @@ class Settings {
     'vkHashes': vkHashes,
     'vkJsToken': vkJsToken,
     'workers': workers,
+    'autoApiWorkers': autoApiWorkers,
     'password': password,
     'obfs': obfs,
     'fingerprint': fingerprint,
@@ -186,7 +195,7 @@ class Settings {
 
   Settings copyWith({
     String? peer, String? vkHashes, String? vkJsToken,
-    int? workers,
+    int? workers, int? autoApiWorkers,
     String? password, String? obfs, String? fingerprint, String? clientIds,
     String? deviceId, String? authMode, String? turnTransport,
     String? turnHost, String? turnPort, String? captchaMode,
@@ -197,6 +206,7 @@ class Settings {
     vkHashes: vkHashes ?? this.vkHashes,
     vkJsToken: vkJsToken ?? this.vkJsToken,
     workers: workers ?? this.workers,
+    autoApiWorkers: autoApiWorkers ?? this.autoApiWorkers,
     password: password ?? this.password,
     obfs: obfs ?? this.obfs,
     fingerprint: fingerprint ?? this.fingerprint,
@@ -287,37 +297,6 @@ class AutoApiResult {
 class Api {
   static void init() {}
 
-  // ------------------------------------------------------------
-  //  Платформа
-  // ------------------------------------------------------------
-
-  /// true — если фронт запущен на OpenWRT-бэкенде (порт 6543).
-  static bool isOpenWRT() {
-    try { return _isOpenWRT(); } catch (_) { return false; }
-  }
-
-  /// Сохранить VK-токен напрямую (только OpenWRT).
-  /// На desktop/android/ios метод отсутствует — вернёт false.
-  static bool setVKToken(String token) {
-    if (token.trim().isEmpty) return false;
-    try { return _setVKToken(token.trim()); } catch (_) { return false; }
-  }
-
-  /// Достать &token=... из csqtt:// ссылки. Возвращает null, если нет.
-  static String? extractTokenFromLink(String link) {
-    final m = RegExp(r'[?&]token=([^&]+)').firstMatch(link);
-    if (m == null) return null;
-    try {
-      return Uri.decodeComponent(m.group(1)!);
-    } catch (_) {
-      return m.group(1);
-    }
-  }
-
-  // ------------------------------------------------------------
-  //  Конфиги
-  // ------------------------------------------------------------
-
   static List<ConfigItem> getConfigs() {
     try {
       final arr = jsonDecode(_getConfigsJson()) as List;
@@ -325,17 +304,8 @@ class Api {
     } catch (_) { return []; }
   }
 
-  static bool saveConfig(String link) {
-    try { return _saveConfig(link); } catch (_) { return false; }
-  }
-
-  static bool deleteConfig(int id) {
-    try { return _deleteConfig(id); } catch (_) { return false; }
-  }
-
-  // ------------------------------------------------------------
-  //  Настройки
-  // ------------------------------------------------------------
+  static bool saveConfig(String link) { try { return _saveConfig(link); } catch (_) { return false; } }
+  static bool deleteConfig(int id) { try { return _deleteConfig(id); } catch (_) { return false; } }
 
   static Settings getSettings() {
     try { return Settings.fromJson(jsonDecode(_getSettingsJson()) as Map<String, dynamic>); }
@@ -346,10 +316,6 @@ class Api {
     try { return _saveSettings(jsonEncode(s.toJson())); } catch (_) { return false; }
   }
 
-  // ------------------------------------------------------------
-  //  Логи
-  // ------------------------------------------------------------
-
   static List<String> getLogs() {
     try {
       final arr = jsonDecode(_getLogsJson()) as List;
@@ -357,13 +323,7 @@ class Api {
     } catch (_) { return []; }
   }
 
-  static bool clearLogs() {
-    try { return _clearLogs(); } catch (_) { return false; }
-  }
-
-  // ------------------------------------------------------------
-  //  Подключение
-  // ------------------------------------------------------------
+  static bool clearLogs() { try { return _clearLogs(); } catch (_) { return false; } }
 
   static bool isConnected() {
     try {
@@ -372,53 +332,30 @@ class Api {
     } catch (_) { return false; }
   }
 
-  static bool connect(int id) {
-    try { return _connect(id); } catch (_) { return false; }
-  }
-
-  static bool disconnect() {
-    try { return _disconnect(); } catch (_) { return false; }
-  }
-
-  // ------------------------------------------------------------
-  //  Обновления
-  // ------------------------------------------------------------
+  static bool connect(int id) { try { return _connect(id); } catch (_) { return false; } }
+  static bool disconnect() { try { return _disconnect(); } catch (_) { return false; } }
 
   static UpdateInfo checkCoreUpdate() {
     try { return UpdateInfo.fromJsonString(_checkCoreUpdate()); }
     catch (_) { return UpdateInfo.empty; }
   }
-  static bool updateCore() {
-    try { return _updateCore(); } catch (_) { return false; }
-  }
-  static bool updateCoreAndWait() {
-    try { return _updateCoreAndWait(); } catch (_) { return false; }
-  }
+  static bool updateCore() { try { return _updateCore(); } catch (_) { return false; } }
+  static bool updateCoreAndWait() { try { return _updateCoreAndWait(); } catch (_) { return false; } }
 
   static UpdateInfo checkLaLuneUpdate() {
     try { return UpdateInfo.fromJsonString(_checkLaLuneUpdate()); }
     catch (_) { return UpdateInfo.empty; }
   }
-  static bool openLaLuneReleases() {
-    try { return _openLaLuneReleases(); } catch (_) { return false; }
-  }
-
-  // ------------------------------------------------------------
-  //  VK
-  // ------------------------------------------------------------
+  static bool openLaLuneReleases() { try { return _openLaLuneReleases(); } catch (_) { return false; } }
 
   static VkTokenState getVKTokenState() {
     try { return VkTokenState.fromJsonString(_getVKTokenState()); }
     catch (_) { return VkTokenState.empty; }
   }
 
-  static bool vkLogin() {
-    try { return _vkLogin(); } catch (_) { return false; }
-  }
+  static bool vkLogin() { try { return _vkLogin(); } catch (_) { return false; } }
 
-  static bool deleteVKToken() {
-    try { return _deleteVKToken(); } catch (_) { return false; }
-  }
+  static bool deleteVKToken() { try { return _deleteVKToken(); } catch (_) { return false; } }
 
   static VkTokenState validateVKToken() {
     try { return VkTokenState.fromJsonString(_validateVKToken()); }
@@ -437,16 +374,8 @@ class Api {
     try { return _finishVkCalls(jsonEncode(callIds)); } catch (_) { return false; }
   }
 
-  // ------------------------------------------------------------
-  //  Прочее
-  // ------------------------------------------------------------
-
-  static String getDeviceId() {
-    try { return _getDeviceId(); } catch (_) { return ''; }
-  }
-  static String regenerateDeviceId() {
-    try { return _regenerateDeviceId(); } catch (_) { return ''; }
-  }
+  static String getDeviceId() { try { return _getDeviceId(); } catch (_) { return ''; } }
+  static String regenerateDeviceId() { try { return _regenerateDeviceId(); } catch (_) { return ''; } }
 
   static bool isCoreDownloading() {
     try { return _isCoreDownloading(); } catch (_) { return false; }

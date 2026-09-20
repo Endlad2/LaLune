@@ -128,129 +128,6 @@ jobs:
           path: ${{ steps.find_apk.outputs.apk }}
           if-no-files-found: error
 
-  build-openwrt:
-    name: OpenWRT aarch64 (musl)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.22' }
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: '3.24.5', channel: stable, cache: true }
-      - run: flutter config --enable-web
-
-      # 1) Собираем Dart-фронтенд под OpenWRT.
-      #    Результат: Frontend/output/ (index.html, api.js, flutter_bootstrap.js, assets/)
-      - name: Build Dart frontend for OpenWRT
-        run: python3 build_frontend.py --platform OpenWRT
-
-      # 2) Копируем Frontend/output/ в OpenWRT/web/ — именно эту папку
-      #    вкомпилирует //go:embed web в бинарник.
-      - name: Copy frontend into OpenWRT/web
-        run: |
-          set -euo pipefail
-          test -f Frontend/output/index.html || { echo "Frontend/output/index.html MISSING"; exit 1; }
-          test -f Frontend/output/api.js     || { echo "Frontend/output/api.js MISSING"; exit 1; }
-
-          rm -rf OpenWRT/web
-          mkdir -p OpenWRT/web
-          cp -r Frontend/output/. OpenWRT/web/
-
-          echo "--- OpenWRT/web ---"
-          find OpenWRT/web -maxdepth 2 -type f | head -50
-          test -f OpenWRT/web/index.html       || { echo "web/index.html MISSING"; exit 1; }
-          test -f OpenWRT/web/api.js           || { echo "web/api.js MISSING"; exit 1; }
-          test -f OpenWRT/web/flutter_bootstrap.js || echo "warn: flutter_bootstrap.js не найден"
-
-      - name: Cache OpenWRT SDK
-        id: sdk-cache
-        uses: actions/cache@v4
-        with:
-          path: sdk
-          key: openwrt-sdk-25.12.5-armsr-armv8-gcc-14.3.0-musl
-
-      - name: Download OpenWRT SDK
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          SDK_URL="https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
-          echo "Downloading: $SDK_URL"
-          curl -fL --retry 3 -o sdk.tar.zst "$SDK_URL"
-          mkdir -p sdk
-          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
-          rm -f sdk.tar.zst
-
-      - name: Export SDK toolchain to environment
-        run: |
-          set -euo pipefail
-          TOOLCHAIN_DIR="$(find "$GITHUB_WORKSPACE/sdk/staging_dir" -maxdepth 1 -type d -name 'toolchain-*' | head -n1)"
-          if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "Не нашёл toolchain-* в sdk/staging_dir"
-            ls -la "$GITHUB_WORKSPACE/sdk/staging_dir" || true
-            exit 1
-          fi
-          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
-
-          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
-          echo "STAGING_DIR=$GITHUB_WORKSPACE/sdk/staging_dir" >> "$GITHUB_ENV"
-
-          echo "CC=aarch64-openwrt-linux-gcc"          >> "$GITHUB_ENV"
-          echo "CXX=aarch64-openwrt-linux-g++"         >> "$GITHUB_ENV"
-          echo "AR=aarch64-openwrt-linux-ar"           >> "$GITHUB_ENV"
-          echo "LD=aarch64-openwrt-linux-ld"           >> "$GITHUB_ENV"
-          echo "RANLIB=aarch64-openwrt-linux-ranlib"   >> "$GITHUB_ENV"
-          echo "STRIP=aarch64-openwrt-linux-strip"     >> "$GITHUB_ENV"
-
-          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-          echo "GOOS=linux"    >> "$GITHUB_ENV"
-          echo "GOARCH=arm64"  >> "$GITHUB_ENV"
-
-      - name: Verify toolchain visible
-        run: |
-          set -euo pipefail
-          which aarch64-openwrt-linux-gcc
-          aarch64-openwrt-linux-gcc --version
-          go env CC GOOS GOARCH CGO_ENABLED
-
-      - name: Build LaLune-owrt_aarch64
-        run: |
-          set -euo pipefail
-          cd OpenWRT
-          go mod tidy
-          # Фронт уже лежит в OpenWRT/web/ и подхватится через //go:embed web
-          go build -trimpath -ldflags="-s -w" -o ../LaLune-owrt_aarch64 .
-          cd ..
-          file LaLune-owrt_aarch64
-          ls -la LaLune-owrt_aarch64
-
-      - name: Strip binary
-        run: |
-          set -euo pipefail
-          if command -v aarch64-openwrt-linux-strip >/dev/null 2>&1; then
-            aarch64-openwrt-linux-strip LaLune-owrt_aarch64 || true
-          fi
-          file LaLune-owrt_aarch64
-          ls -la LaLune-owrt_aarch64
-
-      - name: Prepare artifact dir
-        run: |
-          set -euo pipefail
-          mkdir -p dist-openwrt
-          cp LaLune-owrt_aarch64 dist-openwrt/
-          if [ -f OpenWRT/lalune-owrt-install.sh ]; then
-            cp OpenWRT/lalune-owrt-install.sh dist-openwrt/
-            chmod +x dist-openwrt/lalune-owrt-install.sh
-          fi
-          ls -la dist-openwrt/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-OpenWRT
-          path: dist-openwrt/
-          if-no-files-found: error
-
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
     runs-on: ${{ matrix.runner }}
@@ -354,44 +231,28 @@ jobs:
       - build-desktop-linux
       - build-desktop-windows
       - build-android
-      - build-openwrt
       - build-token-fetcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with: { path: release }
       - run: find release -type f | head -50
-
       - name: Create ZIP archives
         run: |
           cd release
-
-          zip -r LaLune-Linux.zip   LaLune-Linux   || true
+          zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
-
-          # OpenWRT: бинарник уже самодостаточный (фронт вкомпилирован),
-          # кладём его в корень релиза под именем, которое ждёт установщик.
-          if [ -f "LaLune-OpenWRT/LaLune-owrt_aarch64" ]; then
-            cp "LaLune-OpenWRT/LaLune-owrt_aarch64" ./LaLune-owrt_aarch64
-          fi
-          zip -r LaLune-OpenWRT.zip LaLune-OpenWRT || true
-
           cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
-          cp LaLuneTokenFetcher-Linux/*.zip   ./LaLuneTokenFetcher_Linux.zip   || true
-
+          cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
           ls -la
-
       - id: date
         run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
-
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.date.outputs.date }}
           name: Release ${{ steps.date.outputs.date }}
-          files: |
-            release/*.zip
-            release/LaLune-owrt_aarch64
+          files: release/*.zip
           draft: false
           prerelease: false
           generate_release_notes: true

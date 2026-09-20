@@ -1,105 +1,171 @@
-# LaLune OpenWRT — веб-сервер на Go
+# owrt-client — LaLune для OpenWRT (без SDK)
 
-Бинарник `LaLune-owrt_aarch64` — это веб-сервер с API на `/api/` и
-фронтендом на `/`. Слушает порт **6543**.
+Минималистичный Rust-клиент. Никаких `.ipk`, никакого SDK. Один статический бинарник.
 
-## Установка
+## Как это работает
 
-Однокомандник:
+1. Кладёшь бинарник `owrt-client` на роутер (например, `/usr/bin/` или `/root/`).
+2. Рядом с ним кладёшь файл `config` со ссылкой:
+```
+
+csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=xxx&hashes=h1+h2+h3
+
+```
+3. Запускаешь:
+```
+
+./owrt-client
+
+```
+
+Бинарник:
+- парсит ссылку
+- скачивает ядро CSQTT в `/tmp/owrt-client/`
+- запускает ядро в фоне (`setsid`, отвязка от терминала)
+- пишет stdout/stderr ядра в `/tmp/owrt-client/core.log`
+- **сам завершается**, ядро продолжает работать
+
+## Команды
+
+```
+
+owrt-client          запустить ядро в фоне
+owrt-client logs     показать лог ядра
+owrt-client stop     остановить ядро
+owrt-client status   показать статус
+owrt-client help     справка
+
+```
+
+## Файлы
+
+| Путь | Назначение |
+|---|---|
+| `<рядом>/owrt-client` | бинарник |
+| `<рядом>/config` | ссылка csqtt:// |
+| `/tmp/owrt-client/core.log` | лог ядра |
+| `/tmp/owrt-client/core.pid` | PID ядра |
+| `/tmp/owrt-client/settings.json` | настройки (обфускация, воркеры, deviceId) |
+| `/tmp/owrt-client/client-linux-arm64` | скачанное ядро |
+
+## Скачивание бинарника
+
+Из GitHub Actions → **Build OpenWRT** → артефакт `LaLune-OpenWRT-RouteRich`.
+
+Внутри:
+- `owrt-client` — сам бинарник
+- `config.example` — шаблон конфига
+- `README.md` — эта инструкция
+
+## Установка на роутер
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Endlad2/LaLune/main/OpenWRT/lalune-owrt-install.sh | sh
+# С компьютера
+scp owrt-client root@192.168.1.1:/usr/bin/
+scp config.example root@192.168.1.1:/usr/bin/config
+
+# На роутере
+ssh root@192.168.1.1
+chmod +x /usr/bin/owrt-client
+
+# Правим /usr/bin/config — вставляем свою csqtt:// ссылку
+vi /usr/bin/config
+
+# Запускаем
+/usr/bin/owrt-client
 ```
 
-Скрипт:
+## Сборка вручную
 
-1. `opkg update`
-2. `opkg install curl ca-bundle kmod-tun`
-3. Скачивает `LaLune-owrt_aarch64` из последнего релиза в `/usr/bin/lalune-owrt`
-4. Создаёт `/etc/init.d/lalune-owrt`
-5. Создаёт `/etc/csqtt/` для конфигов
-6. Запускает сервис
+Если бинарник из CI не подходит — собери сам.
 
-## Использование
+### Требования
 
-Открой `http://<router-ip>:6543` в браузере.
+- Rust 1.75+ (`rustup` с [https://rustup.rs](https://rustup.rs))
+- Docker (для `cross`) — либо воспользуйся нативной кросс-сборкой, см. ниже
 
-### Управление сервисом
+### Вариант 1: cross (рекомендуется)
 
 ```
-/etc/init.d/lalune-owrt start
-/etc/init.d/lalune-owrt stop
-/etc/init.d/lalune-owrt restart
+cd OpenWRT
+cargo install cross
+cross build --release --target aarch64-unknown-linux-musl
 ```
 
-## API
+Бинарник появится в `target/aarch64-unknown-linux-musl/release/owrt-client`.
 
-| Метод ↕▾ ↕▾ | Endpoint ↕▾ ↕▾ | Описание ↕▾ ↕▾ |
-|---|---|---|
-| −−GET | −`/api/status` | `{"connected":bool,"installerRunning":bool,"coreRunning":bool}` |
-| −−GET | −`/api/configs` | массив конфигов |
-| −−POST | −`/api/configs` | `{"link":"csqtt://..."}` |
-| −−DELETE | −`/api/configs?id=` | удалить конфиг |
-| −−GET | −`/api/settings` | настройки |
-| −−POST | −`/api/settings` | сохранить настройки |
-| −−GET | −`/api/logs` | массив строк лога |
-| −−POST | −`/api/logs/clear` | очистить лог |
-| −−POST | −`/api/connect` | `{"configId":N}` — запустить установщик |
-| −−POST | −`/api/disconnect` | остановить ядро |
-| −−GET | −`/api/vktoken` | состояние токена |
-| −−POST | −`/api/vktoken` | `{"token":"vk1.a..."}` |
-| −−DELETE | −`/api/vktoken` | удалить токен |
-| −−GET | −`/api/updates` | `{"update":bool,"version":"..."}` |
-| −−POST | −`/api/updates` | запустить обновление |
-| −⚙ |  |  |
-⚙
+### Вариант 2: без Docker
 
-## Конфиги
-
-Хранятся в `/etc/csqtt/`:
-
-| Файл ↕▾ | Назначение ↕▾ |
-|---|---|
-| −`configs.json` | список конфигов |
-| −`settings.json` | настройки (authMode, workers, hashes, ...) |
-| −`token.json` | VK-токен (`{"Token":"...","SavedAt":"..."}`) |
-| −`csqtt.log` | лог ядра |
-⚙
-
-## Как запускается ядро
-
-При нажатии «Подключиться»:
+Установи toolchain и линкер:
 
 ```
-curl -fsSL -o /tmp/csqtt-install.sh \
-  https://raw.githubusercontent.com/redline-keen/csqtt-openwrt/main/csqtt-github-install-openwrt.sh
-
-sh /tmp/csqtt-install.sh 'csqtt://...' \
-  --workers N --hashes M
-  [--vk-token T]     # если authMode = autoVk
+rustup target add aarch64-unknown-linux-musl
+sudo apt install gcc-aarch64-linux-gnu
 ```
 
-Где:
-
-- `M` — `settings.hashes` (1..6)
-- `N` — `settings.hashes` × `perHash`,
-- `perHash = max(3, round(workers / hashes))`, округлённое до кратного 3.
-
-## Сборка
-
-Через GitHub Actions (`.github/workflows/build-openwrt.yml`) с официальным SDK:
+Добавь в `~/.cargo/config.toml`:
 
 ```
-SDK_URL="https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
-curl -fsSL -o sdk.tar.zst "$SDK_URL"
-mkdir sdk && tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
-export PATH="$PWD/sdk/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl/bin:$PATH"
-export STAGING_DIR="$PWD/sdk/staging_dir"
-export GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-openwrt-linux-gcc
-cd OpenWRT && go build -ldflags="-s -w" -o ../LaLune-owrt_aarch64 .
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"
 ```
+
+Собирай:
+
+```
+cd OpenWRT
+cargo build --release --target aarch64-unknown-linux-musl
+```
+
+## Автозапуск при загрузке роутера
+
+Если хочешь, чтобы клиент стартовал автоматически, добавь в `/etc/rc.local` перед `exit 0`:
+
+```
+/usr/bin/owrt-client
+```
+
+Либо создай простой init-скрипт `/etc/init.d/owrt-client`:
+
+```
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+
+start() {
+    /usr/bin/owrt-client
+}
+
+stop() {
+    /usr/bin/owrt-client stop
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+```
+
+Затем:
+
+```
+chmod +x /etc/init.d/owrt-client
+/etc/init.d/owrt-client enable
+/etc/init.d/owrt-client start
+```
+
+## TODO
+
+- □  
+Демон, который поднимает `csqtt0` когда в логе ядра появляется
+`[СТАТИСТИКА] Активных: N` с N > 0 (через `tun-rs`)
+- □  
+Автоопределение актуальной версии ядра через LATEST (сейчас версия в `CORE_VERSION`)
+- □  
+Автофетч обновления ядра
 
 ## Лицензия
 
-PolyForm Noncommercial License 1.0.0
+PolyForm Noncommercial License 1.0.0.
 
