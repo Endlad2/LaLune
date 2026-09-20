@@ -1,16 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Опции для `xcodebuild -exportArchive` (см. build.sh, режим SIGN_MODE=signed).
+  Для unsigned-IPA (AltStore/Scarlet) этот файл не нужен — workflow
+  упаковывает Payload/ вручную.
+-->
 <plist version="1.0">
 <dict>
     <key>method</key>
-    <string>ad-hoc</string>
-    <key>compileBitcode</key>
-    <false/>
-    <key>stripSwiftSymbols</key>
-    <true/>
-    <key>destination</key>
-    <string>export</string>
+    <string>development</string>
     <key>signingStyle</key>
     <string>automatic</string>
+    <key>stripSwiftSymbols</key>
+    <true/>
+    <key>compileBitcode</key>
+    <false/>
+    <key>destination</key>
+    <string>export</string>
 </dict>
 </plist>

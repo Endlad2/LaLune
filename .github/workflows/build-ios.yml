@@ -1,108 +1,162 @@
-name: iOS сборка
+# .github/workflows/build-ios.yml
+#
+# Сборка LaLune под iOS.
+#
+# Что делает:
+#   1. Ставит Python и Flutter.
+#   2. Собирает Flutter web-фронтенд под IOS
+#      (python build_frontend.py --platform IOS) — получаем
+#      Frontend/output/{app.html,index.html,api.js,flutter_bootstrap.js,assets/...}.
+#   3. Качает libcsqtt_ios_core.a из релизов csqtt-core.
+#   4. Генерирует Xcode-проект через xcodegen (Mobile/IOS/project.yml).
+#   5. Делает unsigned-архив (CODE_SIGNING_ALLOWED=NO).
+#   6. Упаковывает IPA вручную (Payload/ → zip) — годится для
+#      AltStore / Scarlet / Sideloadly.
+#   7. Заливает артефакт; на теге v* прикрепляет IPA к GitHub Release.
+
+name: Build iOS
 
 on:
-  push:
-    branches:
-      - main
-      - release
   workflow_dispatch:
-    inputs:
-      build_config:
-        description: 'Тип сборки'
-        required: true
-        default: 'Release'
-        type: choice
-        options:
-          - Debug
-          - Release
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: stable
+  CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
 
 jobs:
   build-ios:
-    name: Сборка iOS приложения
-    runs-on: macos-15
-    
+    name: Build unsigned IPA
+    runs-on: macos-14
+    timeout-minutes: 60
+
     steps:
-      - name: Клонирование репозитория
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Установка Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      # ── Инструменты ──────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          xcode-version: '16.4'
+          python-version: '3.11'
 
-      - name: Установка XcodeGen
-        run: |
-          brew install xcodegen
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
 
-      - name: Получение latest версии ядра
-        id: get_version
-        run: |
-          LATEST=$(curl -sL https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST)
-          echo "version=$LATEST" >> $GITHUB_OUTPUT
-          echo "Latest core version: $LATEST"
+      - name: Flutter version
+        run: flutter --version
 
-      - name: Скачивание ядра CSQTT
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          mkdir -p Mobile/IOS/Core
-          curl -fL -o Mobile/IOS/Core/libcsqtt_ios_core.a \
-            "https://github.com/Endlad2/csqtt-core/releases/download/${VERSION}/libcsqtt_ios_core.a"
-          ls -la Mobile/IOS/Core/
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
-      - name: Подготовка HTML для iOS
-        run: |
-          cp Frontend/app.html Frontend/app.html.backup
-          sed -i '' 's|<script src="{QTWEBCHANNEL_SCRIPT}"></script>||g' Frontend/app.html
-          sed -i '' 's|<script src="{API_SCRIPT}"></script>||g' Frontend/app.html
-          sed -i '' 's|</body>|<script src="ios.js"></script></body>|' Frontend/app.html
+      - name: Xcode version
+        run: xcodebuild -version
 
-      - name: Генерация Xcode проекта
+      # ── Фронтенд ─────────────────────────────────────────────
+      - name: Build Flutter web frontend (iOS)
+        run: python build_frontend.py --platform IOS
+
+      - name: Verify frontend artifacts
         run: |
-          cd Mobile/IOS
-          xcodegen generate
-          
-      - name: Сборка .app бандла
+          set -e
+          for f in index.html app.html api.js flutter_bootstrap.js; do
+            if [ ! -f "Frontend/output/$f" ]; then
+              echo "::error::missing Frontend/output/$f"
+              ls -la Frontend/output/ || true
+              exit 1
+            fi
+          done
+          echo "Frontend/output contents:"
+          ls -la Frontend/output/
+
+      # ── Нативное ядро ────────────────────────────────────────
+      - name: Download CSQTT iOS core
+        working-directory: Mobile/IOS/Core
         run: |
-          cd Mobile/IOS
-          
-          CONFIG="${{ github.event.inputs.build_config || 'Release' }}"
-          
-          xcodebuild \
+          set -e
+          echo "Downloading: $CSQTT_IOS_CORE_URL"
+          curl -fL --retry 3 --retry-delay 2 \
+            -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
+          ls -la libcsqtt_ios_core.a
+          file libcsqtt_ios_core.a || true
+          lipo -info libcsqtt_ios_core.a || true
+
+      # ── Xcode-проект ─────────────────────────────────────────
+      - name: Generate Xcode project
+        working-directory: Mobile/IOS
+        run: xcodegen generate
+
+      # ── Архив ────────────────────────────────────────────────
+      - name: Archive (unsigned)
+        working-directory: Mobile/IOS
+        run: |
+          set -e
+          xcodebuild archive \
             -project LaLune.xcodeproj \
             -scheme LaLune \
-            -configuration $CONFIG \
+            -configuration Release \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
+            -archivePath build/LaLune.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            build
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO
 
-      - name: Восстановление app.html
+      # ── Упаковка IPA ─────────────────────────────────────────
+      - name: Package unsigned IPA
+        working-directory: Mobile/IOS
         run: |
-          mv Frontend/app.html.backup Frontend/app.html
+          set -e
+          APP="build/LaLune.xcarchive/Products/Applications/LaLune.app"
 
-      - name: Создание неподписанного .ipa
-        run: |
-          cd Mobile/IOS
-          
-          CONFIG="${{ github.event.inputs.build_config || 'Release' }}"
-          
-          APP_PATH="build/Build/Products/$CONFIG-iphoneos/LaLune.app"
-          TUNNEL_PATH="build/Build/Products/$CONFIG-iphoneos/LaLuneTunnel.appex"
-          
-          mkdir -p "$APP_PATH/PlugIns"
-          cp -R "$TUNNEL_PATH" "$APP_PATH/PlugIns/"
-          
+          if [ ! -d "$APP" ]; then
+            echo "::error::app bundle not found: $APP"
+            find build -maxdepth 6 -type d || true
+            exit 1
+          fi
+
+          # Страховка: postBuildScripts из project.yml должен был
+          # положить фронтенд в корень бандла.
+          for f in app.html api.js flutter_bootstrap.js; do
+            if [ ! -f "$APP/$f" ]; then
+              echo "::error::$f not embedded into the app bundle"
+              ls -la "$APP" || true
+              exit 1
+            fi
+          done
+
+          rm -rf build/Payload build/LaLune.ipa
           mkdir -p build/Payload
-          cp -R "$APP_PATH" "build/Payload/"
-          
-          cd build
-          zip -r LaLune.ipa Payload/
+          cp -R "$APP" build/Payload/LaLune.app
 
-      - name: Загрузка .ipa артефакта
+          ( cd build && zip -qry LaLune.ipa Payload )
+
+          ls -la build/LaLune.ipa
+
+      # ── Артефакты ────────────────────────────────────────────
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LaLune-iOS-${{ github.sha }}
+          name: LaLune-iOS-unsigned
           path: Mobile/IOS/build/LaLune.ipa
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach IPA to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Mobile/IOS/build/LaLune.ipa
+          fail_on_unmatched_files: true

@@ -9,15 +9,16 @@ build_frontend.py — сборка Dart-фронтенда LaLune в готов�
   4. Копирует Frontend/Core/build/web/* → Frontend/output/
   5. Копирует Api/<platform>.js → Frontend/output/api.js
   6. Перезаписывает output/index.html своим шаблоном
-  7. Если платформа == Android, дополнительно копирует index.html в app.html
-     (MainActivity.kt загружает file:///android_asset/app.html)
+  7. Для мобильных платформ (Android / IOS) дополнительно копирует
+     index.html в app.html — нативные WebView (MainActivity.kt,
+     ViewController.swift) грузят именно app.html.
 
 Использование:
     python build_frontend.py --platform Android
+    python build_frontend.py --platform IOS
     python build_frontend.py --platform Linux
     python build_frontend.py --platform Windows
     python build_frontend.py --platform OpenWRT
-    python build_frontend.py --platform IOS
 """
 
 import argparse
@@ -59,6 +60,9 @@ API_FILES = {
     "OpenWRT": "openwrt.js",
     "IOS": "ios.js",
 }
+
+# Платформы, где нативный WebView грузит app.html (а не index.html).
+MOBILE_WEBVIEW_PLATFORMS = ("Android", "IOS")
 
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -197,13 +201,21 @@ def run_flutter(flutter: str, args: list, cwd: Path) -> None:
 # ============================================================
 
 def copy_assets_to_dart() -> None:
-    if not ASSETS.exists():
-        warn(f"{ASSETS} does not exist - no images will be bundled")
-        return
+    """
+    Копирует изображения из корневого Assets/ в Frontend/Core/assets/.
 
+    Если Assets/ нет — создаём пустую папку assets/, чтобы flutter build
+    не падал на pubspec-декларации `assets: - assets/` (Flutter требует,
+    чтобы директория существовала).
+    """
     if DART_ASSETS.exists():
         shutil.rmtree(DART_ASSETS)
     DART_ASSETS.mkdir(parents=True, exist_ok=True)
+
+    if not ASSETS.exists():
+        warn(f"{ASSETS} does not exist - no images will be bundled "
+             f"(created empty {DART_ASSETS} so pubspec stays valid)")
+        return
 
     count = 0
     for item in ASSETS.iterdir():
@@ -331,16 +343,20 @@ def write_index_html() -> None:
     log(f"Wrote index.html ({len(INDEX_HTML_TEMPLATE)} bytes)")
 
 # ============================================================
-#  Шаг 5 (Android): index.html -> app.html
+#  Шаг 5 (Android / IOS): index.html -> app.html
 # ============================================================
 
-def make_android_app_html() -> None:
+def make_mobile_app_html(platform_name: str) -> None:
     """
-    MainActivity.kt у нас грузит file:///android_asset/app.html.
+    Android и iOS грузят из бандла app.html, а не index.html:
+
+      * MainActivity.kt    — file:///android_asset/app.html
+      * ViewController.swift — Bundle.main.path(forResource: "app", ofType: "html")
+
     Flutter собирает index.html. Просто копируем index.html → app.html
-    в output/. Дальше любая копия output/* в assets/ захватит оба файла.
-    Оба ссылаются на один и тот же api.js / flutter_bootstrap.js —
-    всё лежит рядом, конфликта нет.
+    в output/. Дальше любая копия output/* в assets/bundle захватит оба
+    файла; оба ссылаются на один и тот же api.js / flutter_bootstrap.js,
+    всё лежит рядом — конфликта нет.
     """
     index = OUTPUT / "index.html"
     app_html = OUTPUT / "app.html"
@@ -349,7 +365,12 @@ def make_android_app_html() -> None:
         die(f"index.html not found after build: {index}")
 
     shutil.copy2(index, app_html)
-    log(f"Wrote app.html (copy of index.html) for Android assets")
+    log(f"Wrote app.html (copy of index.html) for {platform_name} bundle")
+
+# Обратная совместимость — если где-то (workflow, внешние скрипты)
+# импортируется старое имя.
+def make_android_app_html() -> None:
+    make_mobile_app_html("Android")
 
 # ============================================================
 #  main
@@ -376,9 +397,9 @@ def main() -> int:
     copy_api(args.platform)
     write_index_html()
 
-    # Android-специфика: MainActivity загружает app.html
-    if args.platform == "Android":
-        make_android_app_html()
+    # Android / iOS грузят app.html из нативного бандла.
+    if args.platform in MOBILE_WEBVIEW_PLATFORMS:
+        make_mobile_app_html(args.platform)
 
     log(f"Done. Result: {OUTPUT}")
     return 0

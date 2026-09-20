@@ -5,52 +5,117 @@ options:
     iOS: "15.0"
   createIntermediateGroups: true
 
+# Общие настройки для всех таргетов.
+#
+# ENABLE_USER_SCRIPT_SANDBOXING: NO обязателен — postBuildScripts ниже
+# пишет прямо в собранный .app, а sandbox по умолчанию (Xcode 15+)
+# запрещает скриптам выходить за пределы DerivedData.
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_BITCODE: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+    ALWAYS_SEARCH_USER_PATHS: NO
+    TARGETED_DEVICE_FAMILY: "1,2"
+
 targets:
+
+  # ─────────────────────────────────────────────────────────────
+  #  Основное приложение (WKWebView + Flutter Web UI)
+  # ─────────────────────────────────────────────────────────────
   LaLune:
     type: application
     platform: iOS
     sources:
       - path: Sources/App
-        buildPhase: sources
         excludes:
           - "Info.plist"
-      - path: ../../Frontend/app.html
-        buildPhase: resources
-        type: file
-      - path: ../../Frontend/ios.js
-        buildPhase: resources
-        type: file
+      - path: Entitlements
+        buildPhase: none
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app
+        PRODUCT_NAME: LaLune
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_STYLE: Automatic
-        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
-        LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/Core"
-        OTHER_LDFLAGS: "-lcsqtt_ios_core"
+        CODE_SIGN_ENTITLEMENTS: Entitlements/LaLune.entitlements
+        # libcsqtt_ios_core.a кладётся в Core/ (скачивается CI-шагом).
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/Core"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lcsqtt_ios_core"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
     dependencies:
-      - sdk: Core/libcsqtt_ios_core.a
+      - target: LaLuneTunnel
+        embed: true
+        codeSign: true
+    postBuildScripts:
+      - name: "Copy Flutter Web Frontend"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
 
+          SRC="${SRCROOT}/../../Frontend/output"
+          DST="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+
+          if [ ! -d "$SRC" ]; then
+            echo "error: Flutter web output not found at: $SRC"
+            echo "error: run 'python build_frontend.py --platform IOS' from the repo root"
+            exit 1
+          fi
+          if [ ! -f "$SRC/app.html" ]; then
+            echo "error: $SRC/app.html missing (iOS WebView loads it)"
+            exit 1
+          fi
+          if [ ! -f "$SRC/api.js" ]; then
+            echo "error: $SRC/api.js missing (Dart bridge)"
+            exit 1
+          fi
+
+          mkdir -p "$DST"
+          # rsync без --delete: не трогаем Info.plist, бинарник и т.п.
+          rsync -a "$SRC/" "$DST/"
+
+          echo "note: copied Flutter frontend into $DST"
+
+  # ─────────────────────────────────────────────────────────────
+  #  Network Extension (Packet Tunnel Provider)
+  # ─────────────────────────────────────────────────────────────
   LaLuneTunnel:
     type: app-extension
     platform: iOS
     sources:
       - path: Sources/Tunnel
-        buildPhase: sources
         excludes:
           - "Info.plist"
           - "LaLune-Bridging-Header.h"
+      - path: Entitlements
+        buildPhase: none
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalune.app.tunnel
+        PRODUCT_NAME: LaLuneTunnel
         INFOPLIST_FILE: Sources/Tunnel/Info.plist
         CODE_SIGN_STYLE: Automatic
-        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Core"
-        LIBRARY_SEARCH_PATHS: "$(PROJECT_DIR)/Core"
-        OTHER_LDFLAGS: "-lcsqtt_ios_core"
+        CODE_SIGN_ENTITLEMENTS: Entitlements/LaLuneTunnel.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Tunnel/LaLune-Bridging-Header.h
-    dependencies:
-      - sdk: Core/libcsqtt_ios_core.a
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/Core"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lcsqtt_ios_core"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
+        SKIP_INSTALL: YES
 
 schemes:
   LaLune:
