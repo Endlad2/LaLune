@@ -2,17 +2,19 @@
 #
 # Сборка LaLune под iOS.
 #
-# Что делает:
-#   1. Ставит Python и Flutter.
-#   2. Собирает Flutter web-фронтенд под IOS
-#      (python build_frontend.py --platform IOS) — получаем
-#      Frontend/output/{app.html,index.html,api.js,flutter_bootstrap.js,assets/...}.
-#   3. Качает libcsqtt_ios_core.a из релизов csqtt-core.
-#   4. Генерирует Xcode-проект через xcodegen (Mobile/IOS/project.yml).
-#   5. Делает unsigned-архив (CODE_SIGNING_ALLOWED=NO).
-#   6. Упаковывает IPA вручную (Payload/ → zip) — годится для
-#      AltStore / Scarlet / Sideloadly.
-#   7. Заливает артефакт; на теге v* прикрепляет IPA к GitHub Release.
+# Порядок шагов важен:
+#   1. Xcode и инструменты
+#   2. Flutter web-фронтенд (build_frontend.py --platform IOS)
+#   3. libcsqtt_ios_core.a  →  Mobile/IOS/Core/
+#   4. xcodegen generate
+#   5. xcodebuild archive (unsigned)
+#   6. упаковка Payload/ → LaLune.ipa
+#   7. артефакт (+ релиз на теге v*)
+#
+# libcsqtt_ios_core.a качается ДО xcodegen generate — если xcodegen
+# начнёт проверять существование зависимости, файл уже на месте.
+# Но по факту линковка идёт через OTHER_LDFLAGS + LIBRARY_SEARCH_PATHS,
+# так что генератору файл не нужен, нужен только линкеру на шаге 5.
 
 name: Build iOS
 
@@ -30,6 +32,10 @@ concurrency:
 
 env:
   FLUTTER_CHANNEL: stable
+  # Фиксируем Xcode: macos-14 содержит Xcode 15.4 и 16.x.
+  # objectVersion=56 в project.yml совместим с обоими, но лучше
+  # не зависеть от того, какой именно подхватится по умолчанию.
+  XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
 
 jobs:
@@ -48,6 +54,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Select Xcode
+        run: |
+          set -e
+          if [ ! -d "$XCODE_APP" ]; then
+            echo "::warning::$XCODE_APP not found, available Xcodes:"
+            ls -1 /Applications | grep -i '^Xcode' || true
+            echo "::warning::falling back to default xcode-select"
+          else
+            sudo xcode-select -s "$XCODE_APP"
+          fi
+          xcodebuild -version
+          xcode-select -p
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -58,10 +77,9 @@ jobs:
         run: flutter --version
 
       - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Xcode version
-        run: xcodebuild -version
+        run: |
+          brew install xcodegen
+          xcodegen --version
 
       # ── Фронтенд ─────────────────────────────────────────────
       - name: Build Flutter web frontend (iOS)
@@ -95,7 +113,14 @@ jobs:
       # ── Xcode-проект ─────────────────────────────────────────
       - name: Generate Xcode project
         working-directory: Mobile/IOS
-        run: xcodegen generate
+        run: |
+          set -e
+          xcodegen generate
+          # Убеждаемся, что сгенерирован именно старый формат pbxproj.
+          grep -q 'objectVersion = 56' LaLune.xcodeproj/project.pbxproj \
+            || { echo "::error::unexpected objectVersion in project.pbxproj"; \
+                 grep -m1 objectVersion LaLune.xcodeproj/project.pbxproj || true; \
+                 exit 1; }
 
       # ── Архив ────────────────────────────────────────────────
       - name: Archive (unsigned)
@@ -108,6 +133,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/LaLune.xcarchive \
+            -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

@@ -5,6 +5,21 @@ options:
     iOS: "15.0"
   createIntermediateGroups: true
 
+  # ─────────────────────────────────────────────────────────────
+  #  objectVersion: 56
+  #
+  #  Формат Xcode-проекта. XcodeGen из Homebrew на свежих раннерах
+  #  по умолчанию пишет objectVersion = 77 (формат Xcode 16), который
+  #  Xcode 15.4 открыть не умеет:
+  #
+  #    "The project 'LaLune' cannot be opened because it is in a future
+  #     Xcode project file format (77)."
+  #
+  #  56 — формат Xcode 14. Его читают Xcode 14, 15 и 16.
+  #  Ни на что, кроме формата pbxproj, эта опция не влияет.
+  # ─────────────────────────────────────────────────────────────
+  objectVersion: 56
+
 # Общие настройки для всех таргетов.
 #
 # ENABLE_USER_SCRIPT_SANDBOXING: NO обязателен — postBuildScripts ниже
@@ -41,7 +56,10 @@ targets:
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Entitlements/LaLune.entitlements
-        # libcsqtt_ios_core.a кладётся в Core/ (скачивается CI-шагом).
+        # libcsqtt_ios_core.a кладётся в Core/ (скачивается CI-шагом
+        # ДО xcodegen generate). Линкуется через -lcsqtt_ios_core +
+        # LIBRARY_SEARCH_PATHS — эквивалент добавления файла в
+        # "Link Binary With Libraries" руками.
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/Core"
