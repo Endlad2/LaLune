@@ -6,25 +6,27 @@ options:
   createIntermediateGroups: true
 
   # ─────────────────────────────────────────────────────────────
-  #  objectVersion: 56
+  #  Формат Xcode-проекта
   #
-  #  Формат Xcode-проекта. XcodeGen из Homebrew на свежих раннерах
-  #  по умолчанию пишет objectVersion = 77 (формат Xcode 16), который
-  #  Xcode 15.4 открыть не умеет:
+  #  Свежий xcodegen из Homebrew по умолчанию пишет
+  #  objectVersion = 77 (формат Xcode 16), который Xcode 15.4
+  #  открыть не умеет:
   #
-  #    "The project 'LaLune' cannot be opened because it is in a future
-  #     Xcode project file format (77)."
+  #    "The project 'LaLune' cannot be opened because it is in a
+  #     future Xcode project file format (77)."
   #
-  #  56 — формат Xcode 14. Его читают Xcode 14, 15 и 16.
-  #  Ни на что, кроме формата pbxproj, эта опция не влияет.
+  #  Задаём оба ключа:
+  #    * xcodeVersion — XcodeGen подбирает совместимый objectVersion
+  #      и пишет LastUpgradeCheck.
+  #    * objectVersion — прямая просьба использовать формат 56
+  #      (Xcode 14; его читают 14, 15 и 16).
+  #
+  #  Если конкретная версия xcodegen проигнорирует objectVersion,
+  #  workflow дополнительно патчит project.pbxproj седом.
   # ─────────────────────────────────────────────────────────────
+  xcodeVersion: "15.4"
   objectVersion: 56
 
-# Общие настройки для всех таргетов.
-#
-# ENABLE_USER_SCRIPT_SANDBOXING: NO обязателен — postBuildScripts ниже
-# пишет прямо в собранный .app, а sandbox по умолчанию (Xcode 15+)
-# запрещает скриптам выходить за пределы DerivedData.
 settings:
   base:
     SWIFT_VERSION: "5.9"

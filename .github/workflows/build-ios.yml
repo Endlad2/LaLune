@@ -6,15 +6,10 @@
 #   1. Xcode и инструменты
 #   2. Flutter web-фронтенд (build_frontend.py --platform IOS)
 #   3. libcsqtt_ios_core.a  →  Mobile/IOS/Core/
-#   4. xcodegen generate
+#   4. xcodegen generate (+ патч objectVersion)
 #   5. xcodebuild archive (unsigned)
 #   6. упаковка Payload/ → LaLune.ipa
 #   7. артефакт (+ релиз на теге v*)
-#
-# libcsqtt_ios_core.a качается ДО xcodegen generate — если xcodegen
-# начнёт проверять существование зависимости, файл уже на месте.
-# Но по факту линковка идёт через OTHER_LDFLAGS + LIBRARY_SEARCH_PATHS,
-# так что генератору файл не нужен, нужен только линкеру на шаге 5.
 
 name: Build iOS
 
@@ -32,9 +27,7 @@ concurrency:
 
 env:
   FLUTTER_CHANNEL: stable
-  # Фиксируем Xcode: macos-14 содержит Xcode 15.4 и 16.x.
-  # objectVersion=56 в project.yml совместим с обоими, но лучше
-  # не зависеть от того, какой именно подхватится по умолчанию.
+  # Фиксируем Xcode. macos-14 несёт Xcode 15.4 и (в свежих образах) 16.x.
   XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
 
@@ -116,11 +109,30 @@ jobs:
         run: |
           set -e
           xcodegen generate
-          # Убеждаемся, что сгенерирован именно старый формат pbxproj.
-          grep -q 'objectVersion = 56' LaLune.xcodeproj/project.pbxproj \
-            || { echo "::error::unexpected objectVersion in project.pbxproj"; \
-                 grep -m1 objectVersion LaLune.xcodeproj/project.pbxproj || true; \
-                 exit 1; }
+
+          PBX=LaLune.xcodeproj/project.pbxproj
+          if [ ! -f "$PBX" ]; then
+            echo "::error::$PBX not found after xcodegen"
+            find . -name project.pbxproj || true
+            exit 1
+          fi
+
+          echo "objectVersion after xcodegen:"
+          grep -m1 'objectVersion' "$PBX" || true
+
+          # XcodeGen из Homebrew может проигнорировать options.objectVersion
+          # и записать 77 (формат Xcode 16), который Xcode 15.4 не читает.
+          # Патчим принудительно на 56 (формат Xcode 14).
+          if grep -q 'objectVersion = 77;' "$PBX"; then
+            echo "note: downgrading objectVersion 77 -> 56"
+            sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' "$PBX"
+          fi
+
+          # Финальная проверка: Xcode 15.4 должен суметь открыть проект.
+          FINAL=$(grep -m1 'objectVersion' "$PBX" || true)
+          echo "objectVersion final: $FINAL"
+          echo "$FINAL" | grep -q '56' \
+            || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open the project"; exit 1; }
 
       # ── Архив ────────────────────────────────────────────────
       - name: Archive (unsigned)
