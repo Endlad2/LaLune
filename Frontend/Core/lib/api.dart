@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:js_interop';
 
 @JS('window.api.GetConfigsJson') external String _getConfigsJson();
-@JS('window.api.SaveConfig') external bool _saveConfig(String link);
+@JS('window.api.SaveConfig') external bool _saveConfig(String link, String protocol);
 @JS('window.api.DeleteConfig') external bool _deleteConfig(num id);
 @JS('window.api.GetSettingsJson') external String _getSettingsJson();
 @JS('window.api.SaveSettings') external bool _saveSettings(String json);
@@ -304,7 +304,7 @@ class Api {
     } catch (_) { return []; }
   }
 
-  static bool saveConfig(String link) { try { return _saveConfig(link); } catch (_) { return false; } }
+  static bool saveConfig(String link, [String protocol = 'CSQTT']) { try { return _saveConfig(link, protocol); } catch (_) { return false; } }
   static bool deleteConfig(int id) { try { return _deleteConfig(id); } catch (_) { return false; } }
 
   static Settings getSettings() {

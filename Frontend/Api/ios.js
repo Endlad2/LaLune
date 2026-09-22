@@ -227,8 +227,8 @@
       return cache.configs;
     },
 
-    SaveConfig: function (link) {
-      post('saveConfig', { link: String(link) }).then(function (r) {
+    SaveConfig: function (link, protocol) {
+      post('saveConfig', { link: String(link), protocol: String(protocol || 'CSQTT') }).then(function (r) {
         if (toBool(r)) refreshFast();
       });
       return true;

@@ -43,9 +43,14 @@
         GetLogsJson: () => cachedLogs,
         GetStatusJson: () => cachedStatus,
 
-        SaveConfig: (link) => {
+        SaveConfig: (link, protocol) => {
             const api = go(); if (!api) return false;
-            api.SaveConfig(link).then(refresh);
+            const proto = protocol || 'CSQTT';
+            if (api.SaveConfigWithProtocol) {
+                api.SaveConfigWithProtocol(link, proto).then(refresh);
+            } else {
+                api.SaveConfig(link).then(refresh);
+            }
             return true;
         },
         DeleteConfig: (id) => {

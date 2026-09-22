@@ -574,3 +574,60 @@ func (a *AppCore) GetConfigByID(id int64) *Config {
 	}
 	return &c
 }
+
+// NormalizeProtocol приводит строку протокола к каноническому виду.
+// Пустое значение -> "CSQTT" (обратная совместимость).
+func NormalizeProtocol(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "", "csqtt":
+		return "CSQTT"
+	case "freeturn", "free-turn", "freeturnproxy", "ftp":
+		return "FREETURN"
+	case "olcrtc":
+		return "OLCRTC"
+	case "openflux":
+		return "OPENFLUX"
+	case "tots":
+		return "TOTS"
+	default:
+		return strings.ToUpper(strings.TrimSpace(p))
+	}
+}
+
+// SaveConfigWithProtocol сохраняет конфиг с явно указанным протоколом.
+// Пустой protocol -> "CSQTT".
+func (a *AppCore) SaveConfigWithProtocol(link string, protocol string) bool {
+	if a.db == nil {
+		return false
+	}
+	config := ParseCsqttLink(link)
+	config.RawLink = link
+	config.Protocol = NormalizeProtocol(protocol)
+	result, err := a.db.Exec(
+		"INSERT INTO configs (protocol, peer, password, hashes, name) VALUES (?, ?, ?, ?, ?)",
+		config.Protocol, config.Peer, config.Password, config.Hashes, config.Name,
+	)
+	if err != nil {
+		a.AddLog(fmt.Sprintf("[DB] SaveConfigWithProtocol error: %v", err))
+		return false
+	}
+	id, _ := result.LastInsertId()
+	a.AddLog(fmt.Sprintf("[API] Конфиг сохранён с ID: %d (protocol=%s)", id, config.Protocol))
+	a.LoadConfigs()
+	return true
+}
+
+// GetCorePathForProtocol возвращает путь к ядру для конкретного протокола.
+// CSQTT — исторический GetCorePath(); для остальных протоколов используется
+// отдельный файл ядра в каталоге приложения.
+func (a *AppCore) GetCorePathForProtocol(protocol string) string {
+	p := NormalizeProtocol(protocol)
+	if p == "CSQTT" {
+		return a.GetCorePath()
+	}
+	name := "client-" + strings.ToLower(p)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(a.GetAppDir(), name)
+}

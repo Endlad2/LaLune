@@ -122,7 +122,7 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 	b.Core.AddLog(fmt.Sprintf("=== Подключение к %s ===", config.Name))
 
 	listenPort := GetFreePort()
-	cmdArgs := b.buildCommand(&config, settings, listenPort)
+	cmdArgs := b.BuildCommandForProtocol(&config, settings, listenPort)
 	b.Core.AddLog(fmt.Sprintf("Команда: %s", strings.Join(cmdArgs, " ")))
 
 	b.Core.SetConnected(true)
@@ -138,10 +138,11 @@ func (b *Bridge) connectWorker(config Config, settings Settings) {
 // buildCommand — CLI-флаги ядра CSQTT.
 //
 // Режимы:
-//   manual  → --vk <hashes> --vk-hash-mode manual --vk-auth-mode vkcalls
-//   autoApi → --vk <hashes из calls.start> --vk-hash-mode manual
-//   autoVk  → БЕЗ --vk; --vk-hash-mode auto_js --vk-auth-mode auto_js
-//             + --token "<Token из token.json>"
+//
+//	manual  → --vk <hashes> --vk-hash-mode manual --vk-auth-mode vkcalls
+//	autoApi → --vk <hashes из calls.start> --vk-hash-mode manual
+//	autoVk  → БЕЗ --vk; --vk-hash-mode auto_js --vk-auth-mode auto_js
+//	          + --token "<Token из token.json>"
 //
 // -n = settings.Workers напрямую (без умножения на количество хешей).
 func (b *Bridge) buildCommand(config *Config, settings Settings, listenPort int) []string {
@@ -325,4 +326,30 @@ func (b *Bridge) SetupRoutes(tunIP string, tunDNS string) {
 
 func (b *Bridge) CleanupRoutes() {
 	b.Tun.CleanupRoutes()
+}
+
+// BuildCommandForProtocol выбирает командную строку ядра по протоколу конфига.
+// Для CSQTT используется исторический buildCommand; для остальных протоколов
+// (FREETURN/OLCRTC/OPENFLUX/TOTS) формируется общий набор аргументов, а само
+// ядро берётся по имени протокола (GetCorePathForProtocol).
+func (b *Bridge) BuildCommandForProtocol(config *Config, settings Settings, listenPort int) []string {
+	proto := NormalizeProtocol(config.Protocol)
+	if proto == "CSQTT" {
+		return b.buildCommand(config, settings, listenPort)
+	}
+
+	b.Core.AddLog(fmt.Sprintf("[PROTO] Запуск конфига с протоколом %s", proto))
+
+	cmd := []string{
+		b.Core.GetCorePathForProtocol(proto),
+		"--protocol", proto,
+		"--peer", config.Peer,
+		"--password", config.Password,
+		"--listen", fmt.Sprintf("127.0.0.1:%d", listenPort),
+		"--device-id", settings.DeviceId,
+	}
+	if config.Hashes != "" {
+		cmd = append(cmd, "--hashes", strings.ReplaceAll(config.Hashes, " ", ","))
+	}
+	return cmd
 }

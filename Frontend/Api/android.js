@@ -17,7 +17,7 @@
 
     window.api = {
         GetConfigsJson: () => { const l = lalune(); if (!l) return '[]'; try { return l.getConfigs(); } catch (_) { return '[]'; } },
-        SaveConfig: (link) => { const l = lalune(); if (!l) return false; try { return l.saveConfig(link); } catch (_) { return false; } },
+        SaveConfig: (link, protocol) => { const l = lalune(); if (!l) return false; try { return l.saveConfigWithProtocol ? l.saveConfigWithProtocol(link, protocol || 'CSQTT') : l.saveConfig(link); } catch (_) { return false; } },
         DeleteConfig: (id) => { const l = lalune(); if (!l) return false; try { return l.deleteConfig(id); } catch (_) { return false; } },
         GetSettingsJson: () => { const l = lalune(); if (!l) return '{}'; try { return l.getSettings(); } catch (_) { return '{}'; } },
         SaveSettings: (json) => { const l = lalune(); if (!l) return false; try { return l.saveSettings(json); } catch (_) { return false; } },

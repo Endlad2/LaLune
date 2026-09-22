@@ -76,9 +76,9 @@ func wintunOpenAdapter(name string) (uintptr, error) {
 	return ret, nil
 }
 
-func wintunCloseAdapter(adapter uintptr)          { procCloseAdapter.Call(adapter) }
-func wintunEndSession(session uintptr)            { procEndSession.Call(session) }
-func wintunSendPacket(session, packet uintptr)    { procSendPacket.Call(session, packet) }
+func wintunCloseAdapter(adapter uintptr)       { procCloseAdapter.Call(adapter) }
+func wintunEndSession(session uintptr)         { procEndSession.Call(session) }
+func wintunSendPacket(session, packet uintptr) { procSendPacket.Call(session, packet) }
 
 func wintunStartSession(adapter uintptr, capacity uint32) (uintptr, error) {
 	ret, _, _ := procStartSession.Call(adapter, uintptr(capacity))
@@ -584,16 +584,22 @@ func runAsAdminWithBat(batPath string) error {
 
 // ============ API ============
 
-func (a *App) GetConfigsJson() string      { return a.core.GetConfigsJson() }
-func (a *App) GetSettingsJson() string     { return a.core.GetSettingsJson() }
-func (a *App) GetLogsJson() string         { return a.core.GetLogsJson() }
-func (a *App) GetStatusJson() string       { return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected()) }
-func (a *App) SaveConfig(link string) bool { return a.core.SaveConfig(link) }
-func (a *App) DeleteConfig(id int64) bool  { return a.core.DeleteConfig(id) }
-func (a *App) SaveSettings(j string) bool  { return a.core.SaveSettings(j) }
-func (a *App) ClearLogs() bool             { return a.core.ClearLogs() }
-func (a *App) UpdateCore() bool            { return a.core.UpdateCore() }
-func (a *App) Connect(id int64) bool       { return a.bridge.Connect(id) }
+func (a *App) GetConfigsJson() string  { return a.core.GetConfigsJson() }
+func (a *App) GetSettingsJson() string { return a.core.GetSettingsJson() }
+func (a *App) GetLogsJson() string     { return a.core.GetLogsJson() }
+func (a *App) GetStatusJson() string   { return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected()) }
+func (a *App) SaveConfig(link string) bool {
+	return a.core.SaveConfigWithProtocol(link, "")
+}
+
+func (a *App) SaveConfigWithProtocol(link string, protocol string) bool {
+	return a.core.SaveConfigWithProtocol(link, protocol)
+}
+func (a *App) DeleteConfig(id int64) bool { return a.core.DeleteConfig(id) }
+func (a *App) SaveSettings(j string) bool { return a.core.SaveSettings(j) }
+func (a *App) ClearLogs() bool            { return a.core.ClearLogs() }
+func (a *App) UpdateCore() bool           { return a.core.UpdateCore() }
+func (a *App) Connect(id int64) bool      { return a.bridge.Connect(id) }
 
 // Disconnect — останавливает туннель, TUN и убивает процесс ядра.
 // На Windows ядро запускается через UAC (ShellExecuteEx), поэтому

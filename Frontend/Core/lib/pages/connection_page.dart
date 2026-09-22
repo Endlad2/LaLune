@@ -117,6 +117,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   Future<void> _showAddDialog() async {
     final controller = TextEditingController();
+    String selectedProtocol = 'CSQTT';
 
     final ok = await showDialog<bool>(
       context: context,
@@ -130,16 +131,42 @@ class _ConnectionPageState extends State<ConnectionPage> {
         title: const Text('Добавить конфиг'),
         content: SizedBox(
           width: 420,
-          child: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLines: 3,
-            minLines: 2,
-            style: const TextStyle(fontSize: 13),
-            decoration: const InputDecoration(
-              hintText:
-                  'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=...',
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                maxLines: 3,
+                minLines: 2,
+                style: const TextStyle(fontSize: 13),
+                decoration: const InputDecoration(
+                  hintText:
+                      'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=...',
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text('Протокол', style: TextStyle(fontSize: 12, color: Colors.white70)),
+              const SizedBox(height: 6),
+              DropdownButtonFormField<String>(
+                value: selectedProtocol,
+                dropdownColor: const Color(0xFF0F1540),
+                style: const TextStyle(fontSize: 13, color: Colors.white),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'CSQTT', child: Text('CSQTT')),
+                  DropdownMenuItem(value: 'FREETURN', child: Text('FreeTurn')),
+                  DropdownMenuItem(value: 'OLCRTC', child: Text('OlcRTC')),
+                  DropdownMenuItem(value: 'OPENFLUX', child: Text('OpenFlux')),
+                  DropdownMenuItem(value: 'TOTS', child: Text('ToTS')),
+                ],
+                onChanged: (v) => selectedProtocol = v ?? 'CSQTT',
+              ),
+            ],
           ),
         ),
         actions: [
@@ -162,7 +189,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         controller.dispose();
         return;
       }
-      final saved = Api.saveConfig(link);
+      final saved = Api.saveConfig(link, selectedProtocol);
       if (saved) {
         _toast('Конфиг сохранён');
         _reload();

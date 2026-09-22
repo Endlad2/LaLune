@@ -265,16 +265,22 @@ func (a *App) SetSudoPassword(password string) bool {
 
 // ============ API ============
 
-func (a *App) GetConfigsJson() string      { return a.core.GetConfigsJson() }
-func (a *App) GetSettingsJson() string     { return a.core.GetSettingsJson() }
-func (a *App) GetLogsJson() string         { return a.core.GetLogsJson() }
-func (a *App) GetStatusJson() string       { return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected()) }
-func (a *App) SaveConfig(link string) bool { return a.core.SaveConfig(link) }
-func (a *App) DeleteConfig(id int64) bool  { return a.core.DeleteConfig(id) }
-func (a *App) SaveSettings(j string) bool  { return a.core.SaveSettings(j) }
-func (a *App) ClearLogs() bool             { return a.core.ClearLogs() }
-func (a *App) UpdateCore() bool            { return a.core.UpdateCore() }
-func (a *App) Connect(id int64) bool       { return a.bridge.Connect(id) }
+func (a *App) GetConfigsJson() string  { return a.core.GetConfigsJson() }
+func (a *App) GetSettingsJson() string { return a.core.GetSettingsJson() }
+func (a *App) GetLogsJson() string     { return a.core.GetLogsJson() }
+func (a *App) GetStatusJson() string   { return fmt.Sprintf(`{"connected":%v}`, a.core.IsConnected()) }
+func (a *App) SaveConfig(link string) bool {
+	return a.core.SaveConfigWithProtocol(link, "")
+}
+
+func (a *App) SaveConfigWithProtocol(link string, protocol string) bool {
+	return a.core.SaveConfigWithProtocol(link, protocol)
+}
+func (a *App) DeleteConfig(id int64) bool { return a.core.DeleteConfig(id) }
+func (a *App) SaveSettings(j string) bool { return a.core.SaveSettings(j) }
+func (a *App) ClearLogs() bool            { return a.core.ClearLogs() }
+func (a *App) UpdateCore() bool           { return a.core.UpdateCore() }
+func (a *App) Connect(id int64) bool      { return a.bridge.Connect(id) }
 func (a *App) Disconnect() bool {
 	a.mu.Lock()
 	pid := a.clientPID
