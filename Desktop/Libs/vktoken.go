@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -191,18 +190,13 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 			Progress:  40,
 		})
 
-		exe := a.vkFetcherExePath()
-		cmd := exec.Command(exe)
-		cmd.Dir = a.vkFetcherDir()
-		if err := cmd.Start(); err != nil {
+		if err := a.runFetcherWithFallback(); err != nil {
 			send(VkTokenState{
 				FetcherOK: true,
-				Message:   "Не удалось запустить LaLuneTokenFetcher: " + err.Error(),
+				Message:   "LaLuneTokenFetcher start failed: " + err.Error(),
 			})
 			return
 		}
-
-		a.AddLog(fmt.Sprintf("[VK] Token fetcher запущен (PID: %d)", cmd.Process.Pid))
 
 		deadline := time.Now().Add(10 * time.Minute)
 		progress := 40

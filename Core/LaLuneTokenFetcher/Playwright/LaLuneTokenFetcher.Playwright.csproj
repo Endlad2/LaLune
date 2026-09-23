@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Одна C# часть для Linux и Windows: единый кроссплатформенный
+         исполняемый проект, который получает VK access_token через Playwright
+         (Chromium). См. PROJECT.md. -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>LaLuneTokenFetcher.Playwright</RootNamespace>
+    <AssemblyName>LaLuneTokenFetcher</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" Version="1.47.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Libs\LaLuneTokenFetcher.Core\LaLuneTokenFetcher.Core.csproj" />
+  </ItemGroup>
+
+</Project>
