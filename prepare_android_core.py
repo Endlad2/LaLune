@@ -94,6 +94,18 @@ def main() -> int:
         count += 1
 
     log(f"Готово: {count} файл(ов)")
+    # Build and place DeployManager as an Android binary (jniLibs).
+    dm_script = ROOT / "build_deploy_manager.py"
+    if dm_script.exists():
+        import subprocess as _sp
+        try:
+            _sp.run([sys.executable, str(dm_script), "--android"], cwd=str(ROOT), check=False)
+            log("DeployManager built for Android (jniLibs)")
+        except Exception:
+            log("DeployManager android build skipped")
+    else:
+        log("build_deploy_manager.py not found, skipping DeployManager")
+
     return 0
 
 if __name__ == "__main__":

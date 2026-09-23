@@ -16,6 +16,7 @@ class NavBar extends StatelessWidget {
     _NavItem(icon: 'assets/settings.png', label: 'Настройки'),
     _NavItem(icon: 'assets/info.png', label: 'Информация'),
     _NavItem(icon: 'assets/logs.png', label: 'Логи'),
+    _NavItem(icon: 'assets/deploy.png', label: 'Деплой'),
   ];
 
   @override

@@ -632,6 +632,11 @@ func (a *App) SetSelectedConfigJson(j string) bool { return a.core.SetSelectedCo
 // Флаг «ядро скачивается».
 func (a *App) IsCoreDownloading() bool { return a.core.IsCoreDownloading() }
 
+// ============ Deploy (DeployManager) ============
+func (a *App) DeployProtocol(reqJSON string) bool { return libs.DeployProtocol(reqJSON) }
+func (a *App) DeployLog() string                  { return libs.DeployLog() }
+func (a *App) IsDeploying() bool                  { return libs.DeployBusy() }
+
 func (a *App) CheckUpdate() string {
 	version, hasUpdate, err := a.core.CheckUpdateSync()
 	if err != nil {

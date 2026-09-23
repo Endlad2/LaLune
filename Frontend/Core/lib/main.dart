@@ -12,6 +12,7 @@ import 'theme.dart';
 import 'pages/connection_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/logs_page.dart';
+import 'pages/deploy_page.dart';
 import 'pages/info_page.dart';
 import 'widgets/navbar.dart';
 
@@ -87,6 +88,8 @@ class _RootShellState extends State<RootShell> {
         return const InfoPage();
       case 3:
         return const LogsPage();
+      case 4:
+        return const DeployPage();
       default:
         return const SizedBox.shrink();
     }

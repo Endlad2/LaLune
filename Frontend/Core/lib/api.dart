@@ -28,6 +28,9 @@ import 'dart:js_interop';
 @JS('window.api.SetSelectedConfigJson') external bool _setSelectedConfigJson(String json);
 @JS('window.api.GetSelectedConfigJson') external String _getSelectedConfigJson();
 @JS('window.api.IsCoreDownloading') external bool _isCoreDownloading();
+@JS('window.api.DeployProtocol') external bool _deployProtocol(String json);
+@JS('window.api.DeployLog') external String _deployLog();
+@JS('window.api.IsDeploying') external bool _isDeploying();
 
 const int kDefaultWorkers = 9;
 const int kMinWorkers = 1;
@@ -380,6 +383,10 @@ class Api {
   static bool isCoreDownloading() {
     try { return _isCoreDownloading(); } catch (_) { return false; }
   }
+
+  static bool deploy(String json) { try { return _deployProtocol(json); } catch (_) { return false; } }
+  static String deployLog() { try { return _deployLog(); } catch (_) { return ''; } }
+  static bool isDeploying() { try { return _isDeploying(); } catch (_) { return false; } }
 
   static ConfigItem? loadSelectedConfigFromJs() {
     try {

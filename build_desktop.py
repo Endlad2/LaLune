@@ -186,6 +186,18 @@ class WailsBuilder:
         else:
             print(f"  [WARN] {self.manifest_source} не найден")
 
+    def build_deploy_manager(self) -> None:
+        """Build Core/DeployManager and place its binary next to the app."""
+        script = self.root_dir / "build_deploy_manager.py"
+        if not script.exists():
+            print(f"  [WARN] {script} not found, skipping DeployManager")
+            return
+        cmd = [sys.executable, str(script), "--dest", f"Desktop/{self.platform}"]
+        print(f"  DeployManager: {' '.join(cmd)}")
+        proc = subprocess.run(cmd, cwd=str(self.root_dir))
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+
     # ---------- build ----------
 
     def build_wails(self) -> None:
@@ -255,7 +267,7 @@ def main() -> int:
 
     builder = WailsBuilder(args.platform, args.wails_flags)
 
-    total_steps = 6
+    total_steps = 7
     progress = ProgressBar(total_steps, f"Building for {args.platform}")
 
     try:
@@ -272,6 +284,8 @@ def main() -> int:
         builder.copy_windows_resources()
 
         progress.update("Запуск wails build...")
+        builder.build_deploy_manager()
+
         builder.build_wails()
 
         progress.update("Очистка временных файлов...")

@@ -50,3 +50,11 @@ Mobile/Android/app/src/main/assets/SmartTunnel.lua
 # Android generated
 # Mobile/Android/app/src/main/assets/
 # Mobile/Android/app/src/main/jniLibs/
+
+# DeployManager (Rust) build artifacts
+Core/DeployManager/target/
+Desktop/*/deploy-manager
+Desktop/*/deploy-manager.exe
+Mobile/Android/app/src/main/jniLibs/
+Frontend/Core/.dart_tool/
+Frontend/Core/build/
