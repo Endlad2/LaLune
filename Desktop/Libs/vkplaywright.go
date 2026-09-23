@@ -1,58 +1,50 @@
 // SPDX-FileCopyrightText: 2026 luminescq
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// vkplaywright.go - установка Chromium / Playwright driver для
+// vkplaywright.go - установка Chromium / Playwright runtime для
 // LaLuneTokenFetcher (Playwright).
 //
-// Если LaLuneTokenFetcher сообщает, что Playwright не инициализирован
-// (маркер LALUNE_CHROMIUM_MISSING в выводе или код возврата 4) - это может
-// быть либо отсутствующий Chromium, либо отсутствующий Playwright driver
-// (node.exe). Обе проблемы решает один и тот же установщик, поставляемый
-// вместе с Microsoft.Playwright:
+// Алгоритм:
 //
-//     playwright.ps1 install chromium      (локально рядом с fetcher'ом)
-//     playwright     install chromium      (Linux)
+//   1. Когда fetcher сообщает LALUNE_CHROMIUM_MISSING (или exit=4):
+//      a. Скачиваем свежий LaLuneTokenFetcher_<OS>.zip с
+//         github.com/Endlad2/LaLune/releases/latest.
+//      b. Распаковываем содержимое ПОВЕРХ <vk-token-fetcher>\ (не удаляя
+//         папку целиком — так сохраняются уже скачанные browsers\ и
+//         userdata\, если они есть).
+//      c. Запускаем ЛОКАЛЬНЫЙ playwright.ps1 / playwright (тот, что лежит
+//         рядом с LaLuneTokenFetcher) с аргументами "install chromium".
 //
-// НО на Windows надёжнее и проще использовать готовый one-command
-// скрипт с GitHub, который сам скачает актуальный LaLuneTokenFetcher.zip,
-// распакует во временную папку, загрузит Microsoft.Playwright.dll из
-// памяти и вызовет [Microsoft.Playwright.Program]::Main(@("install","chromium")):
+//   2. Ключевое отличие от предыдущей версии: НЕ используем
+//      one-command `irm https://.../win_install_chromium.ps1 | iex`.
+//      Тот скрипт качает ZIP в temp и запускает Program.Main, но не
+//      прокидывает PLAYWRIGHT_BROWSERS_PATH — поэтому Chromium уходил
+//      в глобальный %LOCALAPPDATA%\ms-playwright, а не рядом с fetcher'ом.
 //
-//     powershell -NoProfile -ExecutionPolicy Bypass -Command `
-//         "irm https://raw.githubusercontent.com/Endlad2/LaLune/refs/heads/main/win_install_chromium.ps1 | iex"
+//   3. PLAYWRIGHT_BROWSERS_PATH=<vk-token-fetcher>/browsers выставляется
+//      и при установке (installPlaywrightChromium), и при запуске самого
+//      fetcher'а (vkfetcher_launch.go) — иначе Playwright ищет Chromium
+//      в дефолтном месте и снова падает с тем же маркером.
 //
-// Ключевые моменты:
+//   4. PLAYWRIGHT_SKIP_BROWSER_GC=1 — чтобы Playwright не удалил только
+//      что поставленный Chromium при апдейте.
 //
-//  1) Chromium по умолчанию ставится в глобальный
-//     %USERPROFILE%\AppData\Local\ms-playwright. Мы этого не хотим: браузер
-//     должен лежать РЯДОМ с fetcher'ом, в подпапке vk-token-fetcher/browsers,
-//     чтобы можно было удалить всё одной папкой и не мусорить в профиле юзера.
-//     Для этого выставляем PLAYWRIGHT_BROWSERS_PATH=<vk-token-fetcher>/browsers
-//     в родительском процессе Go: дочерний powershell унаследует его через
-//     os.Environ(), а `iex` подхватит из $Env: уже внутри своего процесса.
-//
-//  2) Скрипт самодостаточен: тянет ZIP с GitHub releases/latest, находит
-//     Microsoft.Playwright.dll в распакованном дереве, грузит его в память
-//     и вызывает Program.Main с "install chromium". Нам не нужно знать,
-//     куда именно CI положил DLL внутри архива.
-//
-//  3) На Windows этот путь пробуется ПЕРВЫМ. Если powershell-команда
-//     недоступна (нет pwsh/powershell, или GitHub заблокирован) — падаем
-//     на старые фолбэки: локальный playwright.ps1 рядом с fetcher'ом,
-//     playwright.cmd/.exe, playwright из PATH, dotnet playwright.
-//
-//  4) Сам playwright.ps1 использует $PSScriptRoot, поэтому путь к .dll
-//     находится корректно независимо от cmd.Dir.
+//   5. На Windows playwright.ps1 запускается через `pwsh -File` (PowerShell 7,
+//      .NET 8 — совпадает с таргетом Microsoft.Playwright.dll); если pwsh
+//      нет — фолбэк на `powershell -File` (Windows PowerShell 5.1).
 
 package libs
 
 import (
+	"archive/zip"
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // ChromiumMissingMarker - строка, которую печатает fetcher, когда Playwright
@@ -65,11 +57,19 @@ const ChromiumMissingMarker = "LALUNE_CHROMIUM_MISSING"
 // PLAYWRIGHT_BROWSERS_PATH).
 const playwrightBrowsersSubdir = "browsers"
 
-// winInstallChromiumURL - one-command install-скрипт с GitHub.
-// Сам скачивает LaLuneTokenFetcher_Windows.zip, распаковывает во временную
-// папку, грузит Microsoft.Playwright.dll из памяти и запускает
-// Program.Main(@("install","chromium")).
-const winInstallChromiumURL = "https://raw.githubusercontent.com/Endlad2/LaLune/refs/heads/main/win_install_chromium.ps1"
+// fetcherArchiveName возвращает имя ZIP-архива fetcher'а для текущей ОС,
+// как он опубликован в LaLune releases/latest.
+func fetcherArchiveName() string {
+	if runtime.GOOS == "windows" {
+		return "LaLuneTokenFetcher_Windows.zip"
+	}
+	return "LaLuneTokenFetcher_Linux.zip"
+}
+
+// fetcherArchiveURL - URL последнего релиза архива fetcher'а.
+func fetcherArchiveURL() string {
+	return "https://github.com/Endlad2/LaLune/releases/latest/download/" + fetcherArchiveName()
+}
 
 // playwrightBrowsersPath возвращает полный путь к папке, в которую
 // Playwright должен устанавливать браузеры.
@@ -81,53 +81,35 @@ func (a *AppCore) playwrightBrowsersPath() string {
 }
 
 // playwrightCommand описывает один способ запуска Playwright CLI: argv[0] -
-// исполняемый файл, argv[1:] - уже добавленные аргументы. К ним допишется
-// "install chromium" (для one-command скрипта аргументы НЕ дописываются -
-// они уже внутри).
+// исполняемый файл, argv[1:] - уже добавленные аргументы (например, для ps1:
+// powershell -File <path>). К ним допишется "install chromium".
 type playwrightCommand struct {
-	argv   []string
-	desc   string
-	isRaw  bool // true - argv уже полная команда, не дописывать "install chromium"
+	argv []string
+	desc string
 }
 
-// playwrightCandidates возвращает возможные способы запуска Playwright CLI,
-// начиная с one-command скрипта с GitHub на Windows.
+// playwrightCandidates возвращает возможные способы запуска ЛОКАЛЬНОГО
+// Playwright CLI, начиная с playwright.ps1 рядом с fetcher'ом.
 //
 // Порядок на Windows:
-//  1. powershell -Command "irm ... | iex"   — one-command, тянет свежий ZIP
-//     с GitHub и сам вызывает Program.Main(["install","chromium"]).
-//  2. pwsh -File playwright.ps1 install chromium  — локальный фолбэк.
-//  3. powershell -File playwright.ps1 install chromium — локальный фолбэк.
-//  4. playwright.cmd / playwright.exe из папки vk-token-fetcher.
-//  5. playwright из PATH.
-//  6. dotnet playwright.
+//   1. pwsh -File playwright.ps1   — PowerShell 7 (.NET 8), совпадает с
+//                                    таргетом Microsoft.Playwright.dll.
+//   2. powershell -File playwright.ps1 — Windows PowerShell 5.1. Если
+//                                    DLL таргетит net8.0, а система без
+//                                    .NET 8 runtime, загрузка упадёт —
+//                                    поэтому pwsh идёт первым.
+//   3. playwright.cmd / playwright.exe
+//   4. playwright из PATH
+//   5. dotnet playwright
 func (a *AppCore) playwrightCandidates() []playwrightCommand {
 	dir := a.vkFetcherDir()
 
 	var list []playwrightCommand
 
 	if runtime.GOOS == "windows" {
-		// --- 1) One-command install с GitHub (предпочтительно) ---
-		// Передаём аргументы через -Command, а не -File, потому что сам
-		// скрипт тянется по irm|iex. Никаких "install chromium" тут
-		// дописывать не надо: они уже дефолт внутри скрипта.
-		oneLiner := fmt.Sprintf(
-			"irm %s | iex",
-			winInstallChromiumURL,
-		)
-		list = append(list, playwrightCommand{
-			argv: []string{
-				"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-				"-Command", oneLiner,
-			},
-			desc:  "one-command install (irm win_install_chromium.ps1 | iex)",
-			isRaw: true,
-		})
-
-		// --- 2) Локальный playwright.ps1, если one-command недоступен ---
 		ps1 := filepath.Join(dir, "playwright.ps1")
 
-		// pwsh (PowerShell Core) — совпадает с таргетом .NET 8.
+		// pwsh (PowerShell Core) - основной путь: совпадает с .NET 8.
 		list = append(list, playwrightCommand{
 			argv: []string{
 				"pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -136,7 +118,7 @@ func (a *AppCore) playwrightCandidates() []playwrightCommand {
 			desc: "pwsh -File playwright.ps1",
 		})
 
-		// Windows PowerShell 5.1 — фолбэк.
+		// Windows PowerShell 5.1 - фолбэк.
 		list = append(list, playwrightCommand{
 			argv: []string{
 				"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -145,7 +127,7 @@ func (a *AppCore) playwrightCandidates() []playwrightCommand {
 			desc: "powershell -File playwright.ps1",
 		})
 
-		// .cmd / .exe — если вдруг есть.
+		// .cmd / .exe - если вдруг есть.
 		list = append(list,
 			playwrightCommand{
 				argv: []string{filepath.Join(dir, "playwright.cmd")},
@@ -172,47 +154,168 @@ func (a *AppCore) playwrightCandidates() []playwrightCommand {
 	return list
 }
 
-// installPlaywrightChromium выполняет `playwright install chromium`.
-// Это устанавливает и Playwright driver (node), и браузер Chromium.
+// ensurePlaywrightRuntime скачивает свежий LaLuneTokenFetcher_<OS>.zip
+// с GitHub releases/latest и распаковывает его содержимое ПОВЕРХ
+// <vk-token-fetcher>\. Существующие browsers\ и userdata\ при этом
+// НЕ удаляются.
 //
-// Chromium ставится в <vk-token-fetcher>/browsers через
-// PLAYWRIGHT_BROWSERS_PATH, а не в глобальный ms-playwright.
+// Возвращает nil, если архив скачался и распаковался без ошибок.
+// Ошибки сети/скачивания не фатальны: если в папке уже лежит рабочий
+// playwright.ps1, installPlaywrightChromium всё равно его попробует.
+func (a *AppCore) ensurePlaywrightRuntime() error {
+	dir := a.vkFetcherDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("не удалось создать %s: %w", dir, err)
+	}
+
+	url := fetcherArchiveURL()
+	zipPath := filepath.Join(dir, "fetcher.zip")
+	tmpZip := zipPath + ".tmp"
+
+	a.AddLog("[VK] Скачиваю runtime fetcher'а: " + url)
+
+	if !DownloadFile(url, tmpZip) {
+		os.Remove(tmpZip)
+		return fmt.Errorf("не удалось скачать %s", url)
+	}
+
+	// Атомарная подмена.
+	_ = os.Remove(zipPath)
+	if err := os.Rename(tmpZip, zipPath); err != nil {
+		os.Remove(tmpZip)
+		return fmt.Errorf("не удалось переименовать %s: %w", tmpZip, err)
+	}
+
+	a.AddLog("[VK] Распаковываю runtime в " + dir)
+	if err := unzipOverwrite(zipPath, dir); err != nil {
+		return fmt.Errorf("не удалось распаковать %s: %w", zipPath, err)
+	}
+
+	_ = os.Remove(zipPath)
+
+	if runtime.GOOS != "windows" {
+		exe := a.vkFetcherExePath()
+		if _, err := os.Stat(exe); err == nil {
+			_ = os.Chmod(exe, 0755)
+		}
+	}
+
+	a.AddLog("[VK] Runtime fetcher'а готов")
+	return nil
+}
+
+// unzipOverwrite распаковывает zipPath в destDir, перезаписывая
+// существующие файлы и НЕ удаляя то, чего нет в архиве (то есть
+// browsers\ и userdata\ сохраняются).
+func unzipOverwrite(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		// Безопасное имя внутри архива.
+		name := strings.ReplaceAll(f.Name, "\\", "/")
+		name = strings.TrimPrefix(name, "./")
+		name = strings.TrimPrefix(name, "/")
+		name = strings.TrimRight(name, "/")
+		if name == "" || name == "." {
+			continue
+		}
+
+		// Если архив содержит вложенную папку vk-token-fetcher/... —
+		// срезаем её, чтобы содержимое легло прямо в destDir.
+		if strings.HasPrefix(name, "vk-token-fetcher/") {
+			name = strings.TrimPrefix(name, "vk-token-fetcher/")
+		}
+		if name == "" {
+			continue
+		}
+
+		target := filepath.Join(destDir, filepath.FromSlash(name))
+
+		// Защита от path traversal.
+		rel, err := filepath.Rel(destDir, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("некорректный путь в архиве: %s", f.Name)
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", target, err)
+			}
+			continue
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+
+		out, err := os.Create(target)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+
+		_, err = io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+
+		if mode := f.Mode(); mode != 0 {
+			_ = os.Chmod(target, mode)
+		}
+	}
+
+	return nil
+}
+
+// installPlaywrightChromium выполняет `playwright install chromium`.
+//
+// Порядок:
+//   1. ensurePlaywrightRuntime() — скачать и распаковать свежий
+//      LaLuneTokenFetcher_<OS>.zip поверх <vk-token-fetcher>\.
+//   2. Запустить локальный playwright.ps1 / playwright с
+//      "install chromium" и PLAYWRIGHT_BROWSERS_PATH=<dir>/browsers.
 //
 // Возвращает nil, если установка успешно завершилась.
 func (a *AppCore) installPlaywrightChromium() error {
-	a.AddLog("[VK] Playwright/Chromium не готов, устанавливаю через Playwright...")
+	a.AddLog("[VK] Playwright/Chromium не готов, начинаю установку...")
+
+	// Шаг 1: обновить runtime fetcher'а (playwright.ps1, DLL и пр.).
+	// Не фатально, если не удалось — возможно, всё уже на месте.
+	if err := a.ensurePlaywrightRuntime(); err != nil {
+		a.AddLog("[VK] Не удалось обновить runtime fetcher'а: " + err.Error())
+		a.AddLog("[VK] Продолжаю с тем, что уже лежит в vk-token-fetcher/")
+	}
 
 	browsersPath := a.playwrightBrowsersPath()
 	if err := os.MkdirAll(browsersPath, 0755); err != nil {
 		a.AddLog(fmt.Sprintf("[VK] Не удалось создать %s: %v", browsersPath, err))
-		// Не фатально - playwright создаст сам.
 	}
 	a.AddLog("[VK] Браузеры будут установлены в: " + browsersPath)
 
+	// Шаг 2: локальный playwright.ps1 install chromium.
 	var lastErr error
 	for _, cand := range a.playwrightCandidates() {
-		var argv []string
-
-		if cand.isRaw {
-			// One-command: команда уже полная, аргументы внутри неё.
-			argv = append([]string{}, cand.argv...)
-		} else {
-			// Ключевое: передаём именно "install chromium" как аргументы.
-			// Для ps1 это уйдёт в $args и вызовется
-			// [Microsoft.Playwright.Program]::Main(["install","chromium"]).
-			argv = append(append([]string{}, cand.argv...), "install", "chromium")
-		}
+		// Ключевое: передаём именно "install chromium" как аргументы.
+		// Для ps1 это уйдёт в $args и вызовется
+		// [Microsoft.Playwright.Program]::Main(["install","chromium"]).
+		argv := append(append([]string{}, cand.argv...), "install", "chromium")
 
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Dir = a.vkFetcherDir()
 
 		// PLAYWRIGHT_BROWSERS_PATH - куда ставить браузеры.
-		// PLAYWRIGHT_SKIP_BROWSER_GC - не удалять старые версии автоматически
-		// (иначе может снести только что поставленный Chromium при апдейте).
-		//
-		// Для one-command скрипта переменные окружения подхватятся
-		// внутри powershell: $Env:PLAYWRIGHT_BROWSERS_PATH унаследуется
-		// дочерним процессом, а Program.Main установит Chromium туда же.
+		// PLAYWRIGHT_SKIP_BROWSER_GC - не удалять старые версии автоматически.
 		cmd.Env = append(os.Environ(),
 			"PLAYWRIGHT_BROWSERS_PATH="+browsersPath,
 			"PLAYWRIGHT_SKIP_BROWSER_GC=1",
@@ -229,10 +332,9 @@ func (a *AppCore) installPlaywrightChromium() error {
 			continue
 		}
 
-		a.AddLog(fmt.Sprintf("[VK] Пробую: %s", cand.desc))
+		a.AddLog(fmt.Sprintf("[VK] Пробую: %s install chromium", cand.desc))
 
 		if err := cmd.Start(); err != nil {
-			// Кандидат недоступен (нет файла / не в PATH) - пробуем следующий.
 			lastErr = err
 			a.AddLog(fmt.Sprintf("[VK] Кандидат %q недоступен: %v", cand.desc, err))
 			continue
@@ -253,6 +355,14 @@ func (a *AppCore) installPlaywrightChromium() error {
 			continue
 		}
 
+		// Проверяем, что Chromium реально появился в browsersPath.
+		if !dirHasChromium(browsersPath) {
+			a.AddLog("[VK] Команда завершилась успешно, но Chromium не найден в " + browsersPath)
+			a.AddLog("[VK] Возможно, PLAYWRIGHT_BROWSERS_PATH не подхватился — пробую следующий способ")
+			lastErr = fmt.Errorf("Chromium не найден в %s после установки", browsersPath)
+			continue
+		}
+
 		a.AddLog("[VK] Playwright/Chromium успешно установлен в " + browsersPath)
 		return nil
 	}
@@ -261,6 +371,25 @@ func (a *AppCore) installPlaywrightChromium() error {
 		lastErr = fmt.Errorf("playwright CLI не найден")
 	}
 	return fmt.Errorf("не удалось установить Playwright/Chromium: %w", lastErr)
+}
+
+// dirHasChromium проверяет, есть ли в папке хотя бы одна подпапка
+// chromium-XXXX (Playwright кладёт браузеры именно так).
+func dirHasChromium(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if strings.HasPrefix(name, "chromium") {
+			return true
+		}
+	}
+	return false
 }
 
 // fetcherReportsMissingChromium проверяет вывод/код возврата fetcher'а.
