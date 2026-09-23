@@ -4,10 +4,11 @@
 // vkfetcher_launch.go - запуск LaLuneTokenFetcher с перехватом вывода и
 // автоматической установкой Chromium.
 //
-// Раньше StartVKTokenFetcher делал cmd.Start() и не читал вывод fetcher'а.
-// Теперь мы захватываем stdout+stderr и код возврата: если fetcher сообщил,
+// Запускаем fetcher, читаем stdout+stderr и код возврата. Если он сообщил,
 // что Chromium не установлен (код 4 или маркер LALUNE_CHROMIUM_MISSING),
 // запускаем `playwright install chromium` и один раз перезапускаем fetcher.
+// Дополнительно держим атомарный флаг "процесс жив", чтобы UI не показывал
+// бесконечное "Ожидание авторизации", когда fetcher уже завершился.
 
 package libs
 
@@ -15,7 +16,16 @@ import (
 	"bytes"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
+
+// fetcherAlive - 1, если процесс fetcher'а сейчас запущен, 0 - иначе.
+var fetcherAlive int32
+
+// fetcherIsAlive сообщает, работает ли fetcher в данный момент.
+func fetcherIsAlive() bool {
+	return atomic.LoadInt32(&fetcherAlive) == 1
+}
 
 // fetcherRun - обёртка над запущенным процессом fetcher'а.
 type fetcherRun struct {
@@ -27,6 +37,9 @@ type fetcherRun struct {
 // wait дожидается завершения процесса и возвращает накопленный вывод и код.
 func (r *fetcherRun) wait() (string, int) {
 	err := r.cmd.Wait()
+
+	// Процесс завершился - снимаем флаг "жив".
+	atomic.StoreInt32(&fetcherAlive, 0)
 
 	r.mu.Lock()
 	out := r.buf.String()
@@ -55,8 +68,11 @@ func (a *AppCore) startFetcherCaptured() (*fetcherRun, error) {
 	cmd.Stderr = buf
 
 	if err := cmd.Start(); err != nil {
+		atomic.StoreInt32(&fetcherAlive, 0)
 		return nil, err
 	}
+
+	atomic.StoreInt32(&fetcherAlive, 1)
 
 	a.AddLog("[VK] Token fetcher запущен")
 

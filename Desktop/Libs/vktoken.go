@@ -201,6 +201,7 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 		deadline := time.Now().Add(10 * time.Minute)
 		progress := 40
 		tick := 0
+		sawAlive := fetcherIsAlive()
 
 		for time.Now().Before(deadline) {
 			if _, err := os.Stat(a.vkTokenFile()); err == nil {
@@ -209,11 +210,33 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 					send(VkTokenState{
 						HasToken:  true,
 						FetcherOK: true,
-						Message:   "Поздравляем, токен ВК получен успешно",
+						Message:   "РџРѕР·РґСЂР°РІР»СЏРµРј, С‚РѕРєРµРЅ Р’Рљ РїРѕР»СѓС‡РµРЅ СѓСЃРїРµС€РЅРѕ",
 						Progress:  100,
 					})
 					return
 				}
+			}
+
+			if fetcherIsAlive() {
+				sawAlive = true
+			}
+
+			if sawAlive && !fetcherIsAlive() {
+				time.Sleep(500 * time.Millisecond)
+				if token := a.ReadTokenFromFile(); token != "" {
+					send(VkTokenState{
+						HasToken:  true,
+						FetcherOK: true,
+						Message:   "РџРѕР·РґСЂР°РІР»СЏРµРј, С‚РѕРєРµРЅ Р’Рљ РїРѕР»СѓС‡РµРЅ СѓСЃРїРµС€РЅРѕ",
+						Progress:  100,
+					})
+					return
+				}
+				send(VkTokenState{
+					FetcherOK: true,
+					Message:   "LaLuneTokenFetcher Р·Р°РІРµСЂС€РёР»СЃСЏ, РЅРѕ С‚РѕРєРµРЅ РЅРµ РїРѕР»СѓС‡РµРЅ. РџСЂРѕРІРµСЂСЊС‚Рµ Р»РѕРіРё.",
+				})
+				return
 			}
 
 			tick++
@@ -224,13 +247,12 @@ func (a *AppCore) StartVKTokenFetcher() <-chan VkTokenState {
 			send(VkTokenState{
 				FetcherOK: true,
 				Fetching:  true,
-				Message:   "Ожидание авторизации в ВК...",
+				Message:   "РћР¶РёРґР°РЅРёРµ Р°РІС‚РѕСЂРёР·Р°С†РёРё РІ Р’Рљ...",
 				Progress:  progress,
 			})
 
 			time.Sleep(500 * time.Millisecond)
 		}
-
 		send(VkTokenState{
 			FetcherOK: true,
 			Message:   "Время ожидания истекло. Попробуйте войти снова",
@@ -277,21 +299,30 @@ func unzipInto(zipPath, destDir string) error {
 	defer r.Close()
 
 	for _, f := range r.File {
-		target := filepath.Join(destDir, f.Name)
+		name := strings.ReplaceAll(f.Name, "\\", "/")
+		name = strings.TrimPrefix(name, "./")
+		name = strings.TrimPrefix(name, "/")
+		name = strings.TrimRight(name, "/")
+		if name == "" || name == "." {
+			continue
+		}
+
+		target := filepath.Join(destDir, filepath.FromSlash(name))
 		rel, err := filepath.Rel(destDir, target)
-		if err != nil || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
-			return fmt.Errorf("недопустимый путь в архиве: %s", f.Name)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid path in archive: %s", f.Name)
+		}
+
+		// Always make sure the parent directory exists first.
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(target), err)
 		}
 
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
+				return fmt.Errorf("mkdir %s: %w", target, err)
 			}
 			continue
-		}
-
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
 		}
 
 		rc, err := f.Open()
@@ -313,6 +344,12 @@ func unzipInto(zipPath, destDir string) error {
 		if mode := f.Mode(); mode != 0 {
 			_ = os.Chmod(target, mode)
 		}
+	}
+
+	// Playwright expects a ".playwright" anchor directory next to the binary.
+	pw := filepath.Join(destDir, VKTokenFetcherDir, ".playwright")
+	if err := os.MkdirAll(pw, 0755); err != nil {
+		return fmt.Errorf("mkdir .playwright: %w", err)
 	}
 
 	return nil
