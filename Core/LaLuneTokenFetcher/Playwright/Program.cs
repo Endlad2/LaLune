@@ -4,10 +4,15 @@
 // Получает VK access_token через Playwright (Chromium), сохраняет его в
 // token.json (см. LaLuneTokenFetcher.Core) и печатает путь в stdout.
 //
+// Сессия VK сохраняется в <dir бинарника>/userdata — рядом с самим
+// LaLuneTokenFetcher. При повторных запусках VK сразу показывает
+// «Продолжить как <Имя>», и токен получается за пару секунд.
+//
 // Коды возврата:
 //   0  — токен получен и сохранён
 //   1  — прочая критическая ошибка
-//   3  — токен не получен (тайм-аут / пользователь закрыл окно)
+//   3  — токен не получен (тайм-аут / пользователь закрыл окно /
+//         silent_token не удалось разменять)
 //   4  — не установлен Chromium (нужно запустить playwright install)
 
 using LaLuneTokenFetcher.Core;
@@ -37,7 +42,9 @@ internal static class Program
 
             if (string.IsNullOrEmpty(token))
             {
-                Console.Error.WriteLine("[LaLune] Токен не получен (тайм-аут или отмена).");
+                Console.Error.WriteLine(
+                    "[LaLune] Токен не получен (тайм-аут, отмена или не удалось " +
+                    "разменять silent_token на access_token).");
                 return 3;
             }
 
@@ -65,6 +72,10 @@ internal static class Program
             "Использование:\n" +
             "  LaLuneTokenFetcher             открывает Chromium и получает токен\n" +
             "  LaLuneTokenFetcher --help      показать эту справку\n" +
+            "\n" +
+            "Профиль VK сохраняется в <dir бинарника>/userdata — при повторных\n" +
+            "запусках VK сразу предлагает «Продолжить как ...», и токен\n" +
+            "получается без повторного ввода пароля.\n" +
             "\n" +
             "Токен сохраняется в .la-lune/token.json рядом с пользователем.\n" +
             "Если Chromium не установлен, вернётся код 4 и маркер " +

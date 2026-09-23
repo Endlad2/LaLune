@@ -9,11 +9,17 @@
 // запускаем `playwright install chromium` и один раз перезапускаем fetcher.
 // Дополнительно держим атомарный флаг "процесс жив", чтобы UI не показывал
 // бесконечное "Ожидание авторизации", когда fetcher уже завершился.
+//
+// ВАЖНО: при запуске fetcher'а выставляем PLAYWRIGHT_BROWSERS_PATH в ту же
+// папку, куда installPlaywrightChromium() ставит браузеры
+// (<vk-token-fetcher>/browsers). Иначе Playwright ищет Chromium в глобальном
+// %USERPROFILE%\AppData\Local\ms-playwright и снова падает с тем же маркером.
 
 package libs
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -57,11 +63,21 @@ func (r *fetcherRun) wait() (string, int) {
 }
 
 // startFetcherCaptured запускает fetcher, перенаправляя stdout+stderr в буфер.
+//
+// Ключевой момент: выставляем PLAYWRIGHT_BROWSERS_PATH, чтобы fetcher нашёл
+// Chromium, установленный в <vk-token-fetcher>/browsers.
 func (a *AppCore) startFetcherCaptured() (*fetcherRun, error) {
 	exe := a.vkFetcherExePath()
 
 	cmd := exec.Command(exe)
 	cmd.Dir = a.vkFetcherDir()
+
+	// Тот же путь, что и в installPlaywrightChromium().
+	browsersPath := a.playwrightBrowsersPath()
+	cmd.Env = append(os.Environ(),
+		"PLAYWRIGHT_BROWSERS_PATH="+browsersPath,
+		"PLAYWRIGHT_SKIP_BROWSER_GC=1",
+	)
 
 	buf := &bytes.Buffer{}
 	cmd.Stdout = buf
@@ -74,7 +90,7 @@ func (a *AppCore) startFetcherCaptured() (*fetcherRun, error) {
 
 	atomic.StoreInt32(&fetcherAlive, 1)
 
-	a.AddLog("[VK] Token fetcher запущен")
+	a.AddLog("[VK] Token fetcher запущен (PLAYWRIGHT_BROWSERS_PATH=" + browsersPath + ")")
 
 	return &fetcherRun{cmd: cmd, buf: buf}, nil
 }
