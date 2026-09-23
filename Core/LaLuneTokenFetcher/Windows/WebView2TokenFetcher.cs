@@ -189,9 +189,6 @@ public sealed class WebView2TokenFetcher : ITokenFetcher
                     catch { /* игнорируем */ }
                 };
 
-                await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                    "window.__laluneHooked = true;");
-
                 webView.CoreWebView2.Navigate(VkAuthConstants.AuthUrl);
                 timer.Start();
             };

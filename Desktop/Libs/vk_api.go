@@ -36,6 +36,9 @@ const (
 	vkApiBase    = "https://api.vk.ru/method/"
 	vkApiVersion = "5.199"
 
+	// analysis.md fix #4: realistic desktop browser UA (avoids "Go-http-client/1.1").
+	vkBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 	vkMaxHashes          = 6
 	vkMaxAttemptsPerCall = 3
 	vkSmallDelayMs       = 80
@@ -77,6 +80,13 @@ func (c *VkApiClient) call(method, token string, params map[string]string) (map[
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// analysis.md fix #4: present a realistic browser identity so VK does not
+	// classify the client as "Go-http-client/1.1" and throttle calls.start.
+	req.Header.Set("User-Agent", vkBrowserUserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+	req.Header.Set("Origin", "https://vk.com")
+	req.Header.Set("Referer", "https://vk.com/")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -189,11 +199,13 @@ func (m *VkAutoCallsManager) TokenInvalidSeen() bool {
 }
 
 // CallCountForWorkers — сколько звонков нужно создать.
-//   callsCount = ceil(workers / autoApiWorkers), ограничено 1..6.
+//
+//	callsCount = ceil(workers / autoApiWorkers), ограничено 1..6.
 //
 // Пример: workers=27, autoApiWorkers=9 → 3 звонка.
-//         workers=25, autoApiWorkers=9 → ceil(25/9)=3 звонка.
-//         workers=10, autoApiWorkers=9 → ceil(10/9)=2 звонка.
+//
+//	workers=25, autoApiWorkers=9 → ceil(25/9)=3 звонка.
+//	workers=10, autoApiWorkers=9 → ceil(10/9)=2 звонка.
 func CallCountForWorkers(workers, autoApiWorkers int) int {
 	if autoApiWorkers <= 0 {
 		autoApiWorkers = DefaultAutoApiWorkers
@@ -258,8 +270,9 @@ func (m *VkAutoCallsManager) startCallWithAttempts(token string) VkCallStartResu
 }
 
 // CreateForWorkers создаёт нужное количество звонков.
-//   workers        — общее число воркеров (для расчёта callsCount)
-//   autoApiWorkers — сколько воркеров в одном звонке
+//
+//	workers        — общее число воркеров (для расчёта callsCount)
+//	autoApiWorkers — сколько воркеров в одном звонке
 func (m *VkAutoCallsManager) CreateForWorkers(
 	token string,
 	workers int,

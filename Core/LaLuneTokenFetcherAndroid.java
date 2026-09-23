@@ -86,15 +86,6 @@ public final class LaLuneTokenFetcherAndroid {
 
     /** Задержка перед авто-перезапуском WebView (чтобы юзер увидел тост). */
     private static final long RESTART_DELAY_MS = 1500L;
-
-    /**
-     * Десктопный UA — как в Desktop/Libs/update.go.
-     */
-    private static final String DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/120.0.0.0 Safari/537.36";
-
     private LaLuneTokenFetcherAndroid() {}
 
     public interface Callback {
@@ -230,7 +221,6 @@ public final class LaLuneTokenFetcherAndroid {
             settings.setDatabaseEnabled(true);
             settings.setLoadWithOverviewMode(true);
             settings.setUseWideViewPort(true);
-            settings.setUserAgentString(DESKTOP_UA);
 
             CookieManager.getInstance().setAcceptCookie(true);
             CookieManager.getInstance().setAcceptThirdPartyCookies(view, true);
@@ -312,30 +302,13 @@ public final class LaLuneTokenFetcherAndroid {
                 return;
             }
 
-            // --- Случай 2: silent_token (payload=...) ---
+            // --- silent_token (payload=...) ---
+            // analysis.md fix #2: do NOT close/abort the WebView here.
+            // Closing the dialog causes VK to revoke the server-side token;
+            // we keep the session alive so the user can still complete the
+            // normal OAuth flow and receive access_token.
             if (fragment.contains("payload=")) {
-                if (pass == 0) {
-                    Log.w(TAG, "silent_token received on pass 1 — auto-restart");
-                    pass = 1;
-
-                    // Тост: «Получаем токен, подождите...»
-                    try {
-                        Toast.makeText(activity,
-                                "Получаем токен, подождите...",
-                                Toast.LENGTH_SHORT).show();
-                    } catch (Exception ignored) {}
-
-                    // Закрываем текущее окно и через небольшую паузу открываем новое.
-                    closeCurrentDialog();
-                    handler.postDelayed(() -> {
-                        if (!finished.get()) showDialogAndLoad();
-                    }, RESTART_DELAY_MS);
-                } else {
-                    // Второй раз тоже silent_token — сдаёмся.
-                    Log.e(TAG, "silent_token received on pass 2 — giving up");
-                    finishWithError(
-                            "VK не выдал вечный токен. Нажмите «Войти» и попробуйте снова");
-                }
+                Log.w(TAG, "silent_token received - keeping session alive (no abort)");
                 return;
             }
 

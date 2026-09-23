@@ -11,7 +11,7 @@ namespace LaLuneTokenFetcher.Core;
 /// </summary>
 public static class VkAuthConstants
 {
-    public const string ClientId = "7793118";
+    public const string ClientId = "2274003";
     public const string Scope = "1073737727";
     public const string RedirectUri = "https://oauth.vk.ru/blank.html";
 
@@ -26,7 +26,6 @@ public static class VkAuthConstants
         "redirect_uri=" + "https%3A%2F%2Foauth.vk.ru%2Fblank.html" + "&" +
         "display=page&" +
         "response_type=token&" +
-        "revoke=1&" +
         "v=5.199";
 
     /// <summary>Хосты, на которые VK редиректит после успешного входа.</summary>
