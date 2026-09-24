@@ -15,21 +15,15 @@
 //      c. Запускаем ЛОКАЛЬНЫЙ playwright.ps1 / playwright (тот, что лежит
 //         рядом с LaLuneTokenFetcher) с аргументами "install chromium".
 //
-//   2. Ключевое отличие от предыдущей версии: НЕ используем
-//      one-command `irm https://.../win_install_chromium.ps1 | iex`.
-//      Тот скрипт качает ZIP в temp и запускает Program.Main, но не
-//      прокидывает PLAYWRIGHT_BROWSERS_PATH — поэтому Chromium уходил
-//      в глобальный %LOCALAPPDATA%\ms-playwright, а не рядом с fetcher'ом.
-//
-//   3. PLAYWRIGHT_BROWSERS_PATH=<vk-token-fetcher>/browsers выставляется
+//   2. PLAYWRIGHT_BROWSERS_PATH=<vk-token-fetcher>/browsers выставляется
 //      и при установке (installPlaywrightChromium), и при запуске самого
 //      fetcher'а (vkfetcher_launch.go) — иначе Playwright ищет Chromium
 //      в дефолтном месте и снова падает с тем же маркером.
 //
-//   4. PLAYWRIGHT_SKIP_BROWSER_GC=1 — чтобы Playwright не удалил только
+//   3. PLAYWRIGHT_SKIP_BROWSER_GC=1 — чтобы Playwright не удалил только
 //      что поставленный Chromium при апдейте.
 //
-//   5. На Windows playwright.ps1 запускается через `pwsh -File` (PowerShell 7,
+//   4. На Windows playwright.ps1 запускается через `pwsh -File` (PowerShell 7,
 //      .NET 8 — совпадает с таргетом Microsoft.Playwright.dll); если pwsh
 //      нет — фолбэк на `powershell -File` (Windows PowerShell 5.1).
 
