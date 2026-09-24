@@ -4,8 +4,11 @@
 //
 // Логика:
 //
-//   1. Открываем persistent context (userDataDir = <dir бинарника>/userdata),
-//      чтобы cookies/localStorage сохранялись между запусками.
+//   1. Открываем persistent context (userDataDir = %APPDATA%\.la-lune\
+//      vk-token-fetcher\userdata на Windows, ~/.la-lune/vk-token-fetcher/
+//      userdata на Linux/macOS), чтобы cookies/localStorage сохранялись
+//      между запусками и лежали в ЕДИНОМ месте — рядом с самим
+//      vk-token-fetcher\, независимо от того, откуда запущен процесс.
 //
 //   2. Идём на VK OAuth URL.
 //
@@ -27,10 +30,10 @@
 //
 //   5. Общий таймаут — 5 минут (VkAuthConstants.Timeout).
 //
-// persistent context (`LaunchPersistentContextAsync`) — ключевое отличие
-// от старой версии: profile сохраняется в <dir>/userdata и переиспользуется
-// между запусками, поэтому после первого успешного логина повторный
-// запуск сразу идёт с «Продолжить как ...» вместо полного входа.
+// Путь userdata НЕ зависит от AppContext.BaseDirectory: он всегда
+// вычисляется от домашнего каталога пользователя, поэтому сессия
+// сохраняется в одном и том же месте, даже если exe запущен из другой
+// папки (тесты, отладка, ручной запуск).
 
 using System.Text.RegularExpressions;
 using LaLuneTokenFetcher.Core;
@@ -74,6 +77,9 @@ public sealed class PlaywrightTokenFetcher : ITokenFetcher
     {
         var userDataDir = ResolveUserDataDir();
         Directory.CreateDirectory(userDataDir);
+
+        // Логируем путь в stderr, чтобы Go-бэкенд показал его в [VK] логах.
+        Console.Error.WriteLine("[LaLune] userdata dir: " + userDataDir);
 
         // Persistent context: сохраняет cookies/localStorage в userDataDir.
         // В отличие от LaunchAsync+NewContextAsync, это НЕ инкогнито —
@@ -137,7 +143,6 @@ public sealed class PlaywrightTokenFetcher : ITokenFetcher
         finally
         {
             // Persistent context: CloseAsync() сохраняет профиль на диск.
-            // DisposeAsync() тоже работает, но CloseAsync семантически яснее.
             try { await context.CloseAsync(); } catch { /* ignore */ }
         }
     }
@@ -227,14 +232,37 @@ public sealed class PlaywrightTokenFetcher : ITokenFetcher
     }
 
     /// <summary>
-    /// Папка профиля: <dir бинарника>/userdata.
+    /// Путь профиля: %APPDATA%\.la-lune\vk-token-fetcher\userdata (Windows)
+    /// или ~/.la-lune/vk-token-fetcher/userdata (Linux/macOS).
+    ///
+    /// НЕ зависит от AppContext.BaseDirectory — единый путь для всех
+    /// запусков, независимо от того, откуда стартовал процесс.
     /// </summary>
     private static string ResolveUserDataDir()
     {
-        // AppContext.BaseDirectory — папка, откуда запущен процесс
-        // (рядом с LaLuneTokenFetcher.exe / LaLuneTokenFetcher).
-        var baseDir = AppContext.BaseDirectory;
-        return Path.Combine(baseDir, "userdata");
+        string baseDir;
+
+        if (OperatingSystem.IsWindows())
+        {
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(appData))
+            {
+                appData = Environment.GetEnvironmentVariable("APPDATA")
+                          ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            }
+            baseDir = Path.Combine(appData, ".la-lune");
+        }
+        else
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(home))
+            {
+                home = Environment.GetEnvironmentVariable("HOME") ?? ".";
+            }
+            baseDir = Path.Combine(home, ".la-lune");
+        }
+
+        return Path.Combine(baseDir, "vk-token-fetcher", "userdata");
     }
 
     private static async Task<IBrowserContext> LaunchPersistentContextAsync(string userDataDir)
@@ -265,11 +293,7 @@ public sealed class PlaywrightTokenFetcher : ITokenFetcher
                     TimezoneId = "Europe/Moscow",
                 });
 
-            // Ссылку на playwright держим в context через замыкание —
-            // context.DisposeAsync() сам закроет playwright.
-            // Храним ссылку, чтобы GC не собрал раньше времени.
-            _ = playwright;
-
+            _ = playwright; // держим ссылку, чтобы GC не собрал playwright раньше context
             return context;
         }
         catch (PlaywrightException ex) when (IsBrowserMissing(ex))
