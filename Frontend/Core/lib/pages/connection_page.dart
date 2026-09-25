@@ -6,8 +6,8 @@ import '../widgets/glass_card.dart';
 import '../widgets/toast.dart';
 
 class ConnectionPage extends StatefulWidget {
-  /// Р’С‹Р·С‹РІР°РµС‚СЃСЏ, РєРѕРіРґР° РєРѕРЅС„РёРі РґРѕР±Р°РІР»РµРЅ/СѓРґР°Р»С‘РЅ вЂ” СЂРѕРґРёС‚РµР»СЊ РґРѕР»Р¶РµРЅ
-  /// РїРµСЂРµСЃРѕР·РґР°С‚СЊ СЌС‚Сѓ СЃС‚СЂР°РЅРёС†Сѓ (РёРЅРєСЂРµРјРµРЅС‚РёС‚СЊ СЃРІРѕР№ version-key).
+  /// Вызывается, когда конфиг добавлен/удалён — родитель должен
+  /// пересоздать эту страницу (инкрементить свой version-key).
   final VoidCallback? onReload;
 
   const ConnectionPage({super.key, this.onReload});
@@ -77,10 +77,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final downloading = Api.isCoreDownloading();
       if (downloading && !_wasDownloading) {
         _wasDownloading = true;
-        // РўРѕСЃС‚ РІ СЃС‚РёР»Рµ РѕСЃС‚Р°Р»СЊРЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№ (Р¶С‘Р»С‚С‹Р№, СЃРЅРёР·Сѓ).
+        // Тост в стиле остальных сообщений (жёлтый, снизу).
         Toast.show(
           context,
-          'РџРѕРґРѕР¶РґРёС‚Рµ, СЃРєР°С‡РёРІР°РµС‚СЃСЏ СЏРґСЂРѕ. VPN Р·Р°РїСѓСЃС‚РёС‚СЃСЏ С‡РµСЂРµР· 10 СЃРµРє',
+          'Подождите, скачивается ядро. VPN запустится через 10 сек',
           duration: const Duration(seconds: 10),
         );
       }
@@ -98,7 +98,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
       setState(() => _connected = false);
     } else {
       if (_selectedId == null) {
-        _toast('Р’С‹Р±РµСЂРёС‚Рµ РєРѕРЅС„РёРі');
+        _toast('Выберите конфиг');
         return;
       }
       final cfg = _configs.where((c) => c.id == _selectedId).toList();
@@ -116,7 +116,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Toast.show(context, msg);
   }
 
-Future<void> _showAddDialog() async {     final result = await showAddConfigDialog(context);     if (result == null) return;      if (result.link.isEmpty) {       _toast('Р’РІРµРґРёС‚Рµ СЃСЃС‹Р»РєСѓ');       return;     }      final saved = Api.saveConfig(result.link, result.protocol);     if (saved) {       _toast('РџСЂРѕС„РёР»СЊ СЃРѕС…СЂР°РЅС‘РЅ');       _reload();       widget.onReload?.call();     } else {       _toast('РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ');     }   }
+Future<void> _showAddDialog() async {     final result = await showAddConfigDialog(context);     if (result == null) return;      if (result.link.isEmpty) {       _toast('Введите ссылку');       return;     }      final saved = Api.saveConfig(result.link, result.protocol);     if (saved) {       _toast('Профиль сохранён');       _reload();       widget.onReload?.call();     } else {       _toast('Не удалось сохранить');     }   }
 
   @override
   Widget build(BuildContext context) {
@@ -134,7 +134,7 @@ Future<void> _showAddDialog() async {     final result = await showAddConfigDial
                 ),
                 const SizedBox(height: 20),
                 Text(
-                  _connected ? 'РџРѕРґРєР»СЋС‡РµРЅРѕ' : 'РћС‚РєР»СЋС‡РµРЅРѕ',
+                  _connected ? 'Подключено' : 'Отключено',
                   style: TextStyle(
                     fontSize: 16,
                     color: _connected
@@ -184,20 +184,20 @@ Future<void> _showAddDialog() async {     final result = await showAddConfigDial
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: Colors.white.withOpacity(0.1)),
         ),
-        title: const Text('РЈРґР°Р»РёС‚СЊ РєРѕРЅС„РёРі?'),
+        title: const Text('Удалить конфиг?'),
         content: const Text(
-          'Р­С‚Рѕ РґРµР№СЃС‚РІРёРµ РЅРµР»СЊР·СЏ РѕС‚РјРµРЅРёС‚СЊ.',
+          'Это действие нельзя отменить.',
           style: TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('РћС‚РјРµРЅР°'),
+            child: const Text('Отмена'),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-            child: const Text('РЈРґР°Р»РёС‚СЊ'),
+            child: const Text('Удалить'),
           ),
         ],
       ),
@@ -206,7 +206,7 @@ Future<void> _showAddDialog() async {     final result = await showAddConfigDial
 }
 
 // ============================================================
-//  РљРЅРѕРїРєР° "+" РІ РїСЂР°РІРѕРј РІРµСЂС…РЅРµРј СѓРіР»Сѓ
+//  Кнопка "+" в правом верхнем углу
 // ============================================================
 
 class _AddButton extends StatefulWidget {
@@ -266,7 +266,7 @@ class _AddButtonState extends State<_AddButton> {
 }
 
 // ============================================================
-//  РљРЅРѕРїРєР°-Р»СѓРЅР°
+//  Кнопка-луна
 // ============================================================
 
 class _MoonButton extends StatefulWidget {
@@ -334,7 +334,7 @@ class _MoonButtonState extends State<_MoonButton> {
 }
 
 // ============================================================
-//  РЎРµР»РµРєС‚РѕСЂ РєРѕРЅС„РёРіР°
+//  Селектор конфига
 // ============================================================
 
 class _ConfigSelector extends StatelessWidget {
@@ -362,7 +362,7 @@ class _ConfigSelector extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 child: Text(
-                  'РќРµС‚ РєРѕРЅС„РёРіРѕРІ. РќР°Р¶РјРёС‚Рµ + С‡С‚РѕР±С‹ РґРѕР±Р°РІРёС‚СЊ',
+                  'Нет конфигов. Нажмите + чтобы добавить',
                   style: TextStyle(color: Colors.white.withOpacity(0.5)),
                 ),
               )
