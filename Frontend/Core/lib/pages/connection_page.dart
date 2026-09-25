@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
+import 'add_config_dialog.dart';
 
 import '../api.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/toast.dart';
 
 class ConnectionPage extends StatefulWidget {
-  /// Вызывается, когда конфиг добавлен/удалён — родитель должен
-  /// пересоздать эту страницу (инкрементить свой version-key).
+  /// Р’С‹Р·С‹РІР°РµС‚СЃСЏ, РєРѕРіРґР° РєРѕРЅС„РёРі РґРѕР±Р°РІР»РµРЅ/СѓРґР°Р»С‘РЅ вЂ” СЂРѕРґРёС‚РµР»СЊ РґРѕР»Р¶РµРЅ
+  /// РїРµСЂРµСЃРѕР·РґР°С‚СЊ СЌС‚Сѓ СЃС‚СЂР°РЅРёС†Сѓ (РёРЅРєСЂРµРјРµРЅС‚РёС‚СЊ СЃРІРѕР№ version-key).
   final VoidCallback? onReload;
 
   const ConnectionPage({super.key, this.onReload});
@@ -76,10 +77,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final downloading = Api.isCoreDownloading();
       if (downloading && !_wasDownloading) {
         _wasDownloading = true;
-        // Тост в стиле остальных сообщений (жёлтый, снизу).
+        // РўРѕСЃС‚ РІ СЃС‚РёР»Рµ РѕСЃС‚Р°Р»СЊРЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№ (Р¶С‘Р»С‚С‹Р№, СЃРЅРёР·Сѓ).
         Toast.show(
           context,
-          'Подождите, скачивается ядро. VPN запустится через 10 сек',
+          'РџРѕРґРѕР¶РґРёС‚Рµ, СЃРєР°С‡РёРІР°РµС‚СЃСЏ СЏРґСЂРѕ. VPN Р·Р°РїСѓСЃС‚РёС‚СЃСЏ С‡РµСЂРµР· 10 СЃРµРє',
           duration: const Duration(seconds: 10),
         );
       }
@@ -97,7 +98,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
       setState(() => _connected = false);
     } else {
       if (_selectedId == null) {
-        _toast('Выберите конфиг');
+        _toast('Р’С‹Р±РµСЂРёС‚Рµ РєРѕРЅС„РёРі');
         return;
       }
       final cfg = _configs.where((c) => c.id == _selectedId).toList();
@@ -115,92 +116,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Toast.show(context, msg);
   }
 
-  Future<void> _showAddDialog() async {
-    final controller = TextEditingController();
-    String selectedProtocol = 'CSQTT';
-
-    final ok = await showDialog<bool>(
-      context: context,
-      barrierColor: Colors.black.withOpacity(0.55),
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0F1540),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: Colors.white.withOpacity(0.1)),
-        ),
-        title: const Text('Добавить конфиг'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: controller,
-                autofocus: true,
-                maxLines: 3,
-                minLines: 2,
-                style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(
-                  hintText:
-                      'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=...',
-                ),
-              ),
-              const SizedBox(height: 14),
-              const Text('Протокол', style: TextStyle(fontSize: 12, color: Colors.white70)),
-              const SizedBox(height: 6),
-              DropdownButtonFormField<String>(
-                value: selectedProtocol,
-                dropdownColor: const Color(0xFF0F1540),
-                style: const TextStyle(fontSize: 13, color: Colors.white),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'CSQTT', child: Text('CSQTT')),
-                  DropdownMenuItem(value: 'FREETURN', child: Text('FreeTurn')),
-                  DropdownMenuItem(value: 'OLCRTC', child: Text('OlcRTC')),
-                  DropdownMenuItem(value: 'OPENFLUX', child: Text('OpenFlux')),
-                  DropdownMenuItem(value: 'TOTS', child: Text('ToTS')),
-                ],
-                onChanged: (v) => selectedProtocol = v ?? 'CSQTT',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
-    );
-
-    if (ok == true) {
-      final link = controller.text.trim();
-      if (link.isEmpty) {
-        _toast('Введите ссылку');
-        controller.dispose();
-        return;
-      }
-      final saved = Api.saveConfig(link, selectedProtocol);
-      if (saved) {
-        _toast('Конфиг сохранён');
-        _reload();
-        widget.onReload?.call();
-      } else {
-        _toast('Ошибка сохранения');
-      }
-    }
-
-    controller.dispose();
-  }
+Future<void> _showAddDialog() async {     final result = await showAddConfigDialog(context);     if (result == null) return;      if (result.link.isEmpty) {       _toast('Р’РІРµРґРёС‚Рµ СЃСЃС‹Р»РєСѓ');       return;     }      final saved = Api.saveConfig(result.link, result.protocol);     if (saved) {       _toast('РџСЂРѕС„РёР»СЊ СЃРѕС…СЂР°РЅС‘РЅ');       _reload();       widget.onReload?.call();     } else {       _toast('РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ');     }   }
 
   @override
   Widget build(BuildContext context) {
@@ -218,7 +134,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                 ),
                 const SizedBox(height: 20),
                 Text(
-                  _connected ? 'Подключено' : 'Отключено',
+                  _connected ? 'РџРѕРґРєР»СЋС‡РµРЅРѕ' : 'РћС‚РєР»СЋС‡РµРЅРѕ',
                   style: TextStyle(
                     fontSize: 16,
                     color: _connected
@@ -268,20 +184,20 @@ class _ConnectionPageState extends State<ConnectionPage> {
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: Colors.white.withOpacity(0.1)),
         ),
-        title: const Text('Удалить конфиг?'),
+        title: const Text('РЈРґР°Р»РёС‚СЊ РєРѕРЅС„РёРі?'),
         content: const Text(
-          'Это действие нельзя отменить.',
+          'Р­С‚Рѕ РґРµР№СЃС‚РІРёРµ РЅРµР»СЊР·СЏ РѕС‚РјРµРЅРёС‚СЊ.',
           style: TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
+            child: const Text('РћС‚РјРµРЅР°'),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-            child: const Text('Удалить'),
+            child: const Text('РЈРґР°Р»РёС‚СЊ'),
           ),
         ],
       ),
@@ -290,7 +206,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
 }
 
 // ============================================================
-//  Кнопка "+" в правом верхнем углу
+//  РљРЅРѕРїРєР° "+" РІ РїСЂР°РІРѕРј РІРµСЂС…РЅРµРј СѓРіР»Сѓ
 // ============================================================
 
 class _AddButton extends StatefulWidget {
@@ -350,7 +266,7 @@ class _AddButtonState extends State<_AddButton> {
 }
 
 // ============================================================
-//  Кнопка-луна
+//  РљРЅРѕРїРєР°-Р»СѓРЅР°
 // ============================================================
 
 class _MoonButton extends StatefulWidget {
@@ -418,7 +334,7 @@ class _MoonButtonState extends State<_MoonButton> {
 }
 
 // ============================================================
-//  Селектор конфига
+//  РЎРµР»РµРєС‚РѕСЂ РєРѕРЅС„РёРіР°
 // ============================================================
 
 class _ConfigSelector extends StatelessWidget {
@@ -446,7 +362,7 @@ class _ConfigSelector extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 child: Text(
-                  'Нет конфигов. Нажмите + чтобы добавить',
+                  'РќРµС‚ РєРѕРЅС„РёРіРѕРІ. РќР°Р¶РјРёС‚Рµ + С‡С‚РѕР±С‹ РґРѕР±Р°РІРёС‚СЊ',
                   style: TextStyle(color: Colors.white.withOpacity(0.5)),
                 ),
               )
