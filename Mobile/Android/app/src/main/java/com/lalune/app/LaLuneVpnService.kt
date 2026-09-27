@@ -47,6 +47,9 @@ class LaLuneVpnService : VpnService() {
     @Volatile private var detectedTunIP: String? = null
     @Volatile private var detectedDNS: String? = null
     @Volatile private var activeSessions: Int = 0
+    // Требуем ДВА подряд тика статистики с Активных>0 перед созданием TUN,
+    // иначе TUN поднимается слишком рано и трафик не идёт.
+    @Volatile private var consecutiveActiveTicks: Int = 0
     @Volatile private var trafficMB: String = "0.00"
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -135,9 +138,16 @@ class LaLuneVpnService : VpnService() {
                                     // Обновляем уведомление при каждом тике статистики
                                     updateNotification()
 
-                                    if (n > 0 && !tunEstablished && !establishing) {
+                                    // Считаем подряд идущие тики со Активных>0.
+                                    if (n > 0) {
+                                        consecutiveActiveTicks++
+                                    } else {
+                                        consecutiveActiveTicks = 0
+                                    }
+                                    // Создаём TUN только после ДВУХ подряд тиков Активных>0.
+                                    if (n > 0 && consecutiveActiveTicks >= 2 && !tunEstablished && !establishing) {
                                         establishing = true
-                                        Log.i(TAG, "N=$n, establishing TUN")
+                                        Log.i(TAG, "N=$n, consecutive=$consecutiveActiveTicks, establishing TUN")
                                         withContext(Dispatchers.Main) {
                                             establishTun()
                                         }
@@ -284,6 +294,7 @@ class LaLuneVpnService : VpnService() {
         vpnInterface = null
 
         activeSessions = 0
+        consecutiveActiveTicks = 0
         trafficMB = "0.00"
 
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
