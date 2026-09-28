@@ -14,6 +14,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io' show Platform;
+import 'dart:typed_data' show Uint8List;
+
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
 
@@ -36,6 +38,12 @@ typedef _WriteDart = int Function(
     ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, int);
 typedef _VersionC = ffi.Pointer<ffi.Char> Function();
 typedef _VersionDart = ffi.Pointer<ffi.Char> Function();
+
+// ---------------------------------------------------------------------------
+//  Shared MethodChannel (top-level so it is visible to all classes
+//  in this file — SelectedConfig, Api, etc.)
+// ---------------------------------------------------------------------------
+const MethodChannel _laluneChannel = MethodChannel('lalune/api');
 
 // ---------------------------------------------------------------------------
 //  Constants
@@ -307,8 +315,7 @@ class AutoApiResult {
   }
 }
 
-/// Currently selected config, mirrored to the native side so the backend
-/// and settings page can read it.
+/// Currently selected config, mirrored to the native side.
 class SelectedConfig {
   static ConfigItem? _current;
   static ConfigItem? get current => _current;
@@ -317,10 +324,11 @@ class SelectedConfig {
     _current = cfg;
     try {
       if (cfg == null) {
-        _channel.invokeMethod('SetSelectedConfigJson', {'json': '{}'});
+        _laluneChannel
+            .invokeMethod('SetSelectedConfigJson', {'json': '{}'});
       } else {
-        _channel
-            .invokeMethod('SetSelectedConfigJson', {'json': jsonEncode(cfg.toJson())});
+        _laluneChannel.invokeMethod(
+            'SetSelectedConfigJson', {'json': jsonEncode(cfg.toJson())});
       }
     } catch (_) {}
   }
@@ -343,8 +351,6 @@ class TunResult {
 
 class Api {
   Api._();
-
-  static const MethodChannel _channel = MethodChannel('lalune/api');
 
   static void init() {}
 
@@ -378,7 +384,7 @@ class Api {
   }) async {
     try {
       if (Platform.isAndroid || Platform.isIOS) {
-        final r = await _channel.invokeMethod<String>('tunCreate', {
+        final r = await _laluneChannel.invokeMethod<String>('tunCreate', {
           'name': name,
           'address': address,
           'mtu': mtu,
@@ -406,7 +412,7 @@ class Api {
 
   static Future<void> tunDestroy() async {
     if (Platform.isAndroid || Platform.isIOS) {
-      await _channel.invokeMethod('tunDestroy');
+      await _laluneChannel.invokeMethod('tunDestroy');
       return;
     }
     final h = _tunHandle;
@@ -420,7 +426,7 @@ class Api {
 
   static Future<Uint8List?> tunRead(int len) async {
     if (Platform.isAndroid || Platform.isIOS) {
-      return _channel.invokeMethod<Uint8List>('tunRead', {'len': len});
+      return _laluneChannel.invokeMethod<Uint8List>('tunRead', {'len': len});
     }
     final h = _tunHandle;
     if (h == null) return null;
@@ -438,7 +444,8 @@ class Api {
 
   static Future<int> tunWrite(Uint8List data) async {
     if (Platform.isAndroid || Platform.isIOS) {
-      final r = await _channel.invokeMethod<int>('tunWrite', {'data': data});
+      final r =
+          await _laluneChannel.invokeMethod<int>('tunWrite', {'data': data});
       return r ?? -1;
     }
     final h = _tunHandle;
@@ -456,7 +463,7 @@ class Api {
 
   static Future<String> version() async {
     if (Platform.isAndroid || Platform.isIOS) {
-      final v = await _channel.invokeMethod<String>('version');
+      final v = await _laluneChannel.invokeMethod<String>('version');
       return v ?? 'unknown';
     }
     final lib = _nativeLib();
@@ -470,16 +477,12 @@ class Api {
   // Names match the old JS bridge so UI code stays unchanged.
 
   // Configs
-  static List<ConfigItem> getConfigs() {
-    // Sync fallback: we keep a cached list refreshed by `refreshConfigs()`.
-    return _configsCache;
-  }
-
   static List<ConfigItem> _configsCache = [];
+  static List<ConfigItem> getConfigs() => _configsCache;
 
   static Future<void> refreshConfigs() async {
     try {
-      final raw = await _channel.invokeMethod<String>('GetConfigsJson');
+      final raw = await _laluneChannel.invokeMethod<String>('GetConfigsJson');
       if (raw == null) return;
       final arr = jsonDecode(raw) as List;
       _configsCache = arr
@@ -489,23 +492,23 @@ class Api {
   }
 
   static bool saveConfig(String link, [String protocol = 'CSQTT']) {
-    _channel.invokeMethod('SaveConfig', {'link': link, 'protocol': protocol});
+    _laluneChannel
+        .invokeMethod('SaveConfig', {'link': link, 'protocol': protocol});
     return true;
   }
 
   static bool deleteConfig(int id) {
-    _channel.invokeMethod('DeleteConfig', {'id': id});
+    _laluneChannel.invokeMethod('DeleteConfig', {'id': id});
     return true;
   }
 
   // Settings
   static Settings _settingsCache = Settings();
-
   static Settings getSettings() => _settingsCache;
 
   static Future<void> refreshSettings() async {
     try {
-      final raw = await _channel.invokeMethod<String>('GetSettingsJson');
+      final raw = await _laluneChannel.invokeMethod<String>('GetSettingsJson');
       if (raw == null) return;
       _settingsCache =
           Settings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
@@ -513,7 +516,7 @@ class Api {
   }
 
   static bool saveSettings(Settings s) {
-    _channel
+    _laluneChannel
         .invokeMethod('SaveSettings', {'json': jsonEncode(s.toJson())});
     _settingsCache = s;
     return true;
@@ -525,7 +528,7 @@ class Api {
 
   static Future<void> refreshLogs() async {
     try {
-      final raw = await _channel.invokeMethod<String>('GetLogsJson');
+      final raw = await _laluneChannel.invokeMethod<String>('GetLogsJson');
       if (raw == null) return;
       final arr = jsonDecode(raw) as List;
       _logsCache = arr.map((e) => e.toString()).toList();
@@ -533,7 +536,7 @@ class Api {
   }
 
   static bool clearLogs() {
-    _channel.invokeMethod('ClearLogs');
+    _laluneChannel.invokeMethod('ClearLogs');
     _logsCache = [];
     return true;
   }
@@ -544,7 +547,7 @@ class Api {
 
   static Future<void> refreshStatus() async {
     try {
-      final raw = await _channel.invokeMethod<String>('GetStatusJson');
+      final raw = await _laluneChannel.invokeMethod<String>('GetStatusJson');
       if (raw == null) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
       _connectedCache = (j['connected'] ?? false) as bool;
@@ -552,13 +555,13 @@ class Api {
   }
 
   static bool connect(int id) {
-    _channel.invokeMethod('Connect', {'id': id});
+    _laluneChannel.invokeMethod('Connect', {'id': id});
     _connectedCache = true;
     return true;
   }
 
   static bool disconnect() {
-    _channel.invokeMethod('Disconnect');
+    _laluneChannel.invokeMethod('Disconnect');
     _connectedCache = false;
     return true;
   }
@@ -569,19 +572,20 @@ class Api {
 
   static Future<void> refreshCoreUpdate() async {
     try {
-      final raw = await _channel.invokeMethod<String>('CheckCoreUpdate');
+      final raw =
+          await _laluneChannel.invokeMethod<String>('CheckCoreUpdate');
       if (raw == null) return;
       _coreUpdateCache = UpdateInfo.fromJsonString(raw);
     } catch (_) {}
   }
 
   static bool updateCore() {
-    _channel.invokeMethod('UpdateCore');
+    _laluneChannel.invokeMethod('UpdateCore');
     return true;
   }
 
   static bool updateCoreAndWait() {
-    _channel.invokeMethod('UpdateCoreAndWait');
+    _laluneChannel.invokeMethod('UpdateCoreAndWait');
     return true;
   }
 
@@ -591,14 +595,15 @@ class Api {
 
   static Future<void> refreshLaLuneUpdate() async {
     try {
-      final raw = await _channel.invokeMethod<String>('CheckLaLuneUpdate');
+      final raw =
+          await _laluneChannel.invokeMethod<String>('CheckLaLuneUpdate');
       if (raw == null) return;
       _laluneUpdateCache = UpdateInfo.fromJsonString(raw);
     } catch (_) {}
   }
 
   static bool openLaLuneReleases() {
-    _channel.invokeMethod('OpenLaLuneReleases');
+    _laluneChannel.invokeMethod('OpenLaLuneReleases');
     return true;
   }
 
@@ -608,25 +613,26 @@ class Api {
 
   static Future<void> refreshVkState() async {
     try {
-      final raw = await _channel.invokeMethod<String>('GetVKTokenState');
+      final raw =
+          await _laluneChannel.invokeMethod<String>('GetVKTokenState');
       if (raw == null) return;
       _vkStateCache = VkTokenState.fromJsonString(raw);
     } catch (_) {}
   }
 
   static bool vkLogin() {
-    _channel.invokeMethod('VkLogin');
+    _laluneChannel.invokeMethod('VkLogin');
     return true;
   }
 
   static bool deleteVKToken() {
-    _channel.invokeMethod('DeleteVKToken');
+    _laluneChannel.invokeMethod('DeleteVKToken');
     _vkStateCache = VkTokenState.empty;
     return true;
   }
 
   static VkTokenState validateVKToken() {
-    _channel.invokeMethod<String>('ValidateVKToken').then((raw) {
+    _laluneChannel.invokeMethod<String>('ValidateVKToken').then((raw) {
       if (raw != null) _vkStateCache = VkTokenState.fromJsonString(raw);
     });
     return _vkStateCache;
@@ -634,7 +640,7 @@ class Api {
 
   // VK auto API
   static AutoApiResult runVkAutoApiCalls() {
-    _channel.invokeMethod<String>('RunVkAutoApiCalls');
+    _laluneChannel.invokeMethod<String>('RunVkAutoApiCalls');
     return const AutoApiResult(pending: true);
   }
 
@@ -643,7 +649,8 @@ class Api {
   }
 
   static bool finishVkCalls(List<String> callIds) {
-    _channel.invokeMethod('FinishVkCalls', {'callIds': jsonEncode(callIds)});
+    _laluneChannel
+        .invokeMethod('FinishVkCalls', {'callIds': jsonEncode(callIds)});
     return true;
   }
 
@@ -653,13 +660,13 @@ class Api {
 
   static Future<void> refreshDeviceId() async {
     try {
-      final raw = await _channel.invokeMethod<String>('GetDeviceId');
+      final raw = await _laluneChannel.invokeMethod<String>('GetDeviceId');
       if (raw != null) _deviceIdCache = raw;
     } catch (_) {}
   }
 
   static String regenerateDeviceId() {
-    _channel.invokeMethod<String>('RegenerateDeviceId').then((raw) {
+    _laluneChannel.invokeMethod<String>('RegenerateDeviceId').then((raw) {
       if (raw != null) _deviceIdCache = raw;
     });
     return _deviceIdCache;
@@ -671,7 +678,7 @@ class Api {
 
   static Future<void> refreshCoreDownloading() async {
     try {
-      final raw = await _channel.invokeMethod<bool>('IsCoreDownloading');
+      final raw = await _laluneChannel.invokeMethod<bool>('IsCoreDownloading');
       _coreDownloadingCache = raw ?? false;
     } catch (_) {}
   }
@@ -681,7 +688,7 @@ class Api {
   static bool _deployingCache = false;
 
   static bool deploy(String json) {
-    _channel.invokeMethod('DeployProtocol', {'json': json});
+    _laluneChannel.invokeMethod('DeployProtocol', {'json': json});
     _deployingCache = true;
     return true;
   }
@@ -691,9 +698,9 @@ class Api {
 
   static Future<void> refreshDeployState() async {
     try {
-      final log = await _channel.invokeMethod<String>('DeployLog');
+      final log = await _laluneChannel.invokeMethod<String>('DeployLog');
       if (log != null) _deployLogCache = log;
-      final busy = await _channel.invokeMethod<bool>('IsDeploying');
+      final busy = await _laluneChannel.invokeMethod<bool>('IsDeploying');
       _deployingCache = busy ?? false;
     } catch (_) {}
   }
@@ -716,6 +723,3 @@ class Api {
     ]);
   }
 }
-
-// Re-export StringList for convenience where needed
-typedef Uint8List = List<int>;
