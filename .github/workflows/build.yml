@@ -21,7 +21,93 @@ env:
 
 jobs:
   # ============================================================
-  #  DESKTOP LINUX  (Flutter native + Rust backend + .NET fetcher)
+  #  TOKEN FETCHER — только сборка ZIP'ов для релиза
+  #  (в десктопный бандл НЕ попадает, юзер ставит сам)
+  # ============================================================
+  build-token-fetcher:
+    name: "Token Fetcher - ${{ matrix.platform }}"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-latest
+          - platform: Linux
+            runner: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - name: Show dotnet version
+        run: dotnet --info
+
+      - name: Build fetcher
+        run: python build_token_grabber.py --platform=${{ matrix.platform }} --clean
+
+      - name: Package into LaLuneTokenFetcher_<platform>.zip
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: |
+          set -e
+          OUTPUT_BIN="Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher"
+          ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
+
+          if [ ! -d "$OUTPUT_BIN" ]; then
+            echo "Не найдена папка: $OUTPUT_BIN"
+            find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
+            exit 1
+          fi
+
+          STAGING_DIR="Core/LaLuneTokenFetcher/output/_staging"
+          rm -rf "$STAGING_DIR"
+          mkdir -p "$STAGING_DIR/vk-token-fetcher"
+          cp -r "$OUTPUT_BIN/." "$STAGING_DIR/vk-token-fetcher/"
+
+          if [ "${{ matrix.platform }}" = "Linux" ]; then
+            chmod +x "$STAGING_DIR/vk-token-fetcher/LaLuneTokenFetcher" || true
+          fi
+
+          rm -f "$ZIP_PATH"
+
+          pushd "$STAGING_DIR" >/dev/null
+          if [ "${{ matrix.platform }}" = "Windows" ]; then
+            popd >/dev/null
+            powershell -Command "Compress-Archive -Path 'Core/LaLuneTokenFetcher/output/_staging/vk-token-fetcher' -DestinationPath '$ZIP_PATH' -Force"
+          else
+            zip -r "../../LaLuneTokenFetcher_${{ matrix.platform }}.zip" "vk-token-fetcher"
+            popd >/dev/null
+          fi
+
+          ls -la "$ZIP_PATH"
+
+      - name: Verify zip
+        shell: bash
+        run: |
+          ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
+          test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
+          if [ "${{ matrix.platform }}" = "Windows" ]; then
+            powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
+            ls -la verify_zip/vk-token-fetcher
+          else
+            unzip -l "$ZIP"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaLuneTokenFetcher-${{ matrix.platform }}
+          path: Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  # ============================================================
+  #  DESKTOP LINUX
   # ============================================================
   build-desktop-linux:
     name: Desktop Linux
@@ -31,9 +117,6 @@ jobs:
 
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,18 +161,21 @@ jobs:
       - name: Build DeployManager
         run: python build_deploy_manager.py --dest Frontend/Core/linux/runner
 
-      # ---------- Token Fetcher ----------
-      - name: Build Token Fetcher
-        run: python build_token_grabber.py --platform=Linux --clean
-
-      - name: Copy Token Fetcher
-        run: |
-          mkdir -p Frontend/Core/linux/runner/LaLuneTokenFetcher
-          cp -r Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/. Frontend/Core/linux/runner/LaLuneTokenFetcher/
-
       # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=Linux
+
+      # ---------- Assets ----------
+      - name: Copy assets into Flutter project
+        run: |
+          mkdir -p Frontend/Core/assets
+          if [ -d "Assets" ]; then
+            cp -f Assets/* Frontend/Core/assets/ || true
+          fi
+          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
+            echo "placeholder" > Frontend/Core/assets/.keep
+          fi
+          ls -la Frontend/Core/assets/
 
       # ---------- Flutter ----------
       - name: Flutter pub get
@@ -107,10 +193,8 @@ jobs:
           RUNNER="Frontend/Core/linux/runner"
 
           if [ -f "$RUNNER/deploy-manager" ];       then cp "$RUNNER/deploy-manager" "$BUILD_DIR/"; fi
-          if [ -d "$RUNNER/LaLuneTokenFetcher" ];   then cp -r "$RUNNER/LaLuneTokenFetcher" "$BUILD_DIR/"; fi
           if [ -f "$RUNNER/liblalune_backend.so" ]; then mkdir -p "$BUILD_DIR/lib"; cp "$RUNNER/liblalune_backend.so" "$BUILD_DIR/lib/"; fi
 
-          # Скрипт-обёртка для удобного запуска
           cat > "$BUILD_DIR/run.sh" <<'SH'
           #!/bin/sh
           cd "$(dirname "$0")"
@@ -136,15 +220,23 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
 
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.22.0', channel: stable, cache: true }
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          flutter doctor -v
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -177,20 +269,23 @@ jobs:
       - name: Build DeployManager
         run: python build_deploy_manager.py --dest Frontend/Core/windows/runner
 
-      # ---------- Token Fetcher ----------
-      - name: Build Token Fetcher
-        run: python build_token_grabber.py --platform=Windows --clean
-
-      - name: Copy Token Fetcher
-        shell: pwsh
-        run: |
-          $dest = "Frontend/Core/windows/runner/LaLuneTokenFetcher"
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item -Recurse -Force "Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/*" "$dest/"
-
       # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=Windows
+
+      # ---------- Assets ----------
+      - name: Copy assets into Flutter project
+        shell: pwsh
+        run: |
+          $dest = "Frontend/Core/assets"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          if (Test-Path "Assets") {
+            Copy-Item -Force "Assets\*" "$dest/" -ErrorAction SilentlyContinue
+          }
+          if (-not (Get-ChildItem $dest -Force)) {
+            "placeholder" | Out-File -Encoding utf8 "$dest/.keep"
+          }
+          Get-ChildItem $dest
 
       # ---------- Flutter ----------
       - name: Flutter pub get
@@ -210,7 +305,6 @@ jobs:
 
           if (Test-Path "$runner/deploy-manager.exe") { Copy-Item "$runner/deploy-manager.exe" "$buildDir/" }
           if (Test-Path "$runner/lalune_backend.dll") { Copy-Item "$runner/lalune_backend.dll" "$buildDir/" }
-          if (Test-Path "$runner/LaLuneTokenFetcher") { Copy-Item -Recurse "$runner/LaLuneTokenFetcher" "$buildDir/" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -219,7 +313,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  ANDROID  (manual SDK/NDK install + .cargo/config.toml)
+  #  ANDROID
   # ============================================================
   build-android:
     name: Android APK
@@ -255,7 +349,6 @@ jobs:
             ${{ runner.os }}-cargo-android-
             ${{ runner.os }}-cargo-
 
-      # ---------- Android SDK (manual) ----------
       - name: Cache Android SDK
         uses: actions/cache@v4
         with:
@@ -267,7 +360,6 @@ jobs:
       - name: Install Android SDK (manual)
         run: |
           set -euo pipefail
-
           SDK_ROOT="$RUNNER_TOOL_CACHE/android-sdk"
           mkdir -p "$SDK_ROOT/cmdline-tools"
 
@@ -285,7 +377,6 @@ jobs:
           export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$SDK_ROOT/platform-tools:$PATH"
 
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-${ANDROID_COMPILE_SDK}" \
@@ -298,7 +389,6 @@ jobs:
           echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-      # ---------- Android NDK (manual) ----------
       - name: Cache Android NDK
         uses: actions/cache@v4
         with:
@@ -319,7 +409,6 @@ jobs:
           echo "NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
 
-      # ---------- .cargo/config.toml for NDK linkers ----------
       - name: Generate .cargo/config.toml (Backend)
         run: |
           set -euo pipefail
@@ -353,7 +442,6 @@ jobs:
           linker = "${NDK_BIN}/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
           EOF
 
-      # ---------- Rust Backend (TUN) ----------
       - name: Build Rust Backend for Android (all ABIs)
         working-directory: Backend
         run: |
@@ -375,7 +463,6 @@ jobs:
                "Frontend/Core/android/app/src/main/jniLibs/$ABI/"
           done
 
-      # ---------- DeployManager ----------
       - name: Build DeployManager for Android (all ABIs)
         run: |
           for ABI in arm64-v8a armeabi-v7a x86_64; do
@@ -383,13 +470,23 @@ jobs:
             python build_deploy_manager.py --android --abi "$ABI"
           done
 
-      # ---------- Android Core Java ----------
       - name: Prepare Android Core
         run: python prepare_android_core.py
 
-      # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=Android
+
+      # ---------- Assets ----------
+      - name: Copy assets into Flutter project
+        run: |
+          mkdir -p Frontend/Core/assets
+          if [ -d "Assets" ]; then
+            cp -f Assets/* Frontend/Core/assets/ || true
+          fi
+          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
+            echo "placeholder" > Frontend/Core/assets/.keep
+          fi
+          ls -la Frontend/Core/assets/
 
       # ---------- Flutter ----------
       - name: Flutter pub get
@@ -414,101 +511,15 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  TOKEN FETCHER (Windows + Linux)
-  # ============================================================
-  build-token-fetcher:
-    name: "Token Fetcher - ${{ matrix.platform }}"
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: Windows
-            runner: windows-latest
-          - platform: Linux
-            runner: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
-
-      - name: Show dotnet version
-        run: dotnet --info
-
-      - name: Build fetcher
-        run: python build_token_grabber.py --platform=${{ matrix.platform }} --clean
-
-      - name: Package into vk-token-fetcher.zip
-        shell: bash
-        env:
-          PYTHONIOENCODING: utf-8
-          PYTHONUTF8: "1"
-        run: |
-          set -e
-          OUTPUT_BIN="Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher"
-          ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
-
-          if [ ! -d "$OUTPUT_BIN" ]; then
-            echo "Не найдена папка с результатом сборки: $OUTPUT_BIN"
-            find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
-            exit 1
-          fi
-
-          STAGING_DIR="Core/LaLuneTokenFetcher/output/_staging"
-          rm -rf "$STAGING_DIR"
-          mkdir -p "$STAGING_DIR/vk-token-fetcher"
-          cp -r "$OUTPUT_BIN/." "$STAGING_DIR/vk-token-fetcher/"
-
-          if [ "${{ matrix.platform }}" = "Linux" ]; then
-            chmod +x "$STAGING_DIR/vk-token-fetcher/LaLuneTokenFetcher" || true
-          fi
-
-          rm -f "$ZIP_PATH"
-
-          pushd "$STAGING_DIR" >/dev/null
-          if [ "${{ matrix.platform }}" = "Windows" ]; then
-            popd >/dev/null
-            powershell -Command "Compress-Archive -Path 'Core/LaLuneTokenFetcher/output/_staging/vk-token-fetcher' -DestinationPath '$ZIP_PATH' -Force"
-          else
-            zip -r "../../LaLuneTokenFetcher_${{ matrix.platform }}.zip" "vk-token-fetcher"
-            popd >/dev/null
-          fi
-
-          echo "=== $ZIP_PATH ==="
-          ls -la "$ZIP_PATH"
-
-      - name: Verify zip
-        shell: bash
-        run: |
-          ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
-          test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
-          if [ "${{ matrix.platform }}" = "Windows" ]; then
-            powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
-            ls -la verify_zip/vk-token-fetcher
-          else
-            unzip -l "$ZIP"
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LaLuneTokenFetcher-${{ matrix.platform }}
-          path: Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip
-          if-no-files-found: error
-
-  # ============================================================
-  #  RELEASE  (tag = YY.MM.DD.HH.MM)
+  #  RELEASE
   # ============================================================
   create-release:
     name: Create Release
     needs:
+      - build-token-fetcher
       - build-desktop-linux
       - build-desktop-windows
       - build-android
-      - build-token-fetcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

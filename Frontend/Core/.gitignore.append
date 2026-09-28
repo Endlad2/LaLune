@@ -1,0 +1,4 @@
+# --- Flutter-generated assets (copied from ../../Assets by CI) ---
+assets/*.png
+assets/*.jpg
+assets/.keep
