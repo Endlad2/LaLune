@@ -41,7 +41,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            LaLune/Backend/target/
+            Backend/target/
           key: ${{ runner.os }}-cargo-ios-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-ios-
@@ -49,51 +49,50 @@ jobs:
 
       # ---------- Rust Backend (TUN) for iOS ----------
       - name: Build Rust Backend for iOS (device arm64)
-        working-directory: LaLune/Backend
+        working-directory: Backend
         run: cargo build --release --target aarch64-apple-ios
 
       - name: Build Rust Backend for iOS (sim arm64)
-        working-directory: LaLune/Backend
+        working-directory: Backend
         run: cargo build --release --target aarch64-apple-ios-sim
 
       - name: Build Rust Backend for iOS (sim x86_64)
-        working-directory: LaLune/Backend
+        working-directory: Backend
         run: cargo build --release --target x86_64-apple-ios
 
       - name: Create universal simulator static lib
         run: |
           mkdir -p /tmp/ios-sim
           lipo -create \
-            LaLune/Backend/target/aarch64-apple-ios-sim/release/liblalune_backend.a \
-            LaLune/Backend/target/x86_64-apple-ios/release/liblalune_backend.a \
+            Backend/target/aarch64-apple-ios-sim/release/liblalune_backend.a \
+            Backend/target/x86_64-apple-ios/release/liblalune_backend.a \
             -output /tmp/ios-sim/liblalune_backend.a
 
       - name: Assemble iOS backend lib
         run: |
-          mkdir -p LaLune/Frontend/Core/ios/Backend
-          cp LaLune/Backend/target/aarch64-apple-ios/release/liblalune_backend.a \
-             LaLune/Frontend/Core/ios/Backend/liblalune_backend_device.a
+          mkdir -p Frontend/Core/ios/Backend
+          cp Backend/target/aarch64-apple-ios/release/liblalune_backend.a \
+             Frontend/Core/ios/Backend/liblalune_backend_device.a
           cp /tmp/ios-sim/liblalune_backend.a \
-             LaLune/Frontend/Core/ios/Backend/liblalune_backend_sim.a
+             Frontend/Core/ios/Backend/liblalune_backend_sim.a
 
       # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel
-        working-directory: LaLune
         run: python3 prepare_st.py --platform=Android || true
 
       # ---------- Flutter iOS ----------
       - name: Flutter pub get
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter pub get
 
       - name: Flutter build iOS (no codesign)
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter build ios --release --no-codesign
 
       # ---------- Package unsigned IPA ----------
       - name: Create unsigned IPA
         run: |
-          cd LaLune/Frontend/Core/build/ios/iphoneos
+          cd Frontend/Core/build/ios/iphoneos
           mkdir -p Payload
           cp -r Runner.app Payload/
           zip -r LaLune-iOS-unsigned.ipa Payload

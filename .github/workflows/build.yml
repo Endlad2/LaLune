@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  ANDROID_API_LEVEL: "24"
+  ANDROID_BUILD_TOOLS: "34.0.0"
+  ANDROID_COMPILE_SDK: "34"
 
 jobs:
   # ==========================================================
@@ -21,7 +24,6 @@ jobs:
       - name: Compute version tag
         id: tag
         run: |
-          # Use UTC time; format: YY.MM.DD.HH.MM
           TAG=$(date -u +'%y.%m.%d.%H.%M')
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Computed tag: $TAG"
@@ -66,61 +68,58 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            LaLune/Backend/target/
-            LaLune/Core/DeployManager/target/
+            Backend/target/
+            Core/DeployManager/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       # ---------- Rust Backend (TUN) ----------
       - name: Build Rust Backend
-        working-directory: LaLune/Backend
+        working-directory: Backend
         run: cargo build --release
 
       - name: Copy Backend library
         shell: pwsh
         run: |
-          $dest = "LaLune/Frontend/Core/windows/runner"
+          $dest = "Frontend/Core/windows/runner"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item "LaLune/Backend/target/release/lalune_backend.dll" "$dest/"
+          Copy-Item "Backend/target/release/lalune_backend.dll" "$dest/"
 
       # ---------- DeployManager ----------
       - name: Build DeployManager
-        working-directory: LaLune
         run: python build_deploy_manager.py --dest Frontend/Core/windows/runner
 
       # ---------- Token Fetcher ----------
       - name: Build Token Fetcher
-        working-directory: LaLune
         run: python build_token_grabber.py --platform=Windows --clean
 
       - name: Copy Token Fetcher
         shell: pwsh
         run: |
-          $dest = "LaLune/Frontend/Core/windows/runner/LaLuneTokenFetcher"
+          $dest = "Frontend/Core/windows/runner/LaLuneTokenFetcher"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item -Recurse -Force "LaLune/Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/*" "$dest/"
+          Copy-Item -Recurse -Force "Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/*" "$dest/"
 
       # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel
-        working-directory: LaLune
         run: python prepare_st.py --platform=Windows
 
       # ---------- Flutter ----------
       - name: Flutter pub get
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter pub get
 
       - name: Build Flutter Windows
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter build windows --release
 
       # ---------- Package ----------
       - name: Copy extra binaries into bundle
         shell: pwsh
         run: |
-          $buildDir = "LaLune/Frontend/Core/build/windows/x64/runner/Release"
-          $runner = "LaLune/Frontend/Core/windows/runner"
+          $buildDir = "Frontend/Core/build/windows/x64/runner/Release"
+          $runner = "Frontend/Core/windows/runner"
 
           if (Test-Path "$runner/deploy-manager.exe") {
             Copy-Item "$runner/deploy-manager.exe" "$buildDir/"
@@ -135,7 +134,7 @@ jobs:
       - name: Create ZIP
         shell: pwsh
         run: |
-          $buildDir = "LaLune/Frontend/Core/build/windows/x64/runner/Release"
+          $buildDir = "Frontend/Core/build/windows/x64/runner/Release"
           Compress-Archive -Path "$buildDir/*" -DestinationPath "LaLune-Windows-x64.zip" -Force
 
       - name: Upload Windows artifact
@@ -192,56 +191,53 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            LaLune/Backend/target/
-            LaLune/Core/DeployManager/target/
+            Backend/target/
+            Core/DeployManager/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       # ---------- Rust Backend (TUN) ----------
       - name: Build Rust Backend
-        working-directory: LaLune/Backend
+        working-directory: Backend
         run: cargo build --release
 
       - name: Copy Backend library
         run: |
-          mkdir -p LaLune/Frontend/Core/linux/runner
-          cp LaLune/Backend/target/release/liblalune_backend.so LaLune/Frontend/Core/linux/runner/
+          mkdir -p Frontend/Core/linux/runner
+          cp Backend/target/release/liblalune_backend.so Frontend/Core/linux/runner/
 
       # ---------- DeployManager ----------
       - name: Build DeployManager
-        working-directory: LaLune
         run: python build_deploy_manager.py --dest Frontend/Core/linux/runner
 
       # ---------- Token Fetcher ----------
       - name: Build Token Fetcher
-        working-directory: LaLune
         run: python build_token_grabber.py --platform=Linux --clean
 
       - name: Copy Token Fetcher
         run: |
-          mkdir -p LaLune/Frontend/Core/linux/runner/LaLuneTokenFetcher
-          cp -r LaLune/Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/* LaLune/Frontend/Core/linux/runner/LaLuneTokenFetcher/
+          mkdir -p Frontend/Core/linux/runner/LaLuneTokenFetcher
+          cp -r Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher/* Frontend/Core/linux/runner/LaLuneTokenFetcher/
 
       # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel
-        working-directory: LaLune
         run: python prepare_st.py --platform=Linux
 
       # ---------- Flutter ----------
       - name: Flutter pub get
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter pub get
 
       - name: Build Flutter Linux
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter build linux --release
 
       # ---------- Package ----------
       - name: Copy extra binaries into bundle
         run: |
-          BUILD_DIR="LaLune/Frontend/Core/build/linux/x64/release/bundle"
-          RUNNER="LaLune/Frontend/Core/linux/runner"
+          BUILD_DIR="Frontend/Core/build/linux/x64/release/bundle"
+          RUNNER="Frontend/Core/linux/runner"
 
           if [ -f "$RUNNER/deploy-manager" ]; then
             cp "$RUNNER/deploy-manager" "$BUILD_DIR/"
@@ -256,7 +252,7 @@ jobs:
 
       - name: Create tarball
         run: |
-          BUILD_DIR="LaLune/Frontend/Core/build/linux/x64/release/bundle"
+          BUILD_DIR="Frontend/Core/build/linux/x64/release/bundle"
           tar -czvf LaLune-Linux-x64.tar.gz -C "$BUILD_DIR" .
 
       - name: Upload Linux artifact
@@ -267,7 +263,7 @@ jobs:
           retention-days: 30
 
   # ==========================================================
-  #  ANDROID
+  #  ANDROID (manual SDK/NDK install)
   # ==========================================================
   android:
     needs: version
@@ -281,16 +277,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r26b
-          add-to-path: true
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -317,30 +303,92 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            LaLune/Backend/target/
-            LaLune/Core/DeployManager/target/
+            Backend/target/
+            Core/DeployManager/target/
           key: ${{ runner.os }}-cargo-android-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-android-
             ${{ runner.os }}-cargo-
 
-      - name: Set NDK env
+      # ---------- Manual Android SDK install ----------
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.tool_cache }}/android-sdk
+            ~/.android
+          key: ${{ runner.os }}-android-sdk-${{ env.ANDROID_COMPILE_SDK }}-${{ env.ANDROID_BUILD_TOOLS }}
+
+      - name: Install Android SDK (manual)
         run: |
-          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "ANDROID_API_LEVEL=24" >> $GITHUB_ENV
+          set -euo pipefail
+
+          SDK_ROOT="$RUNNER_TOOL_CACHE/android-sdk"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+
+          CT_VERSION="11076708"
+          CT_ZIP="commandlinetools-linux-${CT_VERSION}_latest.zip"
+          if [ ! -d "$SDK_ROOT/cmdline-tools/latest" ]; then
+            wget -q "https://dl.google.com/android/repository/${CT_ZIP}" -O /tmp/cmdline-tools.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-extract
+            mv /tmp/cmdline-tools-extract/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+            rm -rf /tmp/cmdline-tools.zip /tmp/cmdline-tools-extract
+          fi
+
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          export ANDROID_HOME="$SDK_ROOT"
+          export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$SDK_ROOT/platform-tools:$PATH"
+
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-${ANDROID_COMPILE_SDK}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+
+          flutter config --android-sdk "$SDK_ROOT"
+
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
+
+      # ---------- Manual Android NDK install ----------
+      - name: Install Android NDK (manual)
+        run: |
+          set -euo pipefail
+
+          NDK_DIR="$RUNNER_TOOL_CACHE/android-ndk-r26b"
+
+          if [ ! -d "$NDK_DIR" ]; then
+            wget -q "https://dl.google.com/android/repository/android-ndk-r26b-linux.zip" -O /tmp/ndk.zip
+            unzip -q /tmp/ndk.zip -d /tmp/ndk-extract
+            mv /tmp/ndk-extract/android-ndk-r26b "$NDK_DIR"
+            rm -rf /tmp/ndk.zip /tmp/ndk-extract
+          fi
+
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
+          echo "NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
+
+      - name: Verify SDK/NDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          ls -la "$ANDROID_HOME"
+          ls -la "$ANDROID_NDK_HOME" | head
 
       # ---------- Rust Backend (TUN) for all ABIs ----------
       - name: Build Rust Backend for Android (all ABIs)
-        working-directory: LaLune/Backend
+        working-directory: Backend
         run: |
-          NDK_BIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
           export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-          export CC_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi24-clang"
+          export CC_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi${ANDROID_API_LEVEL}-clang"
           export AR_armv7_linux_androideabi="$NDK_BIN/llvm-ar"
-          export CC_x86_64_linux_android="$NDK_BIN/x86_64-linux-android24-clang"
+          export CC_x86_64_linux_android="$NDK_BIN/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
           export AR_x86_64_linux_android="$NDK_BIN/llvm-ar"
 
           cargo build --release --target aarch64-linux-android
@@ -356,14 +404,13 @@ jobs:
           )
           for ABI in "${!TARGETS[@]}"; do
             TARGET="${TARGETS[$ABI]}"
-            mkdir -p "LaLune/Frontend/Core/android/app/src/main/jniLibs/$ABI"
-            cp "LaLune/Backend/target/$TARGET/release/liblalune_backend.so" \
-               "LaLune/Frontend/Core/android/app/src/main/jniLibs/$ABI/"
+            mkdir -p "Frontend/Core/android/app/src/main/jniLibs/$ABI"
+            cp "Backend/target/$TARGET/release/liblalune_backend.so" \
+               "Frontend/Core/android/app/src/main/jniLibs/$ABI/"
           done
 
       # ---------- DeployManager for all ABIs ----------
       - name: Build DeployManager for Android (all ABIs)
-        working-directory: LaLune
         run: |
           for ABI in arm64-v8a armeabi-v7a x86_64; do
             echo "=== Building DeployManager for $ABI ==="
@@ -372,30 +419,32 @@ jobs:
 
       # ---------- Prepare Android Core Java ----------
       - name: Prepare Android Core
-        working-directory: LaLune
         run: python prepare_android_core.py
 
       # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel
-        working-directory: LaLune
         run: python prepare_st.py --platform=Android
 
       # ---------- Flutter ----------
       - name: Flutter pub get
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter pub get
 
+      - name: Flutter doctor (diagnostics)
+        run: flutter doctor -v
+        continue-on-error: true
+
       - name: Build Flutter APK (split per ABI)
-        working-directory: LaLune/Frontend/Core
+        working-directory: Frontend/Core
         run: flutter build apk --release --split-per-abi
 
       # ---------- Package ----------
       - name: Collect APKs
         run: |
           mkdir -p out
-          cp LaLune/Frontend/Core/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk out/LaLune-Android-arm64-v8a.apk
-          cp LaLune/Frontend/Core/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk out/LaLune-Android-armeabi-v7a.apk
-          cp LaLune/Frontend/Core/build/app/outputs/flutter-apk/app-x86_64-release.apk out/LaLune-Android-x86_64.apk
+          cp Frontend/Core/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk out/LaLune-Android-arm64-v8a.apk
+          cp Frontend/Core/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk out/LaLune-Android-armeabi-v7a.apk
+          cp Frontend/Core/build/app/outputs/flutter-apk/app-x86_64-release.apk out/LaLune-Android-x86_64.apk
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
