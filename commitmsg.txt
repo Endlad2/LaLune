@@ -1,0 +1,7 @@
+chore(ci): update workflows for native Flutter UI + Rust Backend
+
+- build.yml: desktop (Linux/Windows) native Flutter + Rust Backend, drop Wails/web
+- build-android.yml: native Flutter APK + Rust Backend cross-compiled via NDK
+- build-ios.yml: native Flutter iOS + Rust Backend staticlib (device + simulator)
+- Remove obsolete: build-android.yml.new, build-openwrt.yml, DELETE_OLD_FILES.md
+- .gitignore: add entries for Rust/Flutter/Android/NDK build artifacts

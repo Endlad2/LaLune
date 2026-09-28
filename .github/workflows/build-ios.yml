@@ -1,87 +1,83 @@
-name: Build iOS
+name: Build LaLune (iOS, native UI)
+
+# Native Flutter iOS app + Rust Backend (Backend/) compiled as a static library for iOS.
+# Replaces the legacy build that targeted the removed Mobile/IOS layout and the web UI.
 
 on:
   push:
-    branches: [main, release]
+    branches:
+      - main
+      - release
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  PYTHONIOENCODING: utf-8
-  PYTHONUTF8: "1"
+  FLUTTER_CHANNEL: stable
+  IOS_TARGET: aarch64-apple-ios
+  IOS_SIM_TARGET: aarch64-apple-ios-sim
 
 jobs:
   ios:
-    runs-on: macos-14
+    name: iOS app (device + simulator)
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: maxim-lobanov/setup-xcode@v1
-        with: { xcode-version: '15.2' }
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
 
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: '3.22.0', channel: stable, cache: true }
-
-      - name: Cache Cargo
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            Backend/target/
-          key: ${{ runner.os }}-cargo-ios-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ios-
-            ${{ runner.os }}-cargo-
+            ~/.cargo/registry
+            ~/.cargo/git
+            Backend/target
+          key: ${{ runner.os }}-cargo-ios-${{ hashFiles('Backend/Cargo.lock', 'Backend/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-ios-
 
-      - name: Build Rust Backend for iOS (device arm64)
+      - name: Build Rust Backend (iOS device)
         working-directory: Backend
-        run: cargo build --release --target aarch64-apple-ios
+        run: |
+          set -eux
+          cargo build --release --target ${{ env.IOS_TARGET }}
+          ls -la target/${{ env.IOS_TARGET }}/release/*.a
 
-      - name: Build Rust Backend for iOS (sim arm64)
+      - name: Build Rust Backend (iOS simulator)
         working-directory: Backend
-        run: cargo build --release --target aarch64-apple-ios-sim
+        run: |
+          set -eux
+          cargo build --release --target ${{ env.IOS_SIM_TARGET }} || \
+            cargo build --release --target x86_64-apple-ios
+          ls -la target/*/release/*.a || true
 
-      - name: Build Rust Backend for iOS (sim x86_64)
+      - name: Create universal static library
         working-directory: Backend
-        run: cargo build --release --target x86_64-apple-ios
-
-      - name: Create universal simulator static lib
         run: |
-          mkdir -p /tmp/ios-sim
-          lipo -create \
-            Backend/target/aarch64-apple-ios-sim/release/liblalune_backend.a \
-            Backend/target/x86_64-apple-ios/release/liblalune_backend.a \
-            -output /tmp/ios-sim/liblalune_backend.a
-
-      - name: Assemble iOS backend lib
-        run: |
-          mkdir -p Frontend/Core/ios/Backend
-          cp Backend/target/aarch64-apple-ios/release/liblalune_backend.a \
-             Frontend/Core/ios/Backend/liblalune_backend_device.a
-          cp /tmp/ios-sim/liblalune_backend.a \
-             Frontend/Core/ios/Backend/liblalune_backend_sim.a
-
-      - name: Prepare SmartTunnel
-        run: python3 prepare_st.py --platform=Android || true
-
-      - name: Copy assets into Flutter project
-        run: |
-          mkdir -p Frontend/Core/assets
-          if [ -d "Assets" ]; then
-            cp -f Assets/* Frontend/Core/assets/ || true
+          set -eux
+          mkdir -p build/ios
+          DEV=target/${{ env.IOS_TARGET }}/release/liblalune_backend.a
+          SIM=target/${{ env.IOS_SIM_TARGET }}/release/liblalune_backend.a
+          if [ -f "$SIM" ] && [ -f "$DEV" ]; then
+            lipo -create "$DEV" "$SIM" -output build/ios/liblalune_backend.a
+          elif [ -f "$DEV" ]; then
+            cp "$DEV" build/ios/liblalune_backend.a
           fi
-          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
-            echo "placeholder" > Frontend/Core/assets/.keep
-          fi
-          ls -la Frontend/Core/assets/
+          ls -la build/ios
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
 
       - name: Flutter pub get
         working-directory: Frontend/Core
@@ -91,16 +87,29 @@ jobs:
         working-directory: Frontend/Core
         run: flutter build ios --release --no-codesign
 
-      - name: Create unsigned IPA
+      - name: Embed Rust backend into iOS bundle
         run: |
-          cd Frontend/Core/build/ios/iphoneos
-          mkdir -p Payload
-          cp -r Runner.app Payload/
-          zip -r LaLune-iOS-unsigned.ipa Payload
-          mv LaLune-iOS-unsigned.ipa "$GITHUB_WORKSPACE/"
+          set -eux
+          RUNNER=$(find Frontend/Core/build/ios -maxdepth 3 -type d -name 'Runner.app' | head -n1)
+          echo "Runner.app: $RUNNER"
+          if [ -n "$RUNNER" ]; then
+            mkdir -p "$RUNNER/Frameworks"
+            cp Backend/build/ios/liblalune_backend.a "$RUNNER/Frameworks/" || true
+            ls -la "$RUNNER" || true
+          fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Package iOS artifact
+        run: |
+          set -eux
+          mkdir -p /tmp/pkg
+          RUNNER=$(find Frontend/Core/build/ios -maxdepth 3 -type d -name 'Runner.app' | head -n1)
+          cp -r "$RUNNER" /tmp/pkg/Runner.app
+          cp Backend/build/ios/liblalune_backend.a /tmp/pkg/liblalune_backend.a || true
+          (cd /tmp/pkg && zip -r LaLune-iOS.zip .)
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: LaLune-iOS-unsigned
-          path: LaLune-iOS-unsigned.ipa
+          name: LaLune-iOS
+          path: /tmp/pkg/LaLune-iOS.zip
           if-no-files-found: error
