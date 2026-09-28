@@ -1,53 +1,49 @@
-// Api.dart — unified LaLune API for native platforms.
+// Api.dart — единая точка входа LaLune для всех платформ.
 //
-// Bridges (same method names, different backends):
-//   * Linux / Windows  -> C ABI via dart:ffi (lalune_backend cdylib) for TUN,
-//                         and MethodChannel "lalune/api" for high-level ops.
-//   * Android          -> Java via MethodChannel "lalune/api".
-//   * iOS / macOS      -> Swift via MethodChannel "lalune/api".
+// Desktop (Linux/Windows): напрямую через C-ABI Rust-библиотеки lalune_backend.
+// Android / iOS:            через MethodChannel "lalune/api".
 //
-// TUN device lives in LaLune/Backend (Rust). All high-level operations
-// (configs, settings, logs, VK token, updates, deploy) are handled by the
-// platform side through MethodChannel.
+// Имена методов совпадают для всех платформ — UI ничего не знает про
+// детали платформы. Синхронные геттеры читают из кэша; кэш обновляется
+// методами refresh*().
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io' show Platform;
 import 'dart:typed_data' show Uint8List;
-
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
 
 // ---------------------------------------------------------------------------
-//  C ABI signatures for the TUN backend (see Backend/src/lib.rs)
+//  C ABI (Backend/src/lib.rs)
 // ---------------------------------------------------------------------------
-typedef _CreateC = ffi.Pointer<ffi.Void> Function(
-    ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>, ffi.Int);
-typedef _CreateDart = ffi.Pointer<ffi.Void> Function(
-    ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>, int);
-typedef _DestroyC = ffi.Void Function(ffi.Pointer<ffi.Void>);
-typedef _DestroyDart = void Function(ffi.Pointer<ffi.Void>);
-typedef _ReadC = ffi.IntPtr Function(
-    ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, ffi.IntPtr);
-typedef _ReadDart = int Function(
-    ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, int);
-typedef _WriteC = ffi.IntPtr Function(
-    ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, ffi.IntPtr);
-typedef _WriteDart = int Function(
-    ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, int);
-typedef _VersionC = ffi.Pointer<ffi.Char> Function();
-typedef _VersionDart = ffi.Pointer<ffi.Char> Function();
+
+typedef _VoidC = ffi.Void Function();
+typedef _VoidDart = void Function();
+
+typedef _IntC = ffi.Int Function();
+typedef _IntDart = int Function();
+
+typedef _Int64ArgC = ffi.Int Function(ffi.Int64);
+typedef _Int64ArgDart = int Function(int);
+
+typedef _StrC = ffi.Pointer<ffi.Char> Function();
+typedef _StrDart = ffi.Pointer<ffi.Char> Function();
+
+typedef _SaveConfigC = ffi.Int Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>);
+typedef _SaveConfigDart = int Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>);
+
+typedef _StrArgC = ffi.Int Function(ffi.Pointer<ffi.Char>);
+typedef _StrArgDart = int Function(ffi.Pointer<ffi.Char>);
+
+typedef _FreeC = ffi.Void Function(ffi.Pointer<ffi.Char>);
+typedef _FreeDart = void Function(ffi.Pointer<ffi.Char>);
 
 // ---------------------------------------------------------------------------
-//  Shared MethodChannel (top-level so it is visible to all classes
-//  in this file — SelectedConfig, Api, etc.)
+//  Общие константы
 // ---------------------------------------------------------------------------
-const MethodChannel _laluneChannel = MethodChannel('lalune/api');
 
-// ---------------------------------------------------------------------------
-//  Constants
-// ---------------------------------------------------------------------------
 const int kDefaultWorkers = 9;
 const int kMinWorkers = 1;
 const int kMaxWorkers = 127;
@@ -56,7 +52,7 @@ const int kMinAutoApiWorkers = 9;
 const int kMaxAutoApiWorkers = 27;
 
 // ---------------------------------------------------------------------------
-//  Models
+//  Модели
 // ---------------------------------------------------------------------------
 
 class ConfigItem {
@@ -204,7 +200,8 @@ class Settings {
     String? turnHost, String? turnPort, String? captchaMode,
     String? vkAuthMode, bool? allowHashRedistribution, bool? validateVkHashes,
     bool? enableSmartTunnel,
-  }) => Settings(
+  }) =>
+      Settings(
         peer: peer ?? this.peer,
         vkHashes: vkHashes ?? this.vkHashes,
         vkJsToken: vkJsToken ?? this.vkJsToken,
@@ -303,8 +300,7 @@ class AutoApiResult {
       final j = jsonDecode(raw) as Map<String, dynamic>;
       if (j['pending'] == true) return const AutoApiResult(pending: true);
       return AutoApiResult(
-        hashes:
-            (j['hashes'] as List?)?.map((e) => e.toString()).toList() ?? [],
+        hashes: (j['hashes'] as List?)?.map((e) => e.toString()).toList() ?? [],
         callIds:
             (j['callIds'] as List?)?.map((e) => e.toString()).toList() ?? [],
         error: (j['error'] ?? '') as String,
@@ -315,402 +311,551 @@ class AutoApiResult {
   }
 }
 
-/// Currently selected config, mirrored to the native side.
 class SelectedConfig {
   static ConfigItem? _current;
   static ConfigItem? get current => _current;
 
   static void set(ConfigItem? cfg) {
     _current = cfg;
-    try {
-      if (cfg == null) {
-        _laluneChannel
-            .invokeMethod('SetSelectedConfigJson', {'json': '{}'});
-      } else {
-        _laluneChannel.invokeMethod(
-            'SetSelectedConfigJson', {'json': jsonEncode(cfg.toJson())});
-      }
-    } catch (_) {}
+    final raw = cfg == null ? '{}' : jsonEncode(cfg.toJson());
+    if (_useFfi) {
+      _ffiCall.setSelectedConfigJson(raw);
+    } else {
+      _channel.invokeMethod('SetSelectedConfigJson', {'json': raw});
+    }
   }
 
   static void clear() => set(null);
 }
 
 // ---------------------------------------------------------------------------
-//  TunResult
+//  Platform helpers
 // ---------------------------------------------------------------------------
-class TunResult {
-  final bool ok;
-  final String? error;
-  const TunResult(this.ok, [this.error]);
-}
+
+const MethodChannel _channel = MethodChannel('lalune/api');
+
+bool get _useFfi => Platform.isLinux || Platform.isWindows || Platform.isMacOS;
 
 // ---------------------------------------------------------------------------
-//  Api
+//  FFI bridge
+// ---------------------------------------------------------------------------
+
+class _FfiBridge {
+  ffi.DynamicLibrary? _lib;
+
+  ffi.DynamicLibrary _load() {
+    if (_lib != null) return _lib!;
+    if (Platform.isWindows) {
+      _lib = ffi.DynamicLibrary.open('lalune_backend.dll');
+    } else if (Platform.isLinux) {
+      _lib = ffi.DynamicLibrary.open('liblalune_backend.so');
+    } else if (Platform.isMacOS) {
+      _lib = ffi.DynamicLibrary.open('liblalune_backend.dylib');
+    } else {
+      throw UnsupportedError('FFI не поддерживается');
+    }
+    return _lib!;
+  }
+
+  late final _VoidDart init = _load()
+      .lookupFunction<_VoidC, _VoidDart>('lalune_init');
+
+  String _takeString(ffi.Pointer<ffi.Char> p) {
+    if (p == ffi.nullptr) return '';
+    final s = p.cast<Utf8>().toDartString();
+    _free(p);
+    return s;
+  }
+
+  late final _FreeDart _free =
+      _load().lookupFunction<_FreeC, _FreeDart>('lalune_free');
+
+  String getConfigsJson() => _takeString(
+      _load().lookupFunction<_StrC, _StrDart>('lalune_get_configs_json')());
+
+  int saveConfig(String link, String protocol) {
+    final l = link.toNativeUtf8().cast<ffi.Char>();
+    final p = protocol.toNativeUtf8().cast<ffi.Char>();
+    try {
+      return _load()
+          .lookupFunction<_SaveConfigC, _SaveConfigDart>('lalune_save_config')(l, p);
+    } finally {
+      calloc.free(l);
+      calloc.free(p);
+    }
+  }
+
+  int deleteConfig(int id) => _load()
+      .lookupFunction<_Int64ArgC, _Int64ArgDart>('lalune_delete_config')(id);
+
+  String getSettingsJson() => _takeString(
+      _load().lookupFunction<_StrC, _StrDart>('lalune_get_settings_json')());
+
+  int saveSettings(String json) {
+    final p = json.toNativeUtf8().cast<ffi.Char>();
+    try {
+      return _load().lookupFunction<_StrArgC, _StrArgDart>('lalune_save_settings')(p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  String getLogsJson() =>
+      _takeString(_load().lookupFunction<_StrC, _StrDart>('lalune_get_logs_json')());
+
+  int clearLogs() => _load().lookupFunction<_IntC, _IntDart>('lalune_clear_logs')();
+
+  String getDeviceId() =>
+      _takeString(_load().lookupFunction<_StrC, _StrDart>('lalune_get_device_id')());
+
+  String regenerateDeviceId() => _takeString(
+      _load().lookupFunction<_StrC, _StrDart>('lalune_regenerate_device_id')());
+
+  int setSelectedConfigJson(String json) {
+    final p = json.toNativeUtf8().cast<ffi.Char>();
+    try {
+      return _load().lookupFunction<_StrArgC, _StrArgDart>(
+          'lalune_set_selected_config_json')(p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  String getSelectedConfigJson() => _takeString(
+      _load().lookupFunction<_StrC, _StrDart>('lalune_get_selected_config_json')());
+
+  int connect(int id) => _load()
+      .lookupFunction<_Int64ArgC, _Int64ArgDart>('lalune_connect')(id);
+
+  int disconnect() =>
+      _load().lookupFunction<_IntC, _IntDart>('lalune_disconnect')();
+
+  String getStatusJson() =>
+      _takeString(_load().lookupFunction<_StrC, _StrDart>('lalune_get_status_json')());
+
+  bool isCoreDownloading() => _load()
+          .lookupFunction<_IntC, _IntDart>('lalune_is_core_downloading')() ==
+      1;
+
+  String getVkTokenStateJson() => _takeString(_load()
+      .lookupFunction<_StrC, _StrDart>('lalune_get_vk_token_state_json')());
+
+  int vkLogin() => _load().lookupFunction<_IntC, _IntDart>('lalune_vk_login')();
+
+  int deleteVkToken() =>
+      _load().lookupFunction<_IntC, _IntDart>('lalune_delete_vk_token')();
+
+  String validateVkTokenJson() => _takeString(_load()
+      .lookupFunction<_StrC, _StrDart>('lalune_validate_vk_token_json')());
+
+  String runVkAutoApiCalls() => _takeString(_load()
+      .lookupFunction<_StrC, _StrDart>('lalune_run_vk_auto_api_calls')());
+
+  String checkCoreUpdateJson() => _takeString(_load()
+      .lookupFunction<_StrC, _StrDart>('lalune_check_core_update_json')());
+
+  String checkLaLuneUpdateJson() => _takeString(_load()
+      .lookupFunction<_StrC, _StrDart>('lalune_check_lalune_update_json')());
+
+  int updateCoreAndWait() => _load()
+      .lookupFunction<_IntC, _IntDart>('lalune_update_core_and_wait')();
+
+  String laluneReleasesUrl() => _takeString(_load()
+      .lookupFunction<_StrC, _StrDart>('lalune_lalune_releases_url')());
+
+  int deployProtocol(String json) {
+    final p = json.toNativeUtf8().cast<ffi.Char>();
+    try {
+      return _load().lookupFunction<_StrArgC, _StrArgDart>(
+          'lalune_deploy_protocol')(p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  String deployLog() =>
+      _takeString(_load().lookupFunction<_StrC, _StrDart>('lalune_deploy_log')());
+
+  bool isDeploying() => _load()
+          .lookupFunction<_IntC, _IntDart>('lalune_is_deploying')() ==
+      1;
+}
+
+final _FfiBridge _ffiCall = _FfiBridge();
+
+// ---------------------------------------------------------------------------
+//  Api — единая точка входа
 // ---------------------------------------------------------------------------
 
 class Api {
   Api._();
 
-  static void init() {}
-
-  // ---- TUN (native FFI on desktop, MethodChannel on mobile) --------------
-
-  static ffi.DynamicLibrary? _lib;
-  static ffi.DynamicLibrary _nativeLib() {
-    _lib ??= _openNative();
-    return _lib!;
-  }
-
-  static ffi.DynamicLibrary _openNative() {
-    if (Platform.isWindows) {
-      return ffi.DynamicLibrary.open('lalune_backend.dll');
-    }
-    if (Platform.isLinux) {
-      return ffi.DynamicLibrary.open('liblalune_backend.so');
-    }
-    if (Platform.isMacOS) {
-      return ffi.DynamicLibrary.open('liblalune_backend.dylib');
-    }
-    throw UnsupportedError('FFI bridge unsupported on this platform');
-  }
-
-  static ffi.Pointer<ffi.Void>? _tunHandle;
-
-  static Future<TunResult> tunCreate({
-    String name = '',
-    String address = '',
-    int mtu = 0,
-  }) async {
-    try {
-      if (Platform.isAndroid || Platform.isIOS) {
-        final r = await _laluneChannel.invokeMethod<String>('tunCreate', {
-          'name': name,
-          'address': address,
-          'mtu': mtu,
-        });
-        return TunResult(r != null, r);
-      }
-      final lib = _nativeLib();
-      final create =
-          lib.lookupFunction<_CreateC, _CreateDart>('lalune_tun_create');
-      final n =
-          name.isEmpty ? ffi.nullptr : name.toNativeUtf8().cast<ffi.Char>();
-      final a = address.isEmpty
-          ? ffi.nullptr
-          : address.toNativeUtf8().cast<ffi.Char>();
-      final h = create(n, a, mtu);
-      if (h == ffi.nullptr) {
-        return const TunResult(false, 'tun_create returned NULL');
-      }
-      _tunHandle = h;
-      return const TunResult(true);
-    } catch (e) {
-      return TunResult(false, e.toString());
+  static void init() {
+    if (_useFfi) {
+      _ffiCall.init();
     }
   }
 
-  static Future<void> tunDestroy() async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      await _laluneChannel.invokeMethod('tunDestroy');
-      return;
-    }
-    final h = _tunHandle;
-    if (h == null) return;
-    final lib = _nativeLib();
-    final destroy =
-        lib.lookupFunction<_DestroyC, _DestroyDart>('lalune_tun_destroy');
-    destroy(h);
-    _tunHandle = null;
-  }
+  // -------------------- Configs --------------------
 
-  static Future<Uint8List?> tunRead(int len) async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      return _laluneChannel.invokeMethod<Uint8List>('tunRead', {'len': len});
-    }
-    final h = _tunHandle;
-    if (h == null) return null;
-    final lib = _nativeLib();
-    final read = lib.lookupFunction<_ReadC, _ReadDart>('lalune_tun_read');
-    final buf = calloc<ffi.Uint8>(len);
-    try {
-      final n = read(h, buf, len);
-      if (n <= 0) return null;
-      return Uint8List.fromList(buf.asTypedList(n));
-    } finally {
-      calloc.free(buf);
-    }
-  }
-
-  static Future<int> tunWrite(Uint8List data) async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      final r =
-          await _laluneChannel.invokeMethod<int>('tunWrite', {'data': data});
-      return r ?? -1;
-    }
-    final h = _tunHandle;
-    if (h == null) return -1;
-    final lib = _nativeLib();
-    final write = lib.lookupFunction<_WriteC, _WriteDart>('lalune_tun_write');
-    final buf = calloc<ffi.Uint8>(data.length);
-    try {
-      buf.asTypedList(data.length).setAll(0, data);
-      return write(h, buf, data.length);
-    } finally {
-      calloc.free(buf);
-    }
-  }
-
-  static Future<String> version() async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      final v = await _laluneChannel.invokeMethod<String>('version');
-      return v ?? 'unknown';
-    }
-    final lib = _nativeLib();
-    final ver = lib.lookupFunction<_VersionC, _VersionDart>('lalune_version');
-    return ver().cast<Utf8>().toDartString();
-  }
-
-  // ---- High-level API (all via MethodChannel "lalune/api") ---------------
-  //
-  // The platform side (Go / Java / Swift) implements every method below.
-  // Names match the old JS bridge so UI code stays unchanged.
-
-  // Configs
-  static List<ConfigItem> _configsCache = [];
-  static List<ConfigItem> getConfigs() => _configsCache;
+  static List<ConfigItem> _configs = [];
+  static List<ConfigItem> getConfigs() => _configs;
 
   static Future<void> refreshConfigs() async {
     try {
-      final raw = await _laluneChannel.invokeMethod<String>('GetConfigsJson');
-      if (raw == null) return;
+      final raw = _useFfi
+          ? _ffiCall.getConfigsJson()
+          : await _channel.invokeMethod<String>('GetConfigsJson');
+      if (raw == null || raw.isEmpty) return;
       final arr = jsonDecode(raw) as List;
-      _configsCache = arr
+      _configs = arr
           .map((e) => ConfigItem.fromJson(e as Map<String, dynamic>))
           .toList();
     } catch (_) {}
   }
 
-  static bool saveConfig(String link, [String protocol = 'CSQTT']) {
-    _laluneChannel
-        .invokeMethod('SaveConfig', {'link': link, 'protocol': protocol});
-    return true;
+  static Future<bool> saveConfig(String link, [String protocol = 'CSQTT']) async {
+    try {
+      if (_useFfi) {
+        return _ffiCall.saveConfig(link, protocol) == 0;
+      }
+      final ok = await _channel.invokeMethod<bool>(
+        'SaveConfig',
+        {'link': link, 'protocol': protocol},
+      );
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  static bool deleteConfig(int id) {
-    _laluneChannel.invokeMethod('DeleteConfig', {'id': id});
-    return true;
+  static Future<bool> deleteConfig(int id) async {
+    try {
+      if (_useFfi) {
+        return _ffiCall.deleteConfig(id) == 0;
+      }
+      final ok = await _channel.invokeMethod<bool>('DeleteConfig', {'id': id});
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // Settings
-  static Settings _settingsCache = Settings();
-  static Settings getSettings() => _settingsCache;
+  // -------------------- Settings --------------------
+
+  static Settings _settings = Settings();
+  static Settings getSettings() => _settings;
 
   static Future<void> refreshSettings() async {
     try {
-      final raw = await _laluneChannel.invokeMethod<String>('GetSettingsJson');
-      if (raw == null) return;
-      _settingsCache =
-          Settings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final raw = _useFfi
+          ? _ffiCall.getSettingsJson()
+          : await _channel.invokeMethod<String>('GetSettingsJson');
+      if (raw == null || raw.isEmpty) return;
+      _settings = Settings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {}
   }
 
-  static bool saveSettings(Settings s) {
-    _laluneChannel
-        .invokeMethod('SaveSettings', {'json': jsonEncode(s.toJson())});
-    _settingsCache = s;
-    return true;
+  static Future<bool> saveSettings(Settings s) async {
+    try {
+      final json = jsonEncode(s.toJson());
+      if (_useFfi) {
+        final ok = _ffiCall.saveSettings(json) == 0;
+        if (ok) _settings = s;
+        return ok;
+      }
+      final ok = await _channel.invokeMethod<bool>('SaveSettings', {'json': json});
+      if (ok == true) _settings = s;
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // Logs
-  static List<String> _logsCache = [];
-  static List<String> getLogs() => _logsCache;
+  // -------------------- Logs --------------------
+
+  static List<String> _logs = [];
+  static List<String> getLogs() => _logs;
 
   static Future<void> refreshLogs() async {
     try {
-      final raw = await _laluneChannel.invokeMethod<String>('GetLogsJson');
-      if (raw == null) return;
+      final raw = _useFfi
+          ? _ffiCall.getLogsJson()
+          : await _channel.invokeMethod<String>('GetLogsJson');
+      if (raw == null || raw.isEmpty) return;
       final arr = jsonDecode(raw) as List;
-      _logsCache = arr.map((e) => e.toString()).toList();
+      _logs = arr.map((e) => e.toString()).toList();
     } catch (_) {}
   }
 
-  static bool clearLogs() {
-    _laluneChannel.invokeMethod('ClearLogs');
-    _logsCache = [];
-    return true;
+  static Future<bool> clearLogs() async {
+    try {
+      if (_useFfi) {
+        _ffiCall.clearLogs();
+        _logs = [];
+        return true;
+      }
+      final ok = await _channel.invokeMethod<bool>('ClearLogs');
+      if (ok == true) _logs = [];
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // Status / connection
-  static bool _connectedCache = false;
-  static bool isConnected() => _connectedCache;
+  // -------------------- Status --------------------
+
+  static bool _connected = false;
+  static bool isConnected() => _connected;
 
   static Future<void> refreshStatus() async {
     try {
-      final raw = await _laluneChannel.invokeMethod<String>('GetStatusJson');
-      if (raw == null) return;
+      final raw = _useFfi
+          ? _ffiCall.getStatusJson()
+          : await _channel.invokeMethod<String>('GetStatusJson');
+      if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      _connectedCache = (j['connected'] ?? false) as bool;
+      _connected = (j['connected'] ?? false) as bool;
     } catch (_) {}
   }
 
-  static bool connect(int id) {
-    _laluneChannel.invokeMethod('Connect', {'id': id});
-    _connectedCache = true;
-    return true;
+  static Future<bool> connect(int id) async {
+    try {
+      if (_useFfi) {
+        final ok = _ffiCall.connect(id) == 0;
+        if (ok) _connected = true;
+        return ok;
+      }
+      final ok = await _channel.invokeMethod<bool>('Connect', {'id': id});
+      if (ok == true) _connected = true;
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  static bool disconnect() {
-    _laluneChannel.invokeMethod('Disconnect');
-    _connectedCache = false;
-    return true;
+  static Future<bool> disconnect() async {
+    try {
+      if (_useFfi) {
+        _ffiCall.disconnect();
+        _connected = false;
+        return true;
+      }
+      final ok = await _channel.invokeMethod<bool>('Disconnect');
+      _connected = false;
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // Core updates
-  static UpdateInfo _coreUpdateCache = UpdateInfo.empty;
-  static UpdateInfo checkCoreUpdate() => _coreUpdateCache;
+  // -------------------- Core / LaLune updates --------------------
+
+  static UpdateInfo _coreUpdate = UpdateInfo.empty;
+  static UpdateInfo checkCoreUpdate() => _coreUpdate;
 
   static Future<void> refreshCoreUpdate() async {
     try {
-      final raw =
-          await _laluneChannel.invokeMethod<String>('CheckCoreUpdate');
-      if (raw == null) return;
-      _coreUpdateCache = UpdateInfo.fromJsonString(raw);
+      final raw = _useFfi
+          ? _ffiCall.checkCoreUpdateJson()
+          : await _channel.invokeMethod<String>('CheckCoreUpdate');
+      if (raw == null || raw.isEmpty) return;
+      _coreUpdate = UpdateInfo.fromJsonString(raw);
     } catch (_) {}
   }
 
-  static bool updateCore() {
-    _laluneChannel.invokeMethod('UpdateCore');
-    return true;
+  static Future<bool> updateCoreAndWait() async {
+    try {
+      if (_useFfi) return _ffiCall.updateCoreAndWait() == 0;
+      final ok = await _channel.invokeMethod<bool>('UpdateCoreAndWait');
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  static bool updateCoreAndWait() {
-    _laluneChannel.invokeMethod('UpdateCoreAndWait');
-    return true;
-  }
-
-  // LaLune updates
-  static UpdateInfo _laluneUpdateCache = UpdateInfo.empty;
-  static UpdateInfo checkLaLuneUpdate() => _laluneUpdateCache;
+  static UpdateInfo _laluneUpdate = UpdateInfo.empty;
+  static UpdateInfo checkLaLuneUpdate() => _laluneUpdate;
 
   static Future<void> refreshLaLuneUpdate() async {
     try {
-      final raw =
-          await _laluneChannel.invokeMethod<String>('CheckLaLuneUpdate');
-      if (raw == null) return;
-      _laluneUpdateCache = UpdateInfo.fromJsonString(raw);
+      final raw = _useFfi
+          ? _ffiCall.checkLaLuneUpdateJson()
+          : await _channel.invokeMethod<String>('CheckLaLuneUpdate');
+      if (raw == null || raw.isEmpty) return;
+      _laluneUpdate = UpdateInfo.fromJsonString(raw);
     } catch (_) {}
   }
 
-  static bool openLaLuneReleases() {
-    _laluneChannel.invokeMethod('OpenLaLuneReleases');
-    return true;
+  static Future<bool> openLaLuneReleases() async {
+    try {
+      if (_useFfi) {
+        // desktop открывает URL через url_launcher на UI-стороне
+        return true;
+      }
+      final ok = await _channel.invokeMethod<bool>('OpenLaLuneReleases');
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // VK token
-  static VkTokenState _vkStateCache = VkTokenState.empty;
-  static VkTokenState getVKTokenState() => _vkStateCache;
+  // -------------------- VK token --------------------
+
+  static VkTokenState _vk = VkTokenState.empty;
+  static VkTokenState getVKTokenState() => _vk;
+  static VkTokenState validateVKToken() => _vk;
 
   static Future<void> refreshVkState() async {
     try {
-      final raw =
-          await _laluneChannel.invokeMethod<String>('GetVKTokenState');
-      if (raw == null) return;
-      _vkStateCache = VkTokenState.fromJsonString(raw);
+      final raw = _useFfi
+          ? _ffiCall.getVkTokenStateJson()
+          : await _channel.invokeMethod<String>('GetVKTokenState');
+      if (raw == null || raw.isEmpty) return;
+      _vk = VkTokenState.fromJsonString(raw);
     } catch (_) {}
   }
 
-  static bool vkLogin() {
-    _laluneChannel.invokeMethod('VkLogin');
-    return true;
+  static Future<bool> vkLogin() async {
+    try {
+      if (_useFfi) return _ffiCall.vkLogin() == 0;
+      final ok = await _channel.invokeMethod<bool>('VkLogin');
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  static bool deleteVKToken() {
-    _laluneChannel.invokeMethod('DeleteVKToken');
-    _vkStateCache = VkTokenState.empty;
-    return true;
+  static Future<bool> deleteVKToken() async {
+    try {
+      if (_useFfi) {
+        _ffiCall.deleteVkToken();
+        _vk = VkTokenState.empty;
+        return true;
+      }
+      final ok = await _channel.invokeMethod<bool>('DeleteVKToken');
+      _vk = VkTokenState.empty;
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  static VkTokenState validateVKToken() {
-    _laluneChannel.invokeMethod<String>('ValidateVKToken').then((raw) {
-      if (raw != null) _vkStateCache = VkTokenState.fromJsonString(raw);
-    });
-    return _vkStateCache;
-  }
-
-  // VK auto API
   static AutoApiResult runVkAutoApiCalls() {
-    _laluneChannel.invokeMethod<String>('RunVkAutoApiCalls');
-    return const AutoApiResult(pending: true);
+    try {
+      if (_useFfi) {
+        return AutoApiResult.fromJsonString(_ffiCall.runVkAutoApiCalls());
+      }
+      return const AutoApiResult(pending: true);
+    } catch (_) {
+      return const AutoApiResult(error: 'ffi error');
+    }
   }
 
   static AutoApiResult pollAutoApiResult() {
-    return const AutoApiResult(pending: true);
+    return const AutoApiResult(pending: false);
   }
 
-  static bool finishVkCalls(List<String> callIds) {
-    _laluneChannel
-        .invokeMethod('FinishVkCalls', {'callIds': jsonEncode(callIds)});
-    return true;
+  static Future<bool> finishVkCalls(List<String> callIds) async {
+    try {
+      if (_useFfi) return true;
+      final ok = await _channel
+          .invokeMethod<bool>('FinishVkCalls', {'callIds': callIds});
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // Device ID
-  static String _deviceIdCache = '';
-  static String getDeviceId() => _deviceIdCache;
+  // -------------------- Device ID --------------------
+
+  static String _deviceId = '';
+  static String getDeviceId() => _deviceId;
 
   static Future<void> refreshDeviceId() async {
     try {
-      final raw = await _laluneChannel.invokeMethod<String>('GetDeviceId');
-      if (raw != null) _deviceIdCache = raw;
+      final raw = _useFfi
+          ? _ffiCall.getDeviceId()
+          : await _channel.invokeMethod<String>('GetDeviceId');
+      if (raw != null && raw.isNotEmpty) _deviceId = raw;
     } catch (_) {}
   }
 
-  static String regenerateDeviceId() {
-    _laluneChannel.invokeMethod<String>('RegenerateDeviceId').then((raw) {
-      if (raw != null) _deviceIdCache = raw;
-    });
-    return _deviceIdCache;
+  static Future<String> regenerateDeviceId() async {
+    try {
+      final raw = _useFfi
+          ? _ffiCall.regenerateDeviceId()
+          : await _channel.invokeMethod<String>('RegenerateDeviceId');
+      if (raw != null && raw.isNotEmpty) _deviceId = raw;
+      return _deviceId;
+    } catch (_) {
+      return _deviceId;
+    }
   }
 
-  // Core download flag
-  static bool _coreDownloadingCache = false;
-  static bool isCoreDownloading() => _coreDownloadingCache;
+  // -------------------- Selected config --------------------
+
+  static Future<void> setSelectedConfigJson(ConfigItem? cfg) async {
+    SelectedConfig.set(cfg);
+  }
+
+  static ConfigItem? loadSelectedConfigFromJs() => SelectedConfig.current;
+
+  // -------------------- Core downloading --------------------
+
+  static bool _coreDownloading = false;
+  static bool isCoreDownloading() => _coreDownloading;
 
   static Future<void> refreshCoreDownloading() async {
     try {
-      final raw = await _laluneChannel.invokeMethod<bool>('IsCoreDownloading');
-      _coreDownloadingCache = raw ?? false;
+      if (_useFfi) {
+        _coreDownloading = _ffiCall.isCoreDownloading();
+        return;
+      }
+      final v = await _channel.invokeMethod<bool>('IsCoreDownloading');
+      _coreDownloading = v ?? false;
     } catch (_) {}
   }
 
-  // Deploy
-  static String _deployLogCache = '';
-  static bool _deployingCache = false;
+  // -------------------- Deploy --------------------
 
-  static bool deploy(String json) {
-    _laluneChannel.invokeMethod('DeployProtocol', {'json': json});
-    _deployingCache = true;
-    return true;
+  static String _deployLog = '';
+  static bool _deploying = false;
+
+  static Future<bool> deploy(String json) async {
+    try {
+      if (_useFfi) {
+        final ok = _ffiCall.deployProtocol(json) == 0;
+        _deploying = ok;
+        return ok;
+      }
+      final ok = await _channel.invokeMethod<bool>('DeployProtocol', {'json': json});
+      _deploying = ok ?? false;
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  static String deployLog() => _deployLogCache;
-  static bool isDeploying() => _deployingCache;
+  static String deployLog() => _deployLog;
+  static bool isDeploying() => _deploying;
 
   static Future<void> refreshDeployState() async {
     try {
-      final log = await _laluneChannel.invokeMethod<String>('DeployLog');
-      if (log != null) _deployLogCache = log;
-      final busy = await _laluneChannel.invokeMethod<bool>('IsDeploying');
-      _deployingCache = busy ?? false;
+      if (_useFfi) {
+        _deployLog = _ffiCall.deployLog();
+        _deploying = _ffiCall.isDeploying();
+        return;
+      }
+      final log = await _channel.invokeMethod<String>('DeployLog');
+      if (log != null) _deployLog = log;
+      final busy = await _channel.invokeMethod<bool>('IsDeploying');
+      _deploying = busy ?? false;
     } catch (_) {}
   }
 
-  // Selected config
-  static ConfigItem? loadSelectedConfigFromJs() {
-    return SelectedConfig.current;
-  }
+  // -------------------- Bulk refresh --------------------
 
-  /// Refresh everything at once (call from initState).
   static Future<void> refreshAll() async {
     await Future.wait([
       refreshConfigs(),
@@ -723,3 +868,6 @@ class Api {
     ]);
   }
 }
+
+// Re-export, чтобы старый `typedef Uint8List` не ломал ничего.
+typedef ApiUint8List = Uint8List;

@@ -1,8 +1,9 @@
 [package]
 name = "lalune_backend"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "LaLune cross-platform backend: TUN device library (Rust, C-ABI)"
+description = "LaLune native backend: TUN + configs + settings + VK + logs + deploy (Rust, C-ABI)"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [lib]
 name = "lalune_backend"
@@ -11,9 +12,15 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 tun = "0.7"
 libc = "0.2"
-
-[features]
-default = []
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+url = "2"
+dirs = "5"
+log = "0.4"
 
 [profile.release]
 opt-level = "s"
