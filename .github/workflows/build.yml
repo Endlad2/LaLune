@@ -21,8 +21,7 @@ env:
 
 jobs:
   # ============================================================
-  #  TOKEN FETCHER — только сборка ZIP'ов для релиза
-  #  (в десктопный бандл НЕ попадает, юзер ставит сам)
+  #  TOKEN FETCHER — только ZIP'ы в релиз
   # ============================================================
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
@@ -147,7 +146,6 @@ jobs:
             ${{ runner.os }}-cargo-linux-
             ${{ runner.os }}-cargo-
 
-      # ---------- Rust Backend (TUN) ----------
       - name: Build Rust Backend
         working-directory: Backend
         run: cargo build --release
@@ -157,15 +155,12 @@ jobs:
           mkdir -p Frontend/Core/linux/runner
           cp Backend/target/release/liblalune_backend.so Frontend/Core/linux/runner/
 
-      # ---------- DeployManager ----------
       - name: Build DeployManager
         run: python build_deploy_manager.py --dest Frontend/Core/linux/runner
 
-      # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=Linux
 
-      # ---------- Assets ----------
       - name: Copy assets into Flutter project
         run: |
           mkdir -p Frontend/Core/assets
@@ -177,7 +172,6 @@ jobs:
           fi
           ls -la Frontend/Core/assets/
 
-      # ---------- Flutter ----------
       - name: Flutter pub get
         working-directory: Frontend/Core
         run: flutter pub get
@@ -186,7 +180,6 @@ jobs:
         working-directory: Frontend/Core
         run: flutter build linux --release
 
-      # ---------- Package ----------
       - name: Copy extra binaries into bundle
         run: |
           BUILD_DIR="Frontend/Core/build/linux/x64/release/bundle"
@@ -227,14 +220,56 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.22.0', channel: stable, cache: true }
 
-      - name: Setup MSVC environment
+      # 1) MSBuild + VS 2022 dev environment
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup MSVC dev environment (VS 2022, x64)
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Show toolchain
+      # 2) Явная инициализация окружения VS 2022 через vcvarsall.bat
+      #    (решает "Generator Visual Studio 16 2019 could not be found").
+      - name: Locate VS 2022 & vcvarsall.bat
+        id: vs
         shell: pwsh
         run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe not found"
+            exit 1
+          }
+          $install = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $install) {
+            Write-Error "VS with VC tools not found"
+            exit 1
+          }
+          $vcvars = Join-Path $install "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "vcvarsall.bat not found at $vcvars"
+            exit 1
+          }
+          Write-Host "VS install: $install"
+          Write-Host "vcvarsall:  $vcvars"
+          "install=$install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "vcvars=$vcvars"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Force CMake generator to VS 2022
+        shell: pwsh
+        run: |
+          # Flutter/CMake по умолчанию ищет VS 2019; заставляем использовать 17 2022.
+          "CMAKE_GENERATOR=Visual Studio 17 2022" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CMAKE_GENERATOR_PLATFORM=x64"          | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Show toolchain
+        shell: cmd
+        run: |
+          call "${{ steps.vs.outputs.vcvars }}" x64
+          where cl
+          where cmake
           cmake --version
           flutter doctor -v
 
@@ -253,7 +288,6 @@ jobs:
             ${{ runner.os }}-cargo-win-
             ${{ runner.os }}-cargo-
 
-      # ---------- Rust Backend (TUN) ----------
       - name: Build Rust Backend
         working-directory: Backend
         run: cargo build --release
@@ -265,15 +299,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
           Copy-Item "Backend/target/release/lalune_backend.dll" "$dest/"
 
-      # ---------- DeployManager ----------
       - name: Build DeployManager
         run: python build_deploy_manager.py --dest Frontend/Core/windows/runner
 
-      # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=Windows
 
-      # ---------- Assets ----------
       - name: Copy assets into Flutter project
         shell: pwsh
         run: |
@@ -287,16 +318,20 @@ jobs:
           }
           Get-ChildItem $dest
 
-      # ---------- Flutter ----------
       - name: Flutter pub get
         working-directory: Frontend/Core
         run: flutter pub get
 
-      - name: Build Flutter Windows
+      # 3) Сборка Windows: оборачиваем в cmd, где сначала активируем VS 2022
+      #    через vcvarsall.bat x64, и только потом запускаем flutter build.
+      #    Это ровно то, что делает ярлык "x64 Native Tools Command Prompt for VS 2022".
+      - name: Build Flutter Windows (VS 2022 env)
+        shell: cmd
         working-directory: Frontend/Core
-        run: flutter build windows --release
+        run: |
+          call "${{ steps.vs.outputs.vcvars }}" x64
+          flutter build windows --release
 
-      # ---------- Package ----------
       - name: Copy extra binaries into bundle
         shell: pwsh
         run: |
@@ -476,7 +511,6 @@ jobs:
       - name: Prepare SmartTunnel.lua
         run: python prepare_st.py --platform=Android
 
-      # ---------- Assets ----------
       - name: Copy assets into Flutter project
         run: |
           mkdir -p Frontend/Core/assets
@@ -488,7 +522,6 @@ jobs:
           fi
           ls -la Frontend/Core/assets/
 
-      # ---------- Flutter ----------
       - name: Flutter pub get
         working-directory: Frontend/Core
         run: flutter pub get

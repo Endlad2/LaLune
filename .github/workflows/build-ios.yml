@@ -72,6 +72,17 @@ jobs:
       - name: Prepare SmartTunnel
         run: python3 prepare_st.py --platform=Android || true
 
+      - name: Copy assets into Flutter project
+        run: |
+          mkdir -p Frontend/Core/assets
+          if [ -d "Assets" ]; then
+            cp -f Assets/* Frontend/Core/assets/ || true
+          fi
+          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
+            echo "placeholder" > Frontend/Core/assets/.keep
+          fi
+          ls -la Frontend/Core/assets/
+
       - name: Flutter pub get
         working-directory: Frontend/Core
         run: flutter pub get
