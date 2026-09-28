@@ -1,0 +1,16 @@
+// ⚠️ ЭТОТ ФАЙЛ НАДО УДАЛИТЬ.
+//
+// lib/api.dart — это старый web-only мост через dart:js_interop.
+// Он не компилируется на нативных платформах (Linux/Windows/Android/iOS),
+// потому что dart:js_interop существует только для web-сборки.
+//
+// Замена: lib/api/Api.dart (нативный мост через FFI + MethodChannel).
+//
+// Шаги:
+//   1. Удалить файл: git rm Frontend/Core/lib/api.dart
+//   2. Убедиться, что все импорты в lib/ указывают на:
+//        import 'api/Api.dart';               // из lib/main.dart
+//        import '../api/Api.dart';            // из lib/pages/*, lib/widgets/*
+//   3. Проверить, что файл lib/api/Api.dart содержит класс Api, ConfigItem,
+//      Settings, UpdateInfo, VkTokenState, AutoApiResult, SelectedConfig.
+//      Все они уже перенесены туда (см. соседний файл).

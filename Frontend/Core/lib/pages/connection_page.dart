@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 import 'add_config_dialog.dart';
 
-import '../api.dart';
+import '../api/Api.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/toast.dart';
 
 class ConnectionPage extends StatefulWidget {
-  /// Вызывается, когда конфиг добавлен/удалён — родитель должен
-  /// пересоздать эту страницу (инкрементить свой version-key).
   final VoidCallback? onReload;
 
   const ConnectionPage({super.key, this.onReload});
@@ -29,8 +27,11 @@ class _ConnectionPageState extends State<ConnectionPage> {
     _startPolling();
   }
 
-  void _reload() {
+  Future<void> _reload() async {
+    await Api.refreshConfigs();
+    await Api.refreshStatus();
     final cfgs = Api.getConfigs();
+    if (!mounted) return;
     setState(() {
       _configs = cfgs;
 
@@ -63,6 +64,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Future.doWhile(() async {
       await Future.delayed(const Duration(seconds: 2));
       if (!mounted) return false;
+      await Api.refreshStatus();
       final c = Api.isConnected();
       if (c != _connected) setState(() => _connected = c);
       return true;
@@ -74,10 +76,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       await Future.delayed(const Duration(milliseconds: 300));
       if (!mounted) return false;
 
+      await Api.refreshCoreDownloading();
       final downloading = Api.isCoreDownloading();
       if (downloading && !_wasDownloading) {
         _wasDownloading = true;
-        // Тост в стиле остальных сообщений (жёлтый, снизу).
         Toast.show(
           context,
           'Подождите, скачивается ядро. VPN запустится через 10 сек',
@@ -116,7 +118,22 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Toast.show(context, msg);
   }
 
-Future<void> _showAddDialog() async {     final result = await showAddConfigDialog(context);     if (result == null) return;      if (result.link.isEmpty) {       _toast('Введите ссылку');       return;     }      final saved = Api.saveConfig(result.link, result.protocol);     if (saved) {       _toast('Профиль сохранён');       _reload();       widget.onReload?.call();     } else {       _toast('Не удалось сохранить');     }   }
+  Future<void> _showAddDialog() async {
+    final result = await showAddConfigDialog(context);
+    if (result == null) return;
+    if (result.link.isEmpty) {
+      _toast('Введите ссылку');
+      return;
+    }
+    final saved = Api.saveConfig(result.link, result.protocol);
+    if (saved) {
+      _toast('Профиль сохранён');
+      await _reload();
+      widget.onReload?.call();
+    } else {
+      _toast('Не удалось сохранить');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -155,7 +172,7 @@ Future<void> _showAddDialog() async {     final result = await showAddConfigDial
                       if (SelectedConfig.current?.id == id) {
                         SelectedConfig.clear();
                       }
-                      _reload();
+                      await _reload();
                       widget.onReload?.call();
                     }
                   },
@@ -164,7 +181,6 @@ Future<void> _showAddDialog() async {     final result = await showAddConfigDial
             ),
           ),
         ),
-
         Positioned(
           top: 12,
           right: 16,
@@ -204,10 +220,6 @@ Future<void> _showAddDialog() async {     final result = await showAddConfigDial
     );
   }
 }
-
-// ============================================================
-//  Кнопка "+" в правом верхнем углу
-// ============================================================
 
 class _AddButton extends StatefulWidget {
   final VoidCallback onTap;
@@ -264,10 +276,6 @@ class _AddButtonState extends State<_AddButton> {
     );
   }
 }
-
-// ============================================================
-//  Кнопка-луна
-// ============================================================
 
 class _MoonButton extends StatefulWidget {
   final bool connected;
@@ -332,10 +340,6 @@ class _MoonButtonState extends State<_MoonButton> {
     );
   }
 }
-
-// ============================================================
-//  Селектор конфига
-// ============================================================
 
 class _ConfigSelector extends StatelessWidget {
   final List<ConfigItem> configs;

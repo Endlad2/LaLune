@@ -1,13 +1,11 @@
-// LaLune frontend (Dart/Flutter Web).
+// LaLune frontend (Dart/Flutter native UI).
 //
-// Общается с бэкендом через window.api.<method>() — тонкий JS-мост,
-// который лежит в Frontend/Api/<platform>.js и подключается как api.js.
-//
-// Все имена методов в window.api одинаковы для всех платформ.
+// Общается с нативным бэкендом через lib/api/Api.dart, который использует
+// FFI (desktop) и MethodChannel "lalune/api" (Android/iOS).
 
 import 'package:flutter/material.dart';
 
-import 'api.dart';
+import 'api/Api.dart';
 import 'theme.dart';
 import 'pages/connection_page.dart';
 import 'pages/settings_page.dart';
@@ -16,6 +14,8 @@ import 'pages/info_page.dart';
 import 'widgets/navbar.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  Api.init();
   runApp(const LaLuneApp());
 }
 
@@ -43,17 +43,14 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> {
   int _currentPage = 0;
 
-  // Каждый раз, когда переключаемся на вкладку, инкрементим версию —
-  // это пересоздаёт страницу (initState → свежие данные из Api).
-  // Так «Настройки» гарантированно подтягивают актуальный глобальный
-  // конфиг и settings после выбора конфига во вкладке «Подключение».
   int _connectionVersion = 0;
   int _settingsVersion = 0;
 
   @override
   void initState() {
     super.initState();
-    Api.init();
+    // Первичная подгрузка состояния с нативной стороны.
+    Api.refreshAll();
   }
 
   void _reloadConnection() {
@@ -64,8 +61,6 @@ class _RootShellState extends State<RootShell> {
     if (i == _currentPage) return;
     setState(() {
       _currentPage = i;
-      // Настройки пересоздаём при каждом заходе — блок «Основные настройки»
-      // должен подтянуть глобальный конфиг, выбранный во вкладке «Подключение».
       if (i == 1) {
         _settingsVersion++;
       }
@@ -87,7 +82,6 @@ class _RootShellState extends State<RootShell> {
         return const InfoPage();
       case 3:
         return const LogsPage();
-      // case 4 (Деплой) убран из UI — вкладка отключена, страница сохранена.
       default:
         return const SizedBox.shrink();
     }

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
-import '../api.dart';
+import '../api/Api.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/input_row.dart';
 import '../widgets/toast.dart';
@@ -55,7 +55,11 @@ class _SettingsPageState extends State<SettingsPage> {
     super.dispose();
   }
 
-  void _load() {
+  Future<void> _load() async {
+    await Api.refreshSettings();
+    await Api.refreshVkState();
+    await Api.refreshDeviceId();
+
     final s = Api.getSettings();
 
     var cfg = SelectedConfig.current;
@@ -85,6 +89,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _enableSmartTunnel = s.enableSmartTunnel;
 
     _vkState = Api.validateVKToken();
+    if (!mounted) return;
     setState(() {
       _loading = false;
       _dirty = false;
@@ -103,13 +108,15 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _startVkPolling() {
-    _vkPollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+    _vkPollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
       if (!mounted) return;
+      await Api.refreshVkState();
       final st = Api.getVKTokenState();
       if (st.hasToken != _vkState.hasToken ||
           st.fetching != _vkState.fetching ||
           st.progress != _vkState.progress ||
           st.message != _vkState.message) {
+        if (!mounted) return;
         setState(() => _vkState = st);
       }
     });
@@ -167,10 +174,6 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  // ============================================================
-  //  Авторизация
-  // ============================================================
-
   void _setAuthMode(String mode) {
     if (mode == 'autoApi' || mode == 'autoVk') {
       final st = Api.validateVKToken();
@@ -205,6 +208,7 @@ class _SettingsPageState extends State<SettingsPage> {
     for (var i = 0; i < 600; i++) {
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
+      await Api.refreshVkState();
       final cur = Api.validateVKToken();
       setState(() => _vkState = cur);
       if (cur.hasToken) {
@@ -233,8 +237,11 @@ class _SettingsPageState extends State<SettingsPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('РЕЖИМ АВТОРИЗАЦИИ',
-                style: TextStyle(fontSize: 10.5, letterSpacing: 0.7,
-                  fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
+                  style: TextStyle(
+                      fontSize: 10.5,
+                      letterSpacing: 0.7,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white.withOpacity(0.4))),
               const SizedBox(height: 10),
 
               _authOption('manual', 'Ручной', 'Ввести хеши вручную', enabled: true),
@@ -260,12 +267,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(_vkState.message,
-                  style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.6))),
+                    style: TextStyle(
+                        fontSize: 11, color: Colors.white.withOpacity(0.6))),
               ],
 
               const SizedBox(height: 10),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF7E84E).withOpacity(0.14),
                   borderRadius: BorderRadius.circular(10),
@@ -300,13 +309,17 @@ class _SettingsPageState extends State<SettingsPage> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
                   child: Text('Хеши (через запятую или +)',
-                    style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65))),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withOpacity(0.65))),
                 ),
                 TextField(
                   controller: _vkHashesCtl,
-                  minLines: 2, maxLines: 4,
+                  minLines: 2,
+                  maxLines: 4,
                   style: const TextStyle(fontSize: 13),
-                  decoration: const InputDecoration(hintText: 'hash1,hash2,hash3'),
+                  decoration:
+                      const InputDecoration(hintText: 'hash1,hash2,hash3'),
                   onChanged: (_) => _markDirty(),
                 ),
               ],
@@ -328,16 +341,18 @@ class _SettingsPageState extends State<SettingsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('АВТО API',
-            style: TextStyle(fontSize: 10.5, letterSpacing: 0.7,
-              fontWeight: FontWeight.w700, color: Colors.white.withOpacity(0.4))),
+              style: TextStyle(
+                  fontSize: 10.5,
+                  letterSpacing: 0.7,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white.withOpacity(0.4))),
           const SizedBox(height: 10),
-
           Row(
             children: [
               SizedBox(
                 width: 170,
                 child: Text('Воркеров на хеш',
-                  style: TextStyle(color: Colors.white.withOpacity(0.7))),
+                    style: TextStyle(color: Colors.white.withOpacity(0.7))),
               ),
               Expanded(
                 child: TextField(
@@ -367,13 +382,16 @@ class _SettingsPageState extends State<SettingsPage> {
           onPressed: _vkLoginInProgress ? null : _onLoginTap,
           style: OutlinedButton.styleFrom(
             padding: const EdgeInsets.symmetric(vertical: 12),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const SizedBox(width: 16, height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2)),
+              const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
               const SizedBox(width: 10),
               Text('Ожидание... ${_vkState.progress}%'),
             ],
@@ -410,7 +428,8 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           const Expanded(
             child: Text('Активно',
-              style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                style: TextStyle(
+                    fontSize: 13.5, fontWeight: FontWeight.w600)),
           ),
           IconButton(
             tooltip: 'Сбросить токен',
@@ -447,12 +466,14 @@ class _SettingsPageState extends State<SettingsPage> {
             duration: const Duration(milliseconds: 180),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: selected ? const Color(0xFF4A6CF7).withOpacity(0.18)
-                : Colors.white.withOpacity(0.02),
+              color: selected
+                  ? const Color(0xFF4A6CF7).withOpacity(0.18)
+                  : Colors.white.withOpacity(0.02),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: selected ? const Color(0xFF4A6CF7).withOpacity(0.55)
-                  : Colors.white.withOpacity(0.08),
+                color: selected
+                    ? const Color(0xFF4A6CF7).withOpacity(0.55)
+                    : Colors.white.withOpacity(0.08),
               ),
             ),
             child: Row(
@@ -471,8 +492,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-                      Text(subtitle, style: TextStyle(fontSize: 11.5, color: Colors.white.withOpacity(0.55))),
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      Text(subtitle,
+                          style: TextStyle(
+                              fontSize: 11.5,
+                              color: Colors.white.withOpacity(0.55))),
                     ],
                   ),
                 ),
@@ -486,10 +512,6 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
-
-  // ============================================================
-  //  UI
-  // ============================================================
 
   @override
   Widget build(BuildContext context) {
@@ -513,8 +535,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         padding: const EdgeInsets.only(bottom: 10),
                         child: Row(
                           children: [
-                            const Icon(Icons.link, size: 14,
-                                color: Color(0xFF7CFF9A)),
+                            const Icon(Icons.link,
+                                size: 14, color: Color(0xFF7CFF9A)),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -541,8 +563,12 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
 
-                    InputRow(label: 'Peer', controller: _peerCtl, readOnly: true),
-                    InputRow(label: 'Password', controller: _passwordCtl, readOnly: true),
+                    InputRow(
+                        label: 'Peer', controller: _peerCtl, readOnly: true),
+                    InputRow(
+                        label: 'Password',
+                        controller: _passwordCtl,
+                        readOnly: true),
 
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 5),
@@ -551,7 +577,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           SizedBox(
                             width: 130,
                             child: Text('Workers',
-                              style: TextStyle(color: Colors.white.withOpacity(0.7))),
+                                style: TextStyle(
+                                    color: Colors.white.withOpacity(0.7))),
                           ),
                           Expanded(
                             child: TextField(
@@ -583,40 +610,39 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: Column(
                   children: [
                     _rowDropdown('Obfs', _s.obfs, const ['video', 'audio'],
-                      (v) {
-                        setState(() => _s = _s.copyWith(obfs: v));
-                        _markDirty();
-                      }),
+                        (v) {
+                      setState(() => _s = _s.copyWith(obfs: v));
+                      _markDirty();
+                    }),
                     _rowDropdown('Fingerprint', _s.fingerprint,
-                      const ['firefox', 'chrome', 'edge'],
-                      (v) {
-                        setState(() => _s = _s.copyWith(fingerprint: v));
-                        _markDirty();
-                      }),
+                        const ['firefox', 'chrome', 'edge'], (v) {
+                      setState(() => _s = _s.copyWith(fingerprint: v));
+                      _markDirty();
+                    }),
                     _rowDropdown('Captcha Mode', _s.captchaMode,
-                      const ['auto', 'wv', 'rjs'],
-                      (v) {
-                        setState(() => _s = _s.copyWith(captchaMode: v));
-                        _markDirty();
-                      }),
+                        const ['auto', 'wv', 'rjs'], (v) {
+                      setState(() => _s = _s.copyWith(captchaMode: v));
+                      _markDirty();
+                    }),
                     _rowDropdown('Turn Transport', _s.turnTransport,
-                      const ['udp', 'tcp'],
-                      (v) {
-                        setState(() => _s = _s.copyWith(turnTransport: v));
-                        _markDirty();
-                      }),
-                    InputRow(label: 'Client IDs', controller: _clientIdsCtl,
-                      onChanged: (_) => _markDirty()),
-                    _toggleRow('Allow hash redistribution', _s.allowHashRedistribution,
-                      (v) {
-                        setState(() => _s = _s.copyWith(allowHashRedistribution: v));
-                        _markDirty();
-                      }),
-                    _toggleRow('Validate VK hashes', _s.validateVkHashes,
-                      (v) {
-                        setState(() => _s = _s.copyWith(validateVkHashes: v));
-                        _markDirty();
-                      }),
+                        const ['udp', 'tcp'], (v) {
+                      setState(() => _s = _s.copyWith(turnTransport: v));
+                      _markDirty();
+                    }),
+                    InputRow(
+                        label: 'Client IDs',
+                        controller: _clientIdsCtl,
+                        onChanged: (_) => _markDirty()),
+                    _toggleRow('Allow hash redistribution',
+                        _s.allowHashRedistribution, (v) {
+                      setState(
+                          () => _s = _s.copyWith(allowHashRedistribution: v));
+                      _markDirty();
+                    }),
+                    _toggleRow('Validate VK hashes', _s.validateVkHashes, (v) {
+                      setState(() => _s = _s.copyWith(validateVkHashes: v));
+                      _markDirty();
+                    }),
                   ],
                 ),
               ),
@@ -626,7 +652,10 @@ class _SettingsPageState extends State<SettingsPage> {
               GlassCard(
                 child: Column(
                   children: [
-                    InputRow(label: 'Device ID', controller: _deviceIdCtl, readOnly: true),
+                    InputRow(
+                        label: 'Device ID',
+                        controller: _deviceIdCtl,
+                        readOnly: true),
                     const SizedBox(height: 8),
                     SizedBox(
                       width: double.infinity,
@@ -636,9 +665,11 @@ class _SettingsPageState extends State<SettingsPage> {
                         label: const Text('Перегенерировать'),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.white,
-                          side: BorderSide(color: Colors.white.withOpacity(0.2)),
+                          side:
+                              BorderSide(color: Colors.white.withOpacity(0.2)),
                           padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
                         ),
                       ),
                     ),
@@ -647,7 +678,6 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               const SizedBox(height: 18),
 
-              // --------- Экспериментальные ---------
               _sectionTitle('Экспериментальные'),
               GlassCard(
                 child: Column(
@@ -691,8 +721,12 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _sectionTitle(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8, left: 4),
-      child: Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
-        letterSpacing: 0.6, color: Colors.white.withOpacity(0.55))),
+      child: Text(text,
+          style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+              color: Colors.white.withOpacity(0.55))),
     );
   }
 
@@ -702,14 +736,20 @@ class _SettingsPageState extends State<SettingsPage> {
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
         children: [
-          SizedBox(width: 150,
-            child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.7)))),
+          SizedBox(
+              width: 150,
+              child: Text(label,
+                  style: TextStyle(color: Colors.white.withOpacity(0.7)))),
           Expanded(
             child: DropdownButtonFormField<String>(
               value: items.contains(value) ? value : items.first,
               dropdownColor: const Color(0xFF0F1540),
-              items: items.map((v) => DropdownMenuItem(value: v, child: Text(v))).toList(),
-              onChanged: (v) { if (v != null) onChanged(v); },
+              items: items
+                  .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                  .toList(),
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
             ),
           ),
         ],
@@ -723,7 +763,8 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Row(
         children: [
           Expanded(
-            child: Text(label, style: TextStyle(color: Colors.white.withOpacity(0.7))),
+            child: Text(label,
+                style: TextStyle(color: Colors.white.withOpacity(0.7))),
           ),
           Switch(
             value: value,

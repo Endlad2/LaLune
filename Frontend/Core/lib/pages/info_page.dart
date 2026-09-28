@@ -4,10 +4,9 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'package:flutter/material.dart';
 
-import '../api.dart';
+import '../api/Api.dart';
 import '../widgets/glass_card.dart';
 
-/// Возвращает true, если мы на Android или iOS.
 bool _isMobilePlatform() {
   if (kIsWeb) return false;
   try {
@@ -48,15 +47,15 @@ class _InfoPageState extends State<InfoPage> {
     _startPolling();
   }
 
-  void _kickCoreCheck() {
+  Future<void> _kickCoreCheck() async {
     if (_hideCoreBlock) return;
-    final info = Api.checkCoreUpdate();
-    _applyCoreInfo(info);
+    await Api.refreshCoreUpdate();
+    _applyCoreInfo(Api.checkCoreUpdate());
   }
 
-  void _kickLaLuneCheck() {
-    final info = Api.checkLaLuneUpdate();
-    _applyLaLuneInfo(info);
+  Future<void> _kickLaLuneCheck() async {
+    await Api.refreshLaLuneUpdate();
+    _applyLaLuneInfo(Api.checkLaLuneUpdate());
   }
 
   void _applyCoreInfo(UpdateInfo info) {
@@ -95,6 +94,7 @@ class _InfoPageState extends State<InfoPage> {
       if (!mounted) return false;
 
       if (!_hideCoreBlock) {
+        await Api.refreshCoreUpdate();
         final core = Api.checkCoreUpdate();
         if (core.version != _coreRemoteVersion ||
             core.hasUpdate != _coreHasUpdate) {
@@ -102,6 +102,7 @@ class _InfoPageState extends State<InfoPage> {
         }
       }
 
+      await Api.refreshLaLuneUpdate();
       final lalune = Api.checkLaLuneUpdate();
       if (lalune.version != _laluneRemoteVersion ||
           lalune.hasUpdate != _laluneHasUpdate) {
@@ -114,18 +115,18 @@ class _InfoPageState extends State<InfoPage> {
   Future<void> _manualCheckCore() async {
     if (_hideCoreBlock) return;
     setState(() => _checkingCore = true);
-    _kickCoreCheck();
+    await _kickCoreCheck();
     await Future.delayed(const Duration(seconds: 1));
-    _kickCoreCheck();
+    await _kickCoreCheck();
     if (!mounted) return;
     setState(() => _checkingCore = false);
   }
 
   Future<void> _manualCheckLaLune() async {
     setState(() => _checkingLaLune = true);
-    _kickLaLuneCheck();
+    await _kickLaLuneCheck();
     await Future.delayed(const Duration(seconds: 1));
-    _kickLaLuneCheck();
+    await _kickLaLuneCheck();
     if (!mounted) return;
     setState(() => _checkingLaLune = false);
   }
@@ -146,15 +147,12 @@ class _InfoPageState extends State<InfoPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Новая версия: $version',
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-            ),
+            Text('Новая версия: $version',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
-            Text(
-              'Обновление будет скачано автоматически.',
-              style: TextStyle(color: Colors.white.withOpacity(0.7)),
-            ),
+            Text('Обновление будет скачано автоматически.',
+                style: TextStyle(color: Colors.white.withOpacity(0.7))),
           ],
         ),
         actions: [
@@ -191,20 +189,15 @@ class _InfoPageState extends State<InfoPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Новая версия: $version',
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-            ),
+            Text('Новая версия: $version',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
-            Text(
-              'Установленная версия: $_laluneVersion',
-              style: TextStyle(color: Colors.white.withOpacity(0.65)),
-            ),
+            Text('Установленная версия: $_laluneVersion',
+                style: TextStyle(color: Colors.white.withOpacity(0.65))),
             const SizedBox(height: 14),
-            Text(
-              'Открыть страницу загрузки и скачать новую версию?',
-              style: TextStyle(color: Colors.white.withOpacity(0.8)),
-            ),
+            Text('Открыть страницу загрузки и скачать новую версию?',
+                style: TextStyle(color: Colors.white.withOpacity(0.8))),
           ],
         ),
         actions: [
@@ -238,7 +231,7 @@ class _InfoPageState extends State<InfoPage> {
 
     if (ok) {
       _showToast('Ядро обновлено. Проверьте версию.');
-      _kickCoreCheck();
+      await _kickCoreCheck();
     } else {
       _showToast('Не удалось обновить ядро. Смотрите логи.');
     }
@@ -256,12 +249,7 @@ class _InfoPageState extends State<InfoPage> {
     );
   }
 
-  // ============================================================
-  //  QR-модалка для канала MAX — адаптивный размер
-  // ============================================================
-
   Future<void> _showMaxQrDialog() async {
-    // Адаптивный размер: минимум из (ширина экрана - 80) и 420.
     final screenWidth = MediaQuery.of(context).size.width;
     final qrSize = math.min(screenWidth - 80, 420.0);
 
@@ -320,7 +308,8 @@ class _InfoPageState extends State<InfoPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.qr_code_2, size: 64, color: Colors.white54),
+                          Icon(Icons.qr_code_2,
+                              size: 64, color: Colors.white54),
                           SizedBox(height: 8),
                           Text(
                             'assets/max_qr.jpg',
@@ -350,10 +339,6 @@ class _InfoPageState extends State<InfoPage> {
       ),
     );
   }
-
-  // ============================================================
-  //  UI
-  // ============================================================
 
   @override
   Widget build(BuildContext context) {

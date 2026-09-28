@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../api.dart';
+import '../api/Api.dart';
 import '../widgets/glass_card.dart';
 
 class LogsPage extends StatefulWidget {
@@ -21,8 +21,10 @@ class _LogsPageState extends State<LogsPage> {
     _poll();
   }
 
-  void _refresh() {
+  Future<void> _refresh() async {
+    await Api.refreshLogs();
     final l = Api.getLogs();
+    if (!mounted) return;
     setState(() => _logs = l);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
@@ -35,7 +37,7 @@ class _LogsPageState extends State<LogsPage> {
     Future.doWhile(() async {
       await Future.delayed(const Duration(seconds: 2));
       if (!mounted) return false;
-      _refresh();
+      await _refresh();
       return true;
     });
   }
