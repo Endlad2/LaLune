@@ -1,0 +1,22 @@
+[package]
+name = "lalune_backend"
+version = "0.1.0"
+edition = "2021"
+description = "LaLune cross-platform backend: TUN device library (Rust, C-ABI)"
+
+[lib]
+name = "lalune_backend"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+tun = "0.7"
+libc = "0.2"
+
+[features]
+default = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

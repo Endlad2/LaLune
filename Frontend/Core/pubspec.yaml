@@ -1,6 +1,6 @@
 name: lalune_core
-description: LaLune frontend (Dart/Flutter Web)
-version: 0.5.0
+description: LaLune frontend — native Flutter UI (Linux, Windows, Android, iOS).
+version: 0.6.0
 publish_to: 'none'
 
 environment:
@@ -11,6 +11,9 @@ dependencies:
   flutter:
     sdk: flutter
   web: ^1.0.0
+  # Used by lib/api/Api.dart to bridge directly to the Rust Backend (C ABI).
+  ffi: ^2.1.0
+  # Platform channels (Java/Swift bridges) come from flutter/services, bundled.
 
 dev_dependencies:
   flutter_lints: ^4.0.0
@@ -19,3 +22,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
+  # The Rust backend (../Backend) is a cdylib/staticlib; on desktop it is
+  # loaded at runtime via dart:ffi, on mobile it is linked through the
+  # platform plugin (Java/Swift). No extra Flutter config is required here.
