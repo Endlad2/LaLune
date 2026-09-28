@@ -2,36 +2,30 @@ name: Build iOS
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, release]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
 
 jobs:
   ios:
     runs-on: macos-14
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '15.2'
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: { xcode-version: '15.2' }
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
-          cache: true
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.22.0', channel: stable, cache: true }
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -47,7 +41,6 @@ jobs:
             ${{ runner.os }}-cargo-ios-
             ${{ runner.os }}-cargo-
 
-      # ---------- Rust Backend (TUN) for iOS ----------
       - name: Build Rust Backend for iOS (device arm64)
         working-directory: Backend
         run: cargo build --release --target aarch64-apple-ios
@@ -76,11 +69,9 @@ jobs:
           cp /tmp/ios-sim/liblalune_backend.a \
              Frontend/Core/ios/Backend/liblalune_backend_sim.a
 
-      # ---------- SmartTunnel ----------
       - name: Prepare SmartTunnel
         run: python3 prepare_st.py --platform=Android || true
 
-      # ---------- Flutter iOS ----------
       - name: Flutter pub get
         working-directory: Frontend/Core
         run: flutter pub get
@@ -89,7 +80,6 @@ jobs:
         working-directory: Frontend/Core
         run: flutter build ios --release --no-codesign
 
-      # ---------- Package unsigned IPA ----------
       - name: Create unsigned IPA
         run: |
           cd Frontend/Core/build/ios/iphoneos
@@ -98,9 +88,8 @@ jobs:
           zip -r LaLune-iOS-unsigned.ipa Payload
           mv LaLune-iOS-unsigned.ipa "$GITHUB_WORKSPACE/"
 
-      - name: Upload iOS artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: LaLune-iOS-unsigned
           path: LaLune-iOS-unsigned.ipa
-          retention-days: 30
+          if-no-files-found: error
