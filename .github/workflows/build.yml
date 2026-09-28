@@ -202,12 +202,18 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  DESKTOP WINDOWS  — как у amurcanov: всё через bash,
-  #  VS-2022-переменные наследуются от родителя windows-latest.
+  #  DESKTOP WINDOWS
+  #
+  #  windows-latest сейчас = Windows Server 2025 + Visual Studio 2026 (v18).
+  #  Старый CMake-шаблон Flutter ищет "Visual Studio 16 2019" или 17 2022,
+  #  и не находит VS 18 2026. Поэтому:
+  #    * используем windows-2022 (там VS 2022 = v17, шаблон её находит);
+  #    * на всякий случай выставляем CMAKE_GENERATOR для VS 2026,
+  #      если раннер окажется обновлённым.
   # ============================================================
   build-desktop-windows:
     name: Desktop Windows
-    runs-on: windows-latest
+    runs-on: windows-2022
     defaults:
       run:
         shell: bash
@@ -224,14 +230,36 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.22.0', channel: stable, cache: true }
 
-      - name: Показать окружение VS / CMake
+      - name: Detect VS / CMake generators
         run: |
-          which cl.exe || true
+          echo "=== cl.exe / link.exe / rc.exe ==="
+          which cl.exe  || true
           which link.exe || true
-          which rc.exe || true
+          which rc.exe  || true
+          echo "=== cmake ==="
           which cmake.exe || true
-          cmake --version
-          flutter doctor -v
+          cmake --version || true
+          echo "=== cmake supported VS generators ==="
+          cmake --help 2>/dev/null | grep -i "Visual Studio" || true
+          echo "=== flutter doctor ==="
+          flutter doctor -v || true
+
+      - name: Force CMake generator that exists on this runner
+        run: |
+          # Определяем доступный генератор: VS 2026 (18), VS 2022 (17) или VS 2019 (16).
+          GEN=""
+          if cmake --help 2>/dev/null | grep -q "Visual Studio 18 2026"; then
+            GEN="Visual Studio 18 2026"
+          elif cmake --help 2>/dev/null | grep -q "Visual Studio 17 2022"; then
+            GEN="Visual Studio 17 2022"
+          elif cmake --help 2>/dev/null | grep -q "Visual Studio 16 2019"; then
+            GEN="Visual Studio 16 2019"
+          fi
+          echo "Selected CMAKE_GENERATOR=$GEN"
+          if [ -n "$GEN" ]; then
+            echo "CMAKE_GENERATOR=$GEN" >> $GITHUB_ENV
+            echo "CMAKE_GENERATOR_PLATFORM=x64" >> $GITHUB_ENV
+          fi
 
       - name: Cache Cargo
         uses: actions/cache@v4
