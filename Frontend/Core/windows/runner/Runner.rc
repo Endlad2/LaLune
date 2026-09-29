@@ -7,7 +7,39 @@
 #include "winres.h"
 #undef APSTUDIO_READONLY_SYMBOLS
 
+/////////////////////////////////////////////////////////////////////////////
+//
+// English (United States) resources
+//
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE
+BEGIN
+    "#include ""winres.h""\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE
+BEGIN
+    "\r\n"
+    "\0"
+END
+
+#endif    // APSTUDIO_INVOKED
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -24,10 +56,14 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,6,0,0
- PRODUCTVERSION 0,6,0,0
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
  FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
  FILEFLAGS 0x0L
+#endif
  FILEOS 0x40004L
  FILETYPE 0x1L
  FILESUBTYPE 0x0L
@@ -36,14 +72,14 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "LaLune"
-            VALUE "FileDescription", "LaLune"
-            VALUE "FileVersion", "0.6.0.0"
-            VALUE "InternalName", "lalune_core.exe"
-            VALUE "LegalCopyright", "PolyForm Noncommercial 1.0.0"
+            VALUE "CompanyName", "com.lalune.app"
+            VALUE "FileDescription", "lalune_core"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "lalune_core"
+            VALUE "LegalCopyright", "Copyright (C) 2026. All rights reserved."
             VALUE "OriginalFilename", "lalune_core.exe"
-            VALUE "ProductName", "LaLune"
-            VALUE "ProductVersion", "0.6.0.0"
+            VALUE "ProductName", "lalune_core"
+            VALUE "ProductVersion", "1.0.0.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -54,7 +90,8 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 //
-// Manifest — требует админ-права.
+// Manifest — приложение требует права администратора.
+// Windows покажет один UAC при старте lalune_core.exe.
 //
 
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "runner.exe.manifest"
