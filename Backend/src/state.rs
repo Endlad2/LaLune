@@ -1,10 +1,8 @@
 //! AppState — единое состояние приложения.
-//! Использует реальные имена модулей crate: config, settings, token,
-//! core_runner, vk_api, deploy, vk_launcher.
 
 use std::collections::VecDeque;
 use std::process::Child;
-use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -49,6 +47,8 @@ pub struct AppState {
     deploying: bool,
     vk_call_ids: Vec<String>,
     vk_login_in_progress: bool,
+    // shared handle для tail-core-log-thread
+    self_arc: Option<Arc<Mutex<AppState>>>,
 }
 
 impl AppState {
@@ -66,7 +66,13 @@ impl AppState {
             deploying: false,
             vk_call_ids: Vec::new(),
             vk_login_in_progress: false,
+            self_arc: None,
         }
+    }
+
+    /// Устанавливается один раз из lib.rs, чтобы core_runner мог логировать.
+    pub fn set_self_arc(&mut self, arc: Arc<Mutex<AppState>>) {
+        self.self_arc = Some(arc);
     }
 
     pub fn init(&mut self) -> Result<()> {
@@ -198,6 +204,12 @@ impl AppState {
         let child = core_runner::spawn_core(&cfg, &self.settings, &mut self.logs)?;
         self.core_process = Some(child);
         self.connected = true;
+
+        // Запускаем tail-поток — он льёт stdout ядра в логи приложения.
+        if let Some(arc) = self.self_arc.clone() {
+            core_runner::tail_core_log_into(arc);
+        }
+
         Ok(())
     }
 

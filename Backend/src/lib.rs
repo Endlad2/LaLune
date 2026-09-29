@@ -1,22 +1,9 @@
 //! LaLune native backend (Rust → C ABI).
-//!
-//! Модули:
-//!   * config      — SQLite configs.db, парсер csqtt://
-//!   * settings    — ~/.la-lune/settings.json
-//!   * token       — ~/.la-lune/token.json
-//!   * net         — HTTP с фолбэком direct→proxy(UA)→proxy(curl-UA)
-//!   * core_runner — запуск ядра CSQTT + загрузка
-//!   * vk_api      — VK calls.start / calls.forceFinish
-//!   * vk_launcher — кнопка «Войти» (Token.ps1 на Windows, fetcher на Linux)
-//!   * deploy      — spawn deploy-manager
-//!   * logs        — общие утилиты логирования
-//!   * state       — AppState (единое состояние)
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-// Публичные модули.
 pub mod config;
 pub mod core_runner;
 pub mod deploy;
@@ -25,11 +12,9 @@ pub mod net;
 pub mod settings;
 pub mod state;
 pub mod token;
+pub mod tun_abi;
 pub mod vk_api;
 pub mod vk_launcher;
-
-// Совместимость со старым lib.rs (TUN).
-pub mod tun_abi;
 
 use state::AppState;
 
@@ -37,10 +22,17 @@ use state::AppState;
 //  Глобальный state
 // ---------------------------------------------------------------------------
 
-static STATE: OnceLock<Mutex<AppState>> = OnceLock::new();
+static STATE: OnceLock<Arc<Mutex<AppState>>> = OnceLock::new();
 
-fn state() -> &'static Mutex<AppState> {
-    STATE.get_or_init(|| Mutex::new(AppState::new()))
+fn state_arc() -> Arc<Mutex<AppState>> {
+    STATE.get_or_init(|| {
+        let s = Arc::new(Mutex::new(AppState::new()));
+        // Даём AppState хендл на самого себя — для фоновых потоков.
+        if let Ok(mut g) = s.lock() {
+            g.set_self_arc(s.clone());
+        }
+        s
+    }).clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +62,8 @@ pub unsafe extern "C" fn lalune_free(p: *mut c_char) {
 
 #[no_mangle]
 pub extern "C" fn lalune_init() -> c_int {
-    let mut st = state().lock().unwrap();
+    let arc = state_arc();
+    let mut st = arc.lock().unwrap();
     match st.init() {
         Ok(()) => 0,
         Err(e) => { st.log(format!("[INIT] ошибка: {e}")); -1 }
@@ -85,13 +78,14 @@ pub extern "C" fn lalune_version() -> *const c_char {
 }
 
 // ---------------------------------------------------------------------------
-//  Конфиги
+//  Configs
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub extern "C" fn lalune_get_configs_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_configs_json())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_configs_json())
 }
 
 #[no_mangle]
@@ -101,79 +95,89 @@ pub unsafe extern "C" fn lalune_save_config(
 ) -> c_int {
     let link = cstr_opt(link);
     let protocol = cstr_opt(protocol);
-    let mut st = state().lock().unwrap();
-    match st.save_config(&link, &protocol) {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.save_config(&link, &protocol) {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[SAVE_CONFIG] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[SAVE_CONFIG] ошибка: {e}")); -1 }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_delete_config(id: i64) -> c_int {
-    let mut st = state().lock().unwrap();
-    match st.delete_config(id) {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.delete_config(id) {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[DELETE_CONFIG] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[DELETE_CONFIG] ошибка: {e}")); -1 }
     }
 }
 
 // ---------------------------------------------------------------------------
-//  Настройки / Device ID / Selected config
+//  Settings / Logs / Device ID / Selected
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub extern "C" fn lalune_get_settings_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_settings_json())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_settings_json())
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn lalune_save_settings(json: *const c_char) -> c_int {
     let json = cstr_opt(json);
-    let mut st = state().lock().unwrap();
-    match st.save_settings(&json) {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.save_settings(&json) {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[SAVE_SETTINGS] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[SAVE_SETTINGS] ошибка: {e}")); -1 }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_get_logs_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_logs_json())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_logs_json())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_clear_logs() -> c_int {
-    let mut st = state().lock().unwrap();
-    st.clear_logs();
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    g.clear_logs();
     0
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_get_device_id() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_device_id())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_device_id())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_regenerate_device_id() -> *mut c_char {
-    let mut st = state().lock().unwrap();
-    into_c_string(st.regenerate_device_id())
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    into_c_string(g.regenerate_device_id())
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn lalune_set_selected_config_json(json: *const c_char) -> c_int {
     let json = cstr_opt(json);
-    let mut st = state().lock().unwrap();
-    st.set_selected_config_json(&json);
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    g.set_selected_config_json(&json);
     0
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_get_selected_config_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_selected_config_json())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_selected_config_json())
 }
 
 // ---------------------------------------------------------------------------
@@ -182,33 +186,37 @@ pub extern "C" fn lalune_get_selected_config_json() -> *mut c_char {
 
 #[no_mangle]
 pub extern "C" fn lalune_connect(id: i64) -> c_int {
-    let mut st = state().lock().unwrap();
-    match st.connect(id) {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.connect(id) {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[CONNECT] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[CONNECT] ошибка: {e}")); -1 }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_disconnect() -> c_int {
-    let mut st = state().lock().unwrap();
-    match st.disconnect() {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.disconnect() {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[DISCONNECT] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[DISCONNECT] ошибка: {e}")); -1 }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_get_status_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    let c = st.is_connected();
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    let c = g.is_connected();
     into_c_string(format!("{{\"connected\":{c}}}"))
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_is_core_downloading() -> c_int {
-    let st = state().lock().unwrap();
-    if st.is_core_downloading() { 1 } else { 0 }
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    if g.is_core_downloading() { 1 } else { 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,36 +225,41 @@ pub extern "C" fn lalune_is_core_downloading() -> c_int {
 
 #[no_mangle]
 pub extern "C" fn lalune_get_vk_token_state_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_vk_token_state_json())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_vk_token_state_json())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_vk_login() -> c_int {
-    let mut st = state().lock().unwrap();
-    match st.vk_login() {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.vk_login() {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[VK_LOGIN] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[VK_LOGIN] ошибка: {e}")); -1 }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_delete_vk_token() -> c_int {
-    let mut st = state().lock().unwrap();
-    st.delete_vk_token();
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    g.delete_vk_token();
     0
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_validate_vk_token_json() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.get_vk_token_state_json())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.get_vk_token_state_json())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_run_vk_auto_api_calls() -> *mut c_char {
-    let mut st = state().lock().unwrap();
-    into_c_string(st.run_vk_auto_api_calls())
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    into_c_string(g.run_vk_auto_api_calls())
 }
 
 // ---------------------------------------------------------------------------
@@ -255,22 +268,25 @@ pub extern "C" fn lalune_run_vk_auto_api_calls() -> *mut c_char {
 
 #[no_mangle]
 pub extern "C" fn lalune_check_core_update_json() -> *mut c_char {
-    let mut st = state().lock().unwrap();
-    into_c_string(st.check_core_update_json())
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    into_c_string(g.check_core_update_json())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_check_lalune_update_json() -> *mut c_char {
-    let mut st = state().lock().unwrap();
-    into_c_string(st.check_lalune_update_json())
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    into_c_string(g.check_lalune_update_json())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_update_core_and_wait() -> c_int {
-    let mut st = state().lock().unwrap();
-    match st.update_core_and_wait() {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.update_core_and_wait() {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[UPDATE_CORE] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[UPDATE_CORE] ошибка: {e}")); -1 }
     }
 }
 
@@ -289,23 +305,26 @@ pub extern "C" fn lalune_lalune_releases_url() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn lalune_deploy_protocol(json: *const c_char) -> c_int {
     let json = cstr_opt(json);
-    let mut st = state().lock().unwrap();
-    match st.deploy_protocol(&json) {
+    let st = state_arc();
+    let mut g = st.lock().unwrap();
+    match g.deploy_protocol(&json) {
         Ok(_) => 0,
-        Err(e) => { st.log(format!("[DEPLOY] ошибка: {e}")); -1 }
+        Err(e) => { g.log(format!("[DEPLOY] ошибка: {e}")); -1 }
     }
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_deploy_log() -> *mut c_char {
-    let st = state().lock().unwrap();
-    into_c_string(st.deploy_log())
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    into_c_string(g.deploy_log())
 }
 
 #[no_mangle]
 pub extern "C" fn lalune_is_deploying() -> c_int {
-    let st = state().lock().unwrap();
-    if st.is_deploying() { 1 } else { 0 }
+    let st = state_arc();
+    let g = st.lock().unwrap();
+    if g.is_deploying() { 1 } else { 0 }
 }
 
 // ---------------------------------------------------------------------------
