@@ -6,6 +6,11 @@ project(runner LANGUAGES CXX)
 # work.
 #
 # Any new source files that you add to the application should be added here.
+#
+# ВАЖНО: runner.exe.manifest НЕ добавлен в add_executable — манифест
+# встраивается через Runner.rc (CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST).
+# Если добавить его сюда, VS попытается встроить его через mt.exe и упадёт
+# с LNK1327.
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
@@ -13,7 +18,6 @@ add_executable(${BINARY_NAME} WIN32
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
-  "runner.exe.manifest"
 )
 
 # Apply the standard set of build settings. This can be removed for applications
