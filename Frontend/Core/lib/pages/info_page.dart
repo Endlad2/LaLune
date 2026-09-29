@@ -29,7 +29,7 @@ class _InfoPageState extends State<InfoPage> {
   bool _checkingCore = false;
   bool _updatingCore = false;
 
-  static const String _laluneVersion = '0.5.0';
+  static const String _laluneVersion = '0.6.0';
   String _laluneRemoteVersion = '—';
   bool _laluneHasUpdate = false;
   bool _checkingLaLune = false;
@@ -214,17 +214,16 @@ class _InfoPageState extends State<InfoPage> {
     );
 
     if (go == true) {
-      Api.openLaLuneReleases();
+      await Api.openLaLuneReleases();
     }
   }
 
   Future<void> _startCoreUpdate() async {
     if (_updatingCore) return;
     setState(() => _updatingCore = true);
-
     _showToast('Обновляю ядро...');
 
-    final ok = Api.updateCoreAndWait();
+    final ok = await Api.updateCoreAndWait();
 
     if (!mounted) return;
     setState(() => _updatingCore = false);
@@ -275,9 +274,7 @@ class _InfoPageState extends State<InfoPage> {
                     child: Text(
                       'Канал LaLune в MAX',
                       style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
+                          fontSize: 16, fontWeight: FontWeight.w600),
                     ),
                   ),
                   IconButton(
@@ -300,9 +297,8 @@ class _InfoPageState extends State<InfoPage> {
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.15),
-                      ),
+                      border:
+                          Border.all(color: Colors.white.withOpacity(0.15)),
                     ),
                     child: const Center(
                       child: Column(
@@ -314,9 +310,7 @@ class _InfoPageState extends State<InfoPage> {
                           Text(
                             'assets/max_qr.jpg',
                             style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.white38,
-                            ),
+                                fontSize: 11, color: Colors.white38),
                           ),
                         ],
                       ),
@@ -495,8 +489,7 @@ class _InfoPageState extends State<InfoPage> {
           side: BorderSide(color: Colors.white.withOpacity(0.2)),
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
+              borderRadius: BorderRadius.circular(10)),
         ),
         child: Text(label),
       ),
@@ -513,8 +506,7 @@ class _InfoPageState extends State<InfoPage> {
           foregroundColor: Colors.black,
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
+              borderRadius: BorderRadius.circular(10)),
         ),
         child: Text(text, textAlign: TextAlign.center),
       ),

@@ -99,12 +99,8 @@ class _SettingsPageState extends State<SettingsPage> {
   void _markDirty() {
     _dirty = true;
     if (!mounted) return;
-    Toast.show(
-      context,
-      'Сохраните настройки!',
-      isError: true,
-      duration: const Duration(seconds: 2),
-    );
+    Toast.show(context, 'Сохраните настройки!',
+        isError: true, duration: const Duration(seconds: 2));
   }
 
   void _startVkPolling() {
@@ -150,7 +146,7 @@ class _SettingsPageState extends State<SettingsPage> {
       enableSmartTunnel: _enableSmartTunnel,
     );
 
-    final ok = Api.saveSettings(s);
+    final ok = await Api.saveSettings(s);
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -163,8 +159,9 @@ class _SettingsPageState extends State<SettingsPage> {
         isError: !ok);
   }
 
-  void _regenDeviceId() {
-    final id = Api.regenerateDeviceId();
+  Future<void> _regenDeviceId() async {
+    final id = await Api.regenerateDeviceId();
+    if (!mounted) return;
     if (id.isNotEmpty) {
       setState(() {
         _deviceIdCtl.text = id;
@@ -198,7 +195,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _vkLoginInProgress = true;
     Toast.show(context, 'Открываю авторизацию ВК...');
 
-    final started = Api.vkLogin();
+    final started = await Api.vkLogin();
+    if (!mounted) return;
     if (!started) {
       _vkLoginInProgress = false;
       Toast.show(context, 'Не удалось запустить авторизацию', isError: true);
@@ -252,10 +250,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
               const SizedBox(height: 12),
 
-              if (!hasToken)
-                _buildLoginButton()
-              else
-                _buildTokenActiveBadge(),
+              if (!hasToken) _buildLoginButton() else _buildTokenActiveBadge(),
 
               if (_vkState.fetching) ...[
                 const SizedBox(height: 10),
@@ -410,7 +405,8 @@ class _SettingsPageState extends State<SettingsPage> {
           foregroundColor: Colors.white,
           side: BorderSide(color: Colors.white.withOpacity(0.2)),
           padding: const EdgeInsets.symmetric(vertical: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
       ),
     );
@@ -428,13 +424,14 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           const Expanded(
             child: Text('Активно',
-                style: TextStyle(
-                    fontSize: 13.5, fontWeight: FontWeight.w600)),
+                style:
+                    TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
           ),
           IconButton(
             tooltip: 'Сбросить токен',
-            onPressed: () {
-              Api.deleteVKToken();
+            onPressed: () async {
+              await Api.deleteVKToken();
+              if (!mounted) return;
               setState(() {
                 _vkState = VkTokenState.empty;
                 if (_authMode == 'autoApi' || _authMode == 'autoVk') {
@@ -609,8 +606,7 @@ class _SettingsPageState extends State<SettingsPage> {
               GlassCard(
                 child: Column(
                   children: [
-                    _rowDropdown('Obfs', _s.obfs, const ['video', 'audio'],
-                        (v) {
+                    _rowDropdown('Obfs', _s.obfs, const ['video', 'audio'], (v) {
                       setState(() => _s = _s.copyWith(obfs: v));
                       _markDirty();
                     }),

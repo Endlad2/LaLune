@@ -16,12 +16,17 @@ libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 url = "2"
 dirs = "5"
 log = "0.4"
+
+# reqwest тянет ring, который не собирается под Android без правильного NDK.
+# Все HTTP-операции на Android делает Kotlin (MethodChannel), из Rust они
+# не нужны. Поэтому reqwest только для desktop.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 
 [profile.release]
 opt-level = "s"

@@ -30,8 +30,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
   Future<void> _reload() async {
     await Api.refreshConfigs();
     await Api.refreshStatus();
-    final cfgs = Api.getConfigs();
     if (!mounted) return;
+    final cfgs = Api.getConfigs();
     setState(() {
       _configs = cfgs;
 
@@ -94,9 +94,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
     });
   }
 
-  void _toggle() {
+  Future<void> _toggle() async {
     if (_connected) {
-      Api.disconnect();
+      await Api.disconnect();
+      if (!mounted) return;
       setState(() => _connected = false);
     } else {
       if (_selectedId == null) {
@@ -106,7 +107,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final cfg = _configs.where((c) => c.id == _selectedId).toList();
       if (cfg.isNotEmpty) SelectedConfig.set(cfg.first);
 
-      final ok = Api.connect(_selectedId!);
+      final ok = await Api.connect(_selectedId!);
+      if (!mounted) return;
       if (ok) {
         setState(() => _connected = true);
         _startCoreDownloadWatcher();
@@ -125,7 +127,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
       _toast('Введите ссылку');
       return;
     }
-    final saved = Api.saveConfig(result.link, result.protocol);
+    final saved = await Api.saveConfig(result.link, result.protocol);
+    if (!mounted) return;
     if (saved) {
       _toast('Профиль сохранён');
       await _reload();
@@ -145,10 +148,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _MoonButton(
-                  connected: _connected,
-                  onTap: _toggle,
-                ),
+                _MoonButton(connected: _connected, onTap: _toggle),
                 const SizedBox(height: 20),
                 Text(
                   _connected ? 'Подключено' : 'Отключено',
@@ -168,7 +168,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                   onDelete: (id) async {
                     final ok = await _confirmDelete();
                     if (ok == true) {
-                      Api.deleteConfig(id);
+                      await Api.deleteConfig(id);
                       if (SelectedConfig.current?.id == id) {
                         SelectedConfig.clear();
                       }
@@ -265,11 +265,7 @@ class _AddButtonState extends State<_AddButton> {
                 ),
               ],
             ),
-            child: const Icon(
-              Icons.add,
-              size: 24,
-              color: Colors.white,
-            ),
+            child: const Icon(Icons.add, size: 24, color: Colors.white),
           ),
         ),
       ),
