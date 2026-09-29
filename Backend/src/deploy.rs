@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::process::Command;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
-use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct DeployRequest {
@@ -66,12 +65,5 @@ pub fn run_deploy(req_json: &str, logs: &mut VecDeque<String>) -> Result<String>
     let out = Command::new(&bin).args(&args).output()?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    let combined = format!("{stdout}{stderr}");
-
-    // На случай, если deploy-manager вернул JSON — пробуем распарсить.
-    if let Ok(_v) = serde_json::from_str::<Value>(&combined) {
-        // оставляем как есть, читателю решать
-    }
-
-    Ok(combined)
+    Ok(format!("{stdout}{stderr}"))
 }

@@ -1,4 +1,6 @@
 //! AppState — единое состояние приложения.
+//! Использует реальные имена модулей crate: config, settings, token,
+//! core_runner, vk_api, deploy, vk_launcher.
 
 use std::collections::VecDeque;
 use std::process::Child;
@@ -8,8 +10,8 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    app_dir, configs_db_path, core_path, latest_path, logs_path, settings_path, token_path,
-    logmod, setmod, tokmod, cfgmod, runmod, vkmod, depmod, vk_launcher,
+    app_dir, config, configs_db_path, core_path, core_runner, deploy, latest_path, logs_path,
+    settings as settings_mod, settings_path, token as token_mod, token_path, vk_api, vk_launcher,
 };
 
 const LOG_LIMIT: usize = 500;
@@ -37,12 +39,12 @@ fn default_protocol() -> String { "CSQTT".into() }
 pub struct AppState {
     initialized: bool,
     logs: VecDeque<String>,
-    settings: setmod::Settings,
+    settings: settings_mod::Settings,
     selected_config: Option<Config>,
     connected: bool,
     core_process: Option<Child>,
     core_downloading: bool,
-    token: Option<tokmod::VkToken>,
+    token: Option<token_mod::VkToken>,
     deploy_log: String,
     deploying: bool,
     vk_call_ids: Vec<String>,
@@ -54,7 +56,7 @@ impl AppState {
         Self {
             initialized: false,
             logs: VecDeque::with_capacity(LOG_LIMIT),
-            settings: setmod::Settings::default(),
+            settings: settings_mod::Settings::default(),
             selected_config: None,
             connected: false,
             core_process: None,
@@ -71,9 +73,9 @@ impl AppState {
         if self.initialized { return Ok(()); }
         std::fs::create_dir_all(app_dir())?;
 
-        cfgmod::open_db(&configs_db_path())?;
-        self.settings = setmod::load_settings(&settings_path())?;
-        self.token = tokmod::load_token(&token_path()).ok();
+        config::open_db(&configs_db_path())?;
+        self.settings = settings_mod::load_settings(&settings_path())?;
+        self.token = token_mod::load_token(&token_path()).ok();
 
         self.log("[INIT] LaLune backend готов");
         self.log(format!("[INIT] каталог: {}", app_dir().display()));
@@ -98,21 +100,21 @@ impl AppState {
     // -------------------- Configs --------------------
 
     pub fn get_configs_json(&self) -> String {
-        match cfgmod::load_configs() {
+        match config::load_configs() {
             Ok(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".into()),
             Err(_) => "[]".into(),
         }
     }
 
     pub fn save_config(&mut self, link: &str, protocol: &str) -> Result<()> {
-        let cfg = cfgmod::parse_link(link, protocol);
-        cfgmod::insert_config(&cfg)?;
+        let cfg = config::parse_link(link, protocol);
+        config::insert_config(&cfg)?;
         self.log(format!("[CONFIG] сохранён: {} ({})", cfg.peer, cfg.protocol));
         Ok(())
     }
 
     pub fn delete_config(&mut self, id: i64) -> Result<()> {
-        cfgmod::delete_config(id)?;
+        config::delete_config(id)?;
         self.log(format!("[CONFIG] удалён id={id}"));
         Ok(())
     }
@@ -124,11 +126,11 @@ impl AppState {
     }
 
     pub fn save_settings(&mut self, json: &str) -> Result<()> {
-        let mut s: setmod::Settings = serde_json::from_str(json)?;
-        setmod::clamp(&mut s);
+        let mut s: settings_mod::Settings = serde_json::from_str(json)?;
+        settings_mod::clamp(&mut s);
         if s.device_id.is_empty() { s.device_id = self.settings.device_id.clone(); }
-        if s.device_id.is_empty() { s.device_id = setmod::new_device_id(); }
-        setmod::save_settings(&settings_path(), &s)?;
+        if s.device_id.is_empty() { s.device_id = settings_mod::new_device_id(); }
+        settings_mod::save_settings(&settings_path(), &s)?;
         self.settings = s;
         self.log("[SETTINGS] сохранены");
         Ok(())
@@ -151,9 +153,9 @@ impl AppState {
     pub fn get_device_id(&self) -> String { self.settings.device_id.clone() }
 
     pub fn regenerate_device_id(&mut self) -> String {
-        let id = setmod::new_device_id();
+        let id = settings_mod::new_device_id();
         self.settings.device_id = id.clone();
-        let _ = setmod::save_settings(&settings_path(), &self.settings);
+        let _ = settings_mod::save_settings(&settings_path(), &self.settings);
         self.log(format!("[DEVICE] новый id={id}"));
         id
     }
@@ -180,20 +182,20 @@ impl AppState {
     pub fn is_core_downloading(&self) -> bool { self.core_downloading }
 
     pub fn connect(&mut self, config_id: i64) -> Result<()> {
-        let cfg = cfgmod::get_config(config_id)?
+        let cfg = config::get_config(config_id)?
             .ok_or_else(|| anyhow!("config {config_id} не найден"))?;
         self.selected_config = Some(cfg.clone());
 
         if !core_path().exists() {
             self.log("[CORE] ядро не найдено, скачиваю...");
             self.core_downloading = true;
-            let r = runmod::download_core(&mut self.logs);
+            let r = core_runner::download_core(&mut self.logs);
             self.core_downloading = false;
             r?;
         }
 
         self.log(format!("[CONNECT] {} (peer={})", cfg.name, cfg.peer));
-        let child = runmod::spawn_core(&cfg, &self.settings, &mut self.logs)?;
+        let child = core_runner::spawn_core(&cfg, &self.settings, &mut self.logs)?;
         self.core_process = Some(child);
         self.connected = true;
         Ok(())
@@ -211,7 +213,6 @@ impl AppState {
     // -------------------- VK --------------------
 
     pub fn get_vk_token_state_json(&self) -> String {
-        // Проверяем token.json + флаг «идёт логин» в state.
         let has_file = token_path().exists();
         let has_in_mem = self.token.as_ref().map(|t| !t.token.is_empty()).unwrap_or(false);
         let has = has_in_mem || has_file;
@@ -224,13 +225,6 @@ impl AppState {
         }).to_string()
     }
 
-    /// Кнопка «Войти».
-    ///
-    /// Windows: запускает видимое окно PowerShell с one-command Token.ps1
-    ///          (при условии, что Chromium установлен в vk-token-fetcher/browsers).
-    /// Linux:   запускает локальный LaLuneTokenFetcher (Playwright), который
-    ///          сам поставит Chromium, если его нет.
-    /// macOS:   пока не поддерживается.
     pub fn vk_login(&mut self) -> Result<()> {
         if self.vk_login_in_progress {
             return Err(anyhow!("логин уже идёт"));
@@ -238,10 +232,7 @@ impl AppState {
         self.vk_login_in_progress = true;
         self.log("[VK] старт логина");
 
-        let result = vk_launcher::start_fetcher(&mut self.logs);
-
-        // Автоперезапуск только для Linux-фолбэка (Playwright install).
-        match result {
+        match vk_launcher::start_fetcher(&mut self.logs) {
             Ok(()) => Ok(()),
             Err(e) => {
                 self.vk_login_in_progress = false;
@@ -257,13 +248,13 @@ impl AppState {
     }
 
     pub fn run_vk_auto_api_calls(&mut self) -> String {
-        let token = match tokmod::load_token(&token_path()) {
+        let token = match token_mod::load_token(&token_path()) {
             Ok(t) if !t.token.is_empty() => t.token,
             _ => return serde_json::json!({"error": "токен ВК не найден"}).to_string(),
         };
         let workers = self.settings.workers;
         let aw = self.settings.auto_api_workers;
-        match vkmod::create_calls(&token, workers, aw, &mut self.logs) {
+        match vk_api::create_calls(&token, workers, aw, &mut self.logs) {
             Ok((hashes, call_ids)) => {
                 self.vk_call_ids = call_ids.clone();
                 serde_json::json!({"hashes": hashes, "callIds": call_ids}).to_string()
@@ -275,7 +266,7 @@ impl AppState {
     // -------------------- Updates --------------------
 
     pub fn check_core_update_json(&mut self) -> String {
-        match runmod::fetch_latest(&mut self.logs) {
+        match core_runner::fetch_latest(&mut self.logs) {
             Some(remote) => {
                 let local = std::fs::read_to_string(latest_path()).unwrap_or_default();
                 let local = local.trim().to_string();
@@ -296,7 +287,7 @@ impl AppState {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
         self.core_downloading = true;
-        let r = runmod::download_core(&mut self.logs);
+        let r = core_runner::download_core(&mut self.logs);
         self.core_downloading = false;
         r
     }
@@ -307,7 +298,7 @@ impl AppState {
         if self.deploying { return Err(anyhow!("deploy уже идёт")); }
         self.deploy_log.clear();
         self.deploying = true;
-        let log_line = depmod::run_deploy(req_json, &mut self.logs)?;
+        let log_line = deploy::run_deploy(req_json, &mut self.logs)?;
         self.deploy_log = log_line;
         self.deploying = false;
         Ok(())

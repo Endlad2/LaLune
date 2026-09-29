@@ -1,5 +1,4 @@
 //! VK API: calls.start / calls.forceFinish.
-//! Токен берётся только из token.json.
 
 use std::collections::VecDeque;
 use std::time::Duration;

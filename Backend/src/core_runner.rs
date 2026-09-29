@@ -1,10 +1,10 @@
-//! Запуск ядра CSQTT и трёхуровневая загрузка.
+//! Запуск ядра CSQTT + загрузка.
 
 use std::collections::VecDeque;
 use std::process::{Child, Command, Stdio};
 use anyhow::{anyhow, Result};
 
-use crate::state::{AppState, Config};
+use crate::state::Config;
 use crate::settings::Settings;
 
 pub const LATEST_URL: &str =
@@ -19,7 +19,7 @@ pub fn core_filename() -> &'static str {
 }
 
 pub fn fetch_latest(logs: &mut VecDeque<String>) -> Option<String> {
-    match crate::netmod::fetch_text(LATEST_URL) {
+    match crate::net::fetch_text(LATEST_URL) {
         Ok(v) => {
             logs.push_back(format!("[CORE] LATEST={v}"));
             Some(v)
@@ -40,7 +40,7 @@ pub fn download_core(logs: &mut VecDeque<String>) -> Result<()> {
     logs.push_back(format!("[CORE] качаю {url}"));
 
     let dest = crate::core_path();
-    crate::netmod::download_file(&url, &dest)?;
+    crate::net::download_file(&url, &dest)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -61,15 +61,12 @@ pub fn spawn_core(
         return Err(anyhow!("ядро не найдено: {}", core.display()));
     }
 
-    // -n = workers (как в новой UI-логике; без умножения на hashes).
-    let mut hashes_count = 0usize;
     let hashes_clean: Vec<String> = cfg
         .hashes
         .split(|c| c == ',' || c == '+' || c == ' ' || c == '\t' || c == '\n')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    hashes_count = hashes_clean.len().min(6).max(1);
     let hashes_joined = hashes_clean.join(",");
 
     let mut cmd = Command::new(&core);
@@ -93,16 +90,14 @@ pub fn spawn_core(
         .stderr(Stdio::piped());
 
     logs.push_back(format!(
-        "[CORE] spawn: {} -peer {} -n {} (hashes={})",
+        "[CORE] spawn: {} -peer {} -n {}",
         core.display(),
         cfg.peer,
-        s.workers,
-        hashes_count
+        s.workers
     ));
 
     let mut child = cmd.spawn().map_err(|e| anyhow!("spawn: {e}"))?;
 
-    // Перенаправляем stdout/stderr в логи (простейший вариант — отдельный поток).
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
             use std::io::BufRead;
@@ -124,7 +119,3 @@ pub fn spawn_core(
 
     Ok(child)
 }
-
-// Заглушка — соединение с AppState для тех мест, где передавали state.
-#[allow(dead_code)]
-pub fn noop() {}

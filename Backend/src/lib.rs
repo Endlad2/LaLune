@@ -1,21 +1,35 @@
 //! LaLune native backend (Rust → C ABI).
+//!
+//! Модули:
+//!   * config      — SQLite configs.db, парсер csqtt://
+//!   * settings    — ~/.la-lune/settings.json
+//!   * token       — ~/.la-lune/token.json
+//!   * net         — HTTP с фолбэком direct→proxy(UA)→proxy(curl-UA)
+//!   * core_runner — запуск ядра CSQTT + загрузка
+//!   * vk_api      — VK calls.start / calls.forceFinish
+//!   * vk_launcher — кнопка «Войти» (Token.ps1 на Windows, fetcher на Linux)
+//!   * deploy      — spawn deploy-manager
+//!   * logs        — общие утилиты логирования
+//!   * state       — AppState (единое состояние)
 
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::io::{Read, Write};
+use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::PathBuf;
-use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
-mod config;
-mod core_runner;
-mod deploy;
-mod logs;
-mod net;
-mod settings;
-mod state;
-mod token;
-mod vk_api;
-mod vk_launcher;
+// Публичные модули.
+pub mod config;
+pub mod core_runner;
+pub mod deploy;
+pub mod logs;
+pub mod net;
+pub mod settings;
+pub mod state;
+pub mod token;
+pub mod vk_api;
+pub mod vk_launcher;
+
+// Совместимость со старым lib.rs (TUN).
+pub mod tun_abi;
 
 use state::AppState;
 
@@ -30,7 +44,7 @@ fn state() -> &'static Mutex<AppState> {
 }
 
 // ---------------------------------------------------------------------------
-//  Хелперы
+//  Хелперы C-строк
 // ---------------------------------------------------------------------------
 
 unsafe fn cstr_opt(p: *const c_char) -> String {
@@ -298,7 +312,7 @@ pub extern "C" fn lalune_is_deploying() -> c_int {
 //  Утилиты путей
 // ---------------------------------------------------------------------------
 
-pub(crate) fn app_dir() -> PathBuf {
+pub fn app_dir() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let sub = if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA").map(PathBuf::from)
@@ -309,13 +323,13 @@ pub(crate) fn app_dir() -> PathBuf {
     sub.join(".la-lune")
 }
 
-pub(crate) fn configs_db_path() -> PathBuf { app_dir().join("configs.db") }
-pub(crate) fn settings_path() -> PathBuf { app_dir().join("settings.json") }
-pub(crate) fn token_path() -> PathBuf { app_dir().join("token.json") }
-pub(crate) fn logs_path() -> PathBuf { app_dir().join("logs.txt") }
-pub(crate) fn latest_path() -> PathBuf { app_dir().join("LATEST") }
+pub fn configs_db_path() -> PathBuf { app_dir().join("configs.db") }
+pub fn settings_path() -> PathBuf { app_dir().join("settings.json") }
+pub fn token_path() -> PathBuf { app_dir().join("token.json") }
+pub fn logs_path() -> PathBuf { app_dir().join("logs.txt") }
+pub fn latest_path() -> PathBuf { app_dir().join("LATEST") }
 
-pub(crate) fn core_path() -> PathBuf {
+pub fn core_path() -> PathBuf {
     let name = if cfg!(target_os = "windows") { "client-windows-x86_64.exe" }
                else if cfg!(target_os = "macos") { "client-macos-x86_64" }
                else { "client-linux-x86_64" };
