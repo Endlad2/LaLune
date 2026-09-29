@@ -6,11 +6,6 @@ project(runner LANGUAGES CXX)
 # work.
 #
 # Any new source files that you add to the application should be added here.
-#
-# ВАЖНО: runner.exe.manifest НЕ добавлен в add_executable — манифест
-# встраивается через Runner.rc (CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST).
-# Если добавить его сюда, VS попытается встроить его через mt.exe и упадёт
-# с LNK1327.
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
@@ -39,6 +34,21 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
+
+# -----------------------------------------------------------------------------
+#  Кастомный манифест с requireAdministrator.
+#
+#  Используем /MANIFESTINPUT + /MANIFEST:EMBED напрямую — MSVC-линкер сам
+#  встроит манифест через mt.exe, без конфликта с RC и без CVT1100.
+# -----------------------------------------------------------------------------
+set(LALUNE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/runner.exe.manifest")
+if(EXISTS "${LALUNE_MANIFEST}")
+  target_link_options(${BINARY_NAME} PRIVATE
+    "/MANIFEST:EMBED"
+    "/MANIFESTINPUT:${LALUNE_MANIFEST}"
+    "/MANIFESTUAC:NO"
+  )
+endif()
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)

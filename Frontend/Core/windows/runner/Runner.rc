@@ -88,13 +88,9 @@ BEGIN
     END
 END
 
-/////////////////////////////////////////////////////////////////////////////
-//
-// Manifest — приложение требует права администратора.
-// Windows покажет один UAC при старте lalune_core.exe.
-//
-
-CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "runner.exe.manifest"
+// Манифест НЕ встраиваем здесь: его встраивает линкер через
+// /MANIFESTINPUT (см. target_link_options в CMakeLists.txt).
+// Если встроить тут — получим CVT1100: duplicate resource.
 
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////
