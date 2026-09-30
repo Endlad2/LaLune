@@ -1,6 +1,6 @@
 name: lalune_core
-description: LaLune native Flutter UI (Linux, Windows, Android, iOS).
-version: 0.6.0
+description: LaLune frontend (Dart/Flutter Web)
+version: 0.5.0
 publish_to: 'none'
 
 environment:
@@ -10,7 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  ffi: ^2.1.0
+  web: ^1.0.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0

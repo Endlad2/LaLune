@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'add_config_dialog.dart';
 
-import '../api/Api.dart';
+import '../api.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/toast.dart';
 
 class ConnectionPage extends StatefulWidget {
+  /// Вызывается, когда конфиг добавлен/удалён — родитель должен
+  /// пересоздать эту страницу (инкрементить свой version-key).
   final VoidCallback? onReload;
 
   const ConnectionPage({super.key, this.onReload});
@@ -27,10 +29,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     _startPolling();
   }
 
-  Future<void> _reload() async {
-    await Api.refreshConfigs();
-    await Api.refreshStatus();
-    if (!mounted) return;
+  void _reload() {
     final cfgs = Api.getConfigs();
     setState(() {
       _configs = cfgs;
@@ -64,7 +63,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Future.doWhile(() async {
       await Future.delayed(const Duration(seconds: 2));
       if (!mounted) return false;
-      await Api.refreshStatus();
       final c = Api.isConnected();
       if (c != _connected) setState(() => _connected = c);
       return true;
@@ -76,10 +74,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       await Future.delayed(const Duration(milliseconds: 300));
       if (!mounted) return false;
 
-      await Api.refreshCoreDownloading();
       final downloading = Api.isCoreDownloading();
       if (downloading && !_wasDownloading) {
         _wasDownloading = true;
+        // Тост в стиле остальных сообщений (жёлтый, снизу).
         Toast.show(
           context,
           'Подождите, скачивается ядро. VPN запустится через 10 сек',
@@ -94,10 +92,9 @@ class _ConnectionPageState extends State<ConnectionPage> {
     });
   }
 
-  Future<void> _toggle() async {
+  void _toggle() {
     if (_connected) {
-      await Api.disconnect();
-      if (!mounted) return;
+      Api.disconnect();
       setState(() => _connected = false);
     } else {
       if (_selectedId == null) {
@@ -107,8 +104,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final cfg = _configs.where((c) => c.id == _selectedId).toList();
       if (cfg.isNotEmpty) SelectedConfig.set(cfg.first);
 
-      final ok = await Api.connect(_selectedId!);
-      if (!mounted) return;
+      final ok = Api.connect(_selectedId!);
       if (ok) {
         setState(() => _connected = true);
         _startCoreDownloadWatcher();
@@ -120,23 +116,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Toast.show(context, msg);
   }
 
-  Future<void> _showAddDialog() async {
-    final result = await showAddConfigDialog(context);
-    if (result == null) return;
-    if (result.link.isEmpty) {
-      _toast('Введите ссылку');
-      return;
-    }
-    final saved = await Api.saveConfig(result.link, result.protocol);
-    if (!mounted) return;
-    if (saved) {
-      _toast('Профиль сохранён');
-      await _reload();
-      widget.onReload?.call();
-    } else {
-      _toast('Не удалось сохранить');
-    }
-  }
+Future<void> _showAddDialog() async {     final result = await showAddConfigDialog(context);     if (result == null) return;      if (result.link.isEmpty) {       _toast('Введите ссылку');       return;     }      final saved = Api.saveConfig(result.link, result.protocol);     if (saved) {       _toast('Профиль сохранён');       _reload();       widget.onReload?.call();     } else {       _toast('Не удалось сохранить');     }   }
 
   @override
   Widget build(BuildContext context) {
@@ -148,7 +128,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _MoonButton(connected: _connected, onTap: _toggle),
+                _MoonButton(
+                  connected: _connected,
+                  onTap: _toggle,
+                ),
                 const SizedBox(height: 20),
                 Text(
                   _connected ? 'Подключено' : 'Отключено',
@@ -168,11 +151,11 @@ class _ConnectionPageState extends State<ConnectionPage> {
                   onDelete: (id) async {
                     final ok = await _confirmDelete();
                     if (ok == true) {
-                      await Api.deleteConfig(id);
+                      Api.deleteConfig(id);
                       if (SelectedConfig.current?.id == id) {
                         SelectedConfig.clear();
                       }
-                      await _reload();
+                      _reload();
                       widget.onReload?.call();
                     }
                   },
@@ -181,6 +164,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
             ),
           ),
         ),
+
         Positioned(
           top: 12,
           right: 16,
@@ -220,6 +204,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
     );
   }
 }
+
+// ============================================================
+//  Кнопка "+" в правом верхнем углу
+// ============================================================
 
 class _AddButton extends StatefulWidget {
   final VoidCallback onTap;
@@ -265,13 +253,21 @@ class _AddButtonState extends State<_AddButton> {
                 ),
               ],
             ),
-            child: const Icon(Icons.add, size: 24, color: Colors.white),
+            child: const Icon(
+              Icons.add,
+              size: 24,
+              color: Colors.white,
+            ),
           ),
         ),
       ),
     );
   }
 }
+
+// ============================================================
+//  Кнопка-луна
+// ============================================================
 
 class _MoonButton extends StatefulWidget {
   final bool connected;
@@ -336,6 +332,10 @@ class _MoonButtonState extends State<_MoonButton> {
     );
   }
 }
+
+// ============================================================
+//  Селектор конфига
+// ============================================================
 
 class _ConfigSelector extends StatelessWidget {
   final List<ConfigItem> configs;

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.lalune</string>
+    </array>
+
+    <!--
+      Разрешение на Packet Tunnel Provider. Без него
+      NETunnelProviderManager не сможет загрузить расширение.
+      Включается в Apple Developer Portal для обоих идентификаторов:
+        com.lalune.app
+        com.lalune.app.tunnel
+    -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider</string>
+    </array>
+</dict>
+</plist>

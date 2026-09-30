@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Общая App Group между приложением и туннель-расширением.
+      Используется в ViewController.swift / PacketTunnelProvider.swift
+      для передачи peer/password/hashes и обмена файлом tunnel.log.
+    -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.lalune</string>
+    </array>
+</dict>
+</plist>

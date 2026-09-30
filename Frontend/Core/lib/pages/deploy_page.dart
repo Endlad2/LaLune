@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
-import '../api/Api.dart';
+import '../api.dart';
 import '../widgets/glass_card.dart';
 
 /// Вкладка "Деплой": ставит выбранный протокол (core) на удалённый сервер
@@ -31,11 +31,13 @@ class _DeployPageState extends State<DeployPage> {
   final TextEditingController _password = TextEditingController();
   final TextEditingController _keyPath = TextEditingController();
 
+  // Ручные порты.
   bool _manualPorts = false;
   final TextEditingController _corePort = TextEditingController();
   final TextEditingController _warpPort = TextEditingController();
   final TextEditingController _listenPort = TextEditingController();
 
+  // Режим авторизации: true = пароль, false = SSH-ключ.
   bool _usePassword = true;
 
   bool _deploying = false;
@@ -63,13 +65,11 @@ class _DeployPageState extends State<DeployPage> {
   }
 
   void _startPolling() {
-    _poll = Timer.periodic(const Duration(milliseconds: 900), (_) async {
+    _poll = Timer.periodic(const Duration(milliseconds: 900), (_) {
       if (!mounted) return;
-      await Api.refreshDeployState();
       final busy = Api.isDeploying();
       final log = Api.deployLog();
       if (busy != _deploying || log != _log) {
-        if (!mounted) return;
         setState(() {
           _deploying = busy;
           _log = log;
@@ -167,8 +167,7 @@ class _DeployPageState extends State<DeployPage> {
                 TextField(
                   controller: _host,
                   enabled: !_deploying,
-                  decoration:
-                      _inputDecoration('IP / хост (например 1.2.3.4)'),
+                  decoration: _inputDecoration('IP / хост (например 1.2.3.4)'),
                 ),
                 const SizedBox(height: 10),
                 Row(
@@ -218,7 +217,8 @@ class _DeployPageState extends State<DeployPage> {
                   TextField(
                     controller: _keyPath,
                     enabled: !_deploying,
-                    decoration: _inputDecoration('Путь к SSH-ключу (id_rsa)'),
+                    decoration:
+                        _inputDecoration('Путь к SSH-ключу (id_rsa)'),
                   ),
               ]),
 

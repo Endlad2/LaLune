@@ -4,9 +4,10 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'package:flutter/material.dart';
 
-import '../api/Api.dart';
+import '../api.dart';
 import '../widgets/glass_card.dart';
 
+/// Возвращает true, если мы на Android или iOS.
 bool _isMobilePlatform() {
   if (kIsWeb) return false;
   try {
@@ -29,7 +30,7 @@ class _InfoPageState extends State<InfoPage> {
   bool _checkingCore = false;
   bool _updatingCore = false;
 
-  static const String _laluneVersion = '0.6.0';
+  static const String _laluneVersion = '0.5.0';
   String _laluneRemoteVersion = '—';
   bool _laluneHasUpdate = false;
   bool _checkingLaLune = false;
@@ -47,15 +48,15 @@ class _InfoPageState extends State<InfoPage> {
     _startPolling();
   }
 
-  Future<void> _kickCoreCheck() async {
+  void _kickCoreCheck() {
     if (_hideCoreBlock) return;
-    await Api.refreshCoreUpdate();
-    _applyCoreInfo(Api.checkCoreUpdate());
+    final info = Api.checkCoreUpdate();
+    _applyCoreInfo(info);
   }
 
-  Future<void> _kickLaLuneCheck() async {
-    await Api.refreshLaLuneUpdate();
-    _applyLaLuneInfo(Api.checkLaLuneUpdate());
+  void _kickLaLuneCheck() {
+    final info = Api.checkLaLuneUpdate();
+    _applyLaLuneInfo(info);
   }
 
   void _applyCoreInfo(UpdateInfo info) {
@@ -94,7 +95,6 @@ class _InfoPageState extends State<InfoPage> {
       if (!mounted) return false;
 
       if (!_hideCoreBlock) {
-        await Api.refreshCoreUpdate();
         final core = Api.checkCoreUpdate();
         if (core.version != _coreRemoteVersion ||
             core.hasUpdate != _coreHasUpdate) {
@@ -102,7 +102,6 @@ class _InfoPageState extends State<InfoPage> {
         }
       }
 
-      await Api.refreshLaLuneUpdate();
       final lalune = Api.checkLaLuneUpdate();
       if (lalune.version != _laluneRemoteVersion ||
           lalune.hasUpdate != _laluneHasUpdate) {
@@ -115,18 +114,18 @@ class _InfoPageState extends State<InfoPage> {
   Future<void> _manualCheckCore() async {
     if (_hideCoreBlock) return;
     setState(() => _checkingCore = true);
-    await _kickCoreCheck();
+    _kickCoreCheck();
     await Future.delayed(const Duration(seconds: 1));
-    await _kickCoreCheck();
+    _kickCoreCheck();
     if (!mounted) return;
     setState(() => _checkingCore = false);
   }
 
   Future<void> _manualCheckLaLune() async {
     setState(() => _checkingLaLune = true);
-    await _kickLaLuneCheck();
+    _kickLaLuneCheck();
     await Future.delayed(const Duration(seconds: 1));
-    await _kickLaLuneCheck();
+    _kickLaLuneCheck();
     if (!mounted) return;
     setState(() => _checkingLaLune = false);
   }
@@ -147,12 +146,15 @@ class _InfoPageState extends State<InfoPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Новая версия: $version',
-                style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600)),
+            Text(
+              'Новая версия: $version',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
             const SizedBox(height: 8),
-            Text('Обновление будет скачано автоматически.',
-                style: TextStyle(color: Colors.white.withOpacity(0.7))),
+            Text(
+              'Обновление будет скачано автоматически.',
+              style: TextStyle(color: Colors.white.withOpacity(0.7)),
+            ),
           ],
         ),
         actions: [
@@ -189,15 +191,20 @@ class _InfoPageState extends State<InfoPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Новая версия: $version',
-                style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600)),
+            Text(
+              'Новая версия: $version',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
             const SizedBox(height: 8),
-            Text('Установленная версия: $_laluneVersion',
-                style: TextStyle(color: Colors.white.withOpacity(0.65))),
+            Text(
+              'Установленная версия: $_laluneVersion',
+              style: TextStyle(color: Colors.white.withOpacity(0.65)),
+            ),
             const SizedBox(height: 14),
-            Text('Открыть страницу загрузки и скачать новую версию?',
-                style: TextStyle(color: Colors.white.withOpacity(0.8))),
+            Text(
+              'Открыть страницу загрузки и скачать новую версию?',
+              style: TextStyle(color: Colors.white.withOpacity(0.8)),
+            ),
           ],
         ),
         actions: [
@@ -214,23 +221,24 @@ class _InfoPageState extends State<InfoPage> {
     );
 
     if (go == true) {
-      await Api.openLaLuneReleases();
+      Api.openLaLuneReleases();
     }
   }
 
   Future<void> _startCoreUpdate() async {
     if (_updatingCore) return;
     setState(() => _updatingCore = true);
+
     _showToast('Обновляю ядро...');
 
-    final ok = await Api.updateCoreAndWait();
+    final ok = Api.updateCoreAndWait();
 
     if (!mounted) return;
     setState(() => _updatingCore = false);
 
     if (ok) {
       _showToast('Ядро обновлено. Проверьте версию.');
-      await _kickCoreCheck();
+      _kickCoreCheck();
     } else {
       _showToast('Не удалось обновить ядро. Смотрите логи.');
     }
@@ -248,7 +256,12 @@ class _InfoPageState extends State<InfoPage> {
     );
   }
 
+  // ============================================================
+  //  QR-модалка для канала MAX — адаптивный размер
+  // ============================================================
+
   Future<void> _showMaxQrDialog() async {
+    // Адаптивный размер: минимум из (ширина экрана - 80) и 420.
     final screenWidth = MediaQuery.of(context).size.width;
     final qrSize = math.min(screenWidth - 80, 420.0);
 
@@ -274,7 +287,9 @@ class _InfoPageState extends State<InfoPage> {
                     child: Text(
                       'Канал LaLune в MAX',
                       style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w600),
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                   IconButton(
@@ -297,20 +312,22 @@ class _InfoPageState extends State<InfoPage> {
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
                       borderRadius: BorderRadius.circular(12),
-                      border:
-                          Border.all(color: Colors.white.withOpacity(0.15)),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.15),
+                      ),
                     ),
                     child: const Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.qr_code_2,
-                              size: 64, color: Colors.white54),
+                          Icon(Icons.qr_code_2, size: 64, color: Colors.white54),
                           SizedBox(height: 8),
                           Text(
                             'assets/max_qr.jpg',
                             style: TextStyle(
-                                fontSize: 11, color: Colors.white38),
+                              fontSize: 11,
+                              color: Colors.white38,
+                            ),
                           ),
                         ],
                       ),
@@ -333,6 +350,10 @@ class _InfoPageState extends State<InfoPage> {
       ),
     );
   }
+
+  // ============================================================
+  //  UI
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
@@ -489,7 +510,8 @@ class _InfoPageState extends State<InfoPage> {
           side: BorderSide(color: Colors.white.withOpacity(0.2)),
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10)),
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
         child: Text(label),
       ),
@@ -506,7 +528,8 @@ class _InfoPageState extends State<InfoPage> {
           foregroundColor: Colors.black,
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10)),
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
         child: Text(text, textAlign: TextAlign.center),
       ),

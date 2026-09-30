@@ -11,18 +11,123 @@ permissions:
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: "1"
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  ANDROID_API_LEVEL: "24"
-  ANDROID_BUILD_TOOLS: "34.0.0"
-  ANDROID_COMPILE_SDK: "34"
-  NDK_VERSION: "26.1.10909125"
-  NDK_DIR_NAME: "android-ndk-r26b"
 
 jobs:
-  # ============================================================
-  #  TOKEN FETCHER — только ZIP'ы в релиз
-  # ============================================================
+  build-desktop-linux:
+    name: Desktop Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config gcc build-essential
+      - name: Setup Wails
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+      - name: Prepare SmartTunnel.lua
+        run: python3 prepare_st.py --platform=all
+      - name: Build Dart frontend for Linux
+        run: python3 build_frontend.py --platform Linux
+      - name: Build Desktop (Linux)
+        run: python3 build_desktop.py --platform Linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Linux
+          path: Desktop/Linux/build/bin/*
+          if-no-files-found: error
+
+  build-desktop-windows:
+    name: Desktop Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Prepare SmartTunnel.lua
+        run: python prepare_st.py --platform=all
+      - name: Build Dart frontend for Windows
+        run: python build_frontend.py --platform Windows
+      - name: Build Desktop (Windows)
+        run: python build_desktop.py --platform Windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Windows
+          path: Desktop/Windows/build/bin/*
+          if-no-files-found: error
+
+  build-android:
+    name: Android APK (universal)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: subosito/flutter-action@v2
+        with: { flutter-version: '3.24.5', channel: stable, cache: true }
+      - run: flutter config --enable-web
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - name: Use preinstalled Android SDK
+        run: |
+          if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
+            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME"
+      - name: Accept Android licenses
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          yes | "$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.9' }
+      - name: Prepare Android Core
+        run: python prepare_android_core.py
+      - name: Prepare SmartTunnel.lua
+        run: python prepare_st.py --platform=all
+      - name: Build Dart frontend for Android
+        run: python build_frontend.py --platform Android
+      - name: Copy frontend to Android assets
+        run: |
+          ASSETS_DIR="Mobile/Android/app/src/main/assets"
+          # не удаляем всё — в assets уже лежит SmartTunnel.lua от prepare_st.py.
+          mkdir -p "$ASSETS_DIR"
+          cp -r Frontend/output/. "$ASSETS_DIR/"
+          test -f "$ASSETS_DIR/app.html" || { echo "app.html MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/api.js" || { echo "api.js MISSING"; exit 1; }
+          test -f "$ASSETS_DIR/SmartTunnel.lua" || { echo "SmartTunnel.lua MISSING"; exit 1; }
+      - name: Download core binaries
+        run: |
+          mkdir -p Mobile/Android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
+          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
+          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
+          curl -L --fail --retry 3 -o Mobile/Android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+      - name: Build Android APK
+        working-directory: Mobile/Android
+        run: gradle assembleDebug --stacktrace --no-daemon
+      - name: Locate APK
+        id: find_apk
+        run: |
+          APK=$(find Mobile/Android/app/build/outputs/apk -name "*.apk" -type f | head -n 1)
+          [ -z "$APK" ] && exit 1
+          echo "apk=$APK" >> $GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-Android
+          path: ${{ steps.find_apk.outputs.apk }}
+          if-no-files-found: error
+
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
     runs-on: ${{ matrix.runner }}
@@ -36,31 +141,32 @@ jobs:
             runner: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-
-      - uses: actions/setup-dotnet@v4
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
         with: { dotnet-version: '8.0.x' }
+
 
       - name: Show dotnet version
         run: dotnet --info
 
-      - name: Build fetcher
-        run: python build_token_grabber.py --platform=${{ matrix.platform }} --clean
-
-      - name: Package into LaLuneTokenFetcher_<platform>.zip
+      - name: Sanity check
         shell: bash
-        env:
-          PYTHONIOENCODING: utf-8
-          PYTHONUTF8: "1"
+        run: ls -la Core/LaLuneTokenFetcher
+
+      - name: Build fetcher
+        run: python build_token_grabber.py --platform ${{ matrix.platform }}
+
+      - name: Package into vk-token-fetcher.zip
+        shell: bash
         run: |
           set -e
           OUTPUT_BIN="Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher"
           ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
 
           if [ ! -d "$OUTPUT_BIN" ]; then
-            echo "Не найдена папка: $OUTPUT_BIN"
+            echo "Не найдена папка с результатом сборки: $OUTPUT_BIN"
             find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
             exit 1
           fi
@@ -85,6 +191,7 @@ jobs:
             popd >/dev/null
           fi
 
+          echo "=== $ZIP_PATH ==="
           ls -la "$ZIP_PATH"
 
       - name: Verify zip
@@ -92,6 +199,7 @@ jobs:
         run: |
           ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
           test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
+
           if [ "${{ matrix.platform }}" = "Windows" ]; then
             powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
             ls -la verify_zip/vk-token-fetcher
@@ -105,451 +213,29 @@ jobs:
           path: Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip
           if-no-files-found: error
 
-  # ============================================================
-  #  DESKTOP LINUX
-  # ============================================================
-  build-desktop-linux:
-    name: Desktop Linux
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: '3.22.0', channel: stable, cache: true }
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libstdc++-12-dev
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            Backend/target/
-            Core/DeployManager/target/
-          key: ${{ runner.os }}-cargo-linux-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-linux-
-            ${{ runner.os }}-cargo-
-
-      - name: Build Rust Backend
-        working-directory: Backend
-        run: cargo build --release
-
-      - name: Copy Backend library into runner
-        run: |
-          mkdir -p Frontend/Core/linux/runner
-          cp Backend/target/release/liblalune_backend.so Frontend/Core/linux/runner/
-
-      - name: Build DeployManager
-        run: python build_deploy_manager.py --dest Frontend/Core/linux/runner
-
-      - name: Prepare SmartTunnel.lua
-        run: python prepare_st.py --platform=Linux
-
-      - name: Copy assets into Flutter project
-        run: |
-          mkdir -p Frontend/Core/assets
-          if [ -d "Assets" ]; then
-            cp -f Assets/* Frontend/Core/assets/ || true
-          fi
-          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
-            echo "placeholder" > Frontend/Core/assets/.keep
-          fi
-          ls -la Frontend/Core/assets/
-
-      - name: Flutter pub get
-        working-directory: Frontend/Core
-        run: flutter pub get
-
-      - name: Build Flutter Linux
-        working-directory: Frontend/Core
-        run: flutter build linux --release
-
-      - name: Copy extra binaries into bundle
-        run: |
-          BUILD_DIR="Frontend/Core/build/linux/x64/release/bundle"
-          RUNNER="Frontend/Core/linux/runner"
-
-          if [ -f "$RUNNER/deploy-manager" ];       then cp "$RUNNER/deploy-manager" "$BUILD_DIR/"; fi
-          if [ -f "$RUNNER/liblalune_backend.so" ]; then mkdir -p "$BUILD_DIR/lib"; cp "$RUNNER/liblalune_backend.so" "$BUILD_DIR/lib/"; fi
-
-          cat > "$BUILD_DIR/run.sh" <<'SH'
-          #!/bin/sh
-          cd "$(dirname "$0")"
-          ./lalune_core "$@"
-          SH
-          chmod +x "$BUILD_DIR/run.sh"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-Linux
-          path: Frontend/Core/build/linux/x64/release/bundle/
-          if-no-files-found: error
-
-  # ============================================================
-  #  DESKTOP WINDOWS
-  #
-  #  windows-latest сейчас = Windows Server 2025 + Visual Studio 2026 (v18).
-  #  Старый CMake-шаблон Flutter ищет "Visual Studio 16 2019" или 17 2022,
-  #  и не находит VS 18 2026. Поэтому:
-  #    * используем windows-2022 (там VS 2022 = v17, шаблон её находит);
-  #    * на всякий случай выставляем CMAKE_GENERATOR для VS 2026,
-  #      если раннер окажется обновлённым.
-  # ============================================================
-  build-desktop-windows:
-    name: Desktop Windows
-    runs-on: windows-2022
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: '3.22.0', channel: stable, cache: true }
-
-      - name: Detect VS / CMake generators
-        run: |
-          echo "=== cl.exe / link.exe / rc.exe ==="
-          which cl.exe  || true
-          which link.exe || true
-          which rc.exe  || true
-          echo "=== cmake ==="
-          which cmake.exe || true
-          cmake --version || true
-          echo "=== cmake supported VS generators ==="
-          cmake --help 2>/dev/null | grep -i "Visual Studio" || true
-          echo "=== flutter doctor ==="
-          flutter doctor -v || true
-
-      - name: Force CMake generator that exists on this runner
-        run: |
-          # Определяем доступный генератор: VS 2026 (18), VS 2022 (17) или VS 2019 (16).
-          GEN=""
-          if cmake --help 2>/dev/null | grep -q "Visual Studio 18 2026"; then
-            GEN="Visual Studio 18 2026"
-          elif cmake --help 2>/dev/null | grep -q "Visual Studio 17 2022"; then
-            GEN="Visual Studio 17 2022"
-          elif cmake --help 2>/dev/null | grep -q "Visual Studio 16 2019"; then
-            GEN="Visual Studio 16 2019"
-          fi
-          echo "Selected CMAKE_GENERATOR=$GEN"
-          if [ -n "$GEN" ]; then
-            echo "CMAKE_GENERATOR=$GEN" >> $GITHUB_ENV
-            echo "CMAKE_GENERATOR_PLATFORM=x64" >> $GITHUB_ENV
-          fi
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            Backend/target/
-            Core/DeployManager/target/
-          key: ${{ runner.os }}-cargo-win-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-win-
-            ${{ runner.os }}-cargo-
-
-      - name: Build Rust Backend
-        working-directory: Backend
-        run: cargo build --release
-
-      - name: Copy Backend library into runner
-        run: |
-          mkdir -p Frontend/Core/windows/runner
-          cp Backend/target/release/lalune_backend.dll Frontend/Core/windows/runner/
-
-      - name: Build DeployManager
-        run: python build_deploy_manager.py --dest Frontend/Core/windows/runner
-
-      - name: Prepare SmartTunnel.lua
-        run: python prepare_st.py --platform=Windows
-
-      - name: Copy assets into Flutter project
-        run: |
-          mkdir -p Frontend/Core/assets
-          if [ -d "Assets" ]; then
-            cp -f Assets/* Frontend/Core/assets/ || true
-          fi
-          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
-            echo "placeholder" > Frontend/Core/assets/.keep
-          fi
-          ls -la Frontend/Core/assets/
-
-      - name: Flutter pub get
-        working-directory: Frontend/Core
-        run: flutter pub get
-
-      - name: Build Flutter Windows
-        working-directory: Frontend/Core
-        run: flutter build windows --release
-
-      - name: Copy extra binaries into bundle
-        run: |
-          BUILD_DIR="Frontend/Core/build/windows/x64/runner/Release"
-          RUNNER="Frontend/Core/windows/runner"
-
-          if [ -f "$RUNNER/deploy-manager.exe" ]; then cp "$RUNNER/deploy-manager.exe" "$BUILD_DIR/"; fi
-          if [ -f "$RUNNER/lalune_backend.dll" ]; then cp "$RUNNER/lalune_backend.dll" "$BUILD_DIR/"; fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-Windows
-          path: Frontend/Core/build/windows/x64/runner/Release/
-          if-no-files-found: error
-
-  # ============================================================
-  #  ANDROID
-  # ============================================================
-  build-android:
-    name: Android APK
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: '17' }
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-
-      - uses: subosito/flutter-action@v2
-        with: { flutter-version: '3.22.0', channel: stable, cache: true }
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            Backend/target/
-            Core/DeployManager/target/
-          key: ${{ runner.os }}-cargo-android-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-android-
-            ${{ runner.os }}-cargo-
-
-      - name: Cache Android SDK
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.tool_cache }}/android-sdk
-            ~/.android
-          key: ${{ runner.os }}-android-sdk-${{ env.ANDROID_COMPILE_SDK }}-${{ env.ANDROID_BUILD_TOOLS }}
-
-      - name: Install Android SDK (manual)
-        run: |
-          set -euo pipefail
-          SDK_ROOT="$RUNNER_TOOL_CACHE/android-sdk"
-          mkdir -p "$SDK_ROOT/cmdline-tools"
-
-          CT_VERSION="11076708"
-          CT_ZIP="commandlinetools-linux-${CT_VERSION}_latest.zip"
-          if [ ! -d "$SDK_ROOT/cmdline-tools/latest" ]; then
-            wget -q "https://dl.google.com/android/repository/${CT_ZIP}" -O /tmp/cmdline-tools.zip
-            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-extract
-            mv /tmp/cmdline-tools-extract/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
-            rm -rf /tmp/cmdline-tools.zip /tmp/cmdline-tools-extract
-          fi
-
-          export ANDROID_SDK_ROOT="$SDK_ROOT"
-          export ANDROID_HOME="$SDK_ROOT"
-          export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$SDK_ROOT/platform-tools:$PATH"
-
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-${ANDROID_COMPILE_SDK}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}"
-
-          flutter config --android-sdk "$SDK_ROOT"
-
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
-          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
-
-      - name: Cache Android NDK
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.tool_cache }}/${{ env.NDK_DIR_NAME }}
-          key: ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}
-
-      - name: Install Android NDK (manual)
-        run: |
-          set -euo pipefail
-          NDK_DIR="$RUNNER_TOOL_CACHE/${NDK_DIR_NAME}"
-          if [ ! -d "$NDK_DIR" ]; then
-            wget -q "https://dl.google.com/android/repository/android-ndk-r26b-linux.zip" -O /tmp/ndk.zip
-            unzip -q /tmp/ndk.zip -d /tmp/ndk-extract
-            mv "/tmp/ndk-extract/${NDK_DIR_NAME}" "$NDK_DIR"
-            rm -rf /tmp/ndk.zip /tmp/ndk-extract
-          fi
-          echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
-          echo "NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
-
-      - name: Generate .cargo/config.toml (Backend)
-        run: |
-          set -euo pipefail
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          mkdir -p Backend/.cargo
-          cat > Backend/.cargo/config.toml <<EOF
-          [target.aarch64-linux-android]
-          linker = "${NDK_BIN}/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-
-          [target.armv7-linux-androideabi]
-          linker = "${NDK_BIN}/armv7a-linux-androideabi${ANDROID_API_LEVEL}-clang"
-
-          [target.x86_64-linux-android]
-          linker = "${NDK_BIN}/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
-          EOF
-          cat Backend/.cargo/config.toml
-
-      - name: Generate .cargo/config.toml (DeployManager)
-        run: |
-          set -euo pipefail
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          mkdir -p Core/DeployManager/.cargo
-          cat > Core/DeployManager/.cargo/config.toml <<EOF
-          [target.aarch64-linux-android]
-          linker = "${NDK_BIN}/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-
-          [target.armv7-linux-androideabi]
-          linker = "${NDK_BIN}/armv7a-linux-androideabi${ANDROID_API_LEVEL}-clang"
-
-          [target.x86_64-linux-android]
-          linker = "${NDK_BIN}/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
-          EOF
-
-      - name: Build Rust Backend for Android (all ABIs)
-        working-directory: Backend
-        run: |
-          cargo build --release --target aarch64-linux-android
-          cargo build --release --target armv7-linux-androideabi
-          cargo build --release --target x86_64-linux-android
-
-      - name: Copy Backend libs to jniLibs
-        run: |
-          declare -A TARGETS=(
-            [arm64-v8a]=aarch64-linux-android
-            [armeabi-v7a]=armv7-linux-androideabi
-            [x86_64]=x86_64-linux-android
-          )
-          for ABI in "${!TARGETS[@]}"; do
-            TARGET="${TARGETS[$ABI]}"
-            mkdir -p "Frontend/Core/android/app/src/main/jniLibs/$ABI"
-            cp "Backend/target/$TARGET/release/liblalune_backend.so" \
-               "Frontend/Core/android/app/src/main/jniLibs/$ABI/"
-          done
-
-      - name: Build DeployManager for Android (all ABIs)
-        run: |
-          for ABI in arm64-v8a armeabi-v7a x86_64; do
-            echo "=== DeployManager for $ABI ==="
-            python build_deploy_manager.py --android --abi "$ABI"
-          done
-
-      - name: Prepare Android Core
-        run: python prepare_android_core.py
-
-      - name: Prepare SmartTunnel.lua
-        run: python prepare_st.py --platform=Android
-
-      - name: Copy assets into Flutter project
-        run: |
-          mkdir -p Frontend/Core/assets
-          if [ -d "Assets" ]; then
-            cp -f Assets/* Frontend/Core/assets/ || true
-          fi
-          if [ -z "$(ls -A Frontend/Core/assets)" ]; then
-            echo "placeholder" > Frontend/Core/assets/.keep
-          fi
-          ls -la Frontend/Core/assets/
-
-      - name: Flutter pub get
-        working-directory: Frontend/Core
-        run: flutter pub get
-
-      - name: Build Flutter APK (split per ABI)
-        working-directory: Frontend/Core
-        run: flutter build apk --release --split-per-abi
-
-      - name: Collect APKs
-        run: |
-          mkdir -p out
-          cp Frontend/Core/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk   out/LaLune-Android-arm64-v8a.apk
-          cp Frontend/Core/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk out/LaLune-Android-armeabi-v7a.apk
-          cp Frontend/Core/build/app/outputs/flutter-apk/app-x86_64-release.apk      out/LaLune-Android-x86_64.apk
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LaLune-Android
-          path: out/*.apk
-          if-no-files-found: error
-
-  # ============================================================
-  #  RELEASE
-  # ============================================================
   create-release:
     name: Create Release
     needs:
-      - build-token-fetcher
       - build-desktop-linux
       - build-desktop-windows
       - build-android
+      - build-token-fetcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with: { path: release }
-
       - run: find release -type f | head -50
-
       - name: Create ZIP archives
         run: |
           cd release
-          zip -r LaLune-Linux.zip   LaLune-Linux   || true
+          zip -r LaLune-Linux.zip LaLune-Linux || true
           zip -r LaLune-Windows.zip LaLune-Windows || true
           zip -r LaLune-Android.zip LaLune-Android || true
           cp LaLuneTokenFetcher-Windows/*.zip ./LaLuneTokenFetcher_Windows.zip || true
-          cp LaLuneTokenFetcher-Linux/*.zip   ./LaLuneTokenFetcher_Linux.zip   || true
+          cp LaLuneTokenFetcher-Linux/*.zip ./LaLuneTokenFetcher_Linux.zip || true
           ls -la
-
       - id: date
-        run: echo "date=$(date -u +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
-
+        run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.date.outputs.date }}

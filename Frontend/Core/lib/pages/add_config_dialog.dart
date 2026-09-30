@@ -1,12 +1,22 @@
 import 'package:flutter/material.dart';
 
-/// Result returned by [showAddConfigDialog].
+/// Result returned by [showAddConfigDialog] — the protocol plus the
+/// canonical link string that will be passed to Api.saveConfig.
 class AddConfigResult {
   final String protocol;
   final String link;
   const AddConfigResult(this.protocol, this.link);
 }
 
+/// Per-protocol "+" dialog.
+///
+/// PROJECT.md requirement:
+///   - CSQTT   -> user enters a csqtt:// link
+///   - OlcRTC  -> user enters an olcrtc:// link
+///   - ToTS    -> user enters a tots:// link
+///   - OpenFlux-> Tunnel name + Transport type, and (depending on the
+///                transport) either Max Access Token + MAX Exit node user
+///                id, or a Document URL.
 Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
   final csqttCtrl = TextEditingController();
   final olcrtcCtrl = TextEditingController();
@@ -17,7 +27,7 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
   final docUrlCtrl = TextEditingController();
 
   String protocol = 'CSQTT';
-  String ofTransport = 'MAX';
+  String ofTransport = 'MAX'; // MAX | YandexDocs | MailDocs | OneME
 
   String normalizeLink() {
     switch (protocol) {
@@ -164,8 +174,7 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
                     );
                     return;
                   }
-                  Navigator.pop(
-                      ctx, AddConfigResult(protocol, normalizeLink()));
+                  Navigator.pop(ctx, AddConfigResult(protocol, normalizeLink()));
                 },
                 child: const Text('Сохранить'),
               ),
