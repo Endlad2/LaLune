@@ -7,8 +7,7 @@
 //
 // Точка входа: Backend(context).attachActivity(activity).run()
 //
-// ВАЖНО: package совпадает с MainActivity (com.lalune.lalune), чтобы
-// Gradle компилировал всё в одном sourceSet без дополнительных srcDirs.
+// package = com.lalune.lalune — тот же, что у MainActivity.
 
 package com.lalune.lalune
 
@@ -141,7 +140,7 @@ class Backend(private val context: Context) {
     }
 
     private fun unregisterVpnReceiver() {
-        context.unregisterReceiver(vpnStatusReceiver)
+        try { context.unregisterReceiver(vpnStatusReceiver) } catch (_: Exception) {}
     }
 
     // ============================================================
@@ -243,6 +242,8 @@ class Backend(private val context: Context) {
                 path == "/ping" && method == "GET" -> 200 to jsonOk(
                     "ok" to true, "version" to VERSION, "os" to "android",
                     "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
+                    "hostname" to android.os.Build.MODEL,
+                    "platform" to "android",
                     "uptime" to 0
                 )
                 path == "/version" && method == "GET" -> 200 to jsonOk(
@@ -396,6 +397,10 @@ class Backend(private val context: Context) {
                 path == "/vk/token/validate" && method == "GET" -> 200 to jsonOk(
                     "valid" to (readVkToken() != null), "message" to ""
                 )
+                path == "/vk/token/raw" && method == "GET" -> {
+                    val token = readVkToken() ?: ""
+                    200 to jsonOk("token" to token)
+                }
                 path == "/vk/token/fetch/cancel" && method == "POST" -> {
                     mainHandler.post { currentVkFetcher?.cancel() }
                     200 to jsonOk("ok" to true)
@@ -536,7 +541,7 @@ class Backend(private val context: Context) {
     }
 
     // ============================================================
-    //  Файлы
+    //  Файлы настроек (ИСПРАВЛЕНО: без рекурсии)
     // ============================================================
 
     private fun ensureDefaults() {
@@ -545,28 +550,49 @@ class Backend(private val context: Context) {
         if (!logsFile.exists()) logsFile.writeText("")
     }
 
-    private fun defaultSettings() = JSONObject().apply {
-        put("peer", ""); put("vkHashes", ""); put("vkJsToken", "")
-        put("workers", DEFAULT_WORKERS); put("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
-        put("password", ""); put("obfs", "video"); put("fingerprint", "firefox")
-        put("clientIds", "8202606,6287487"); put("deviceId", getDeviceId())
-        put("authMode", "manual"); put("turnTransport", "udp")
-        put("turnHost", ""); put("turnPort", "")
-        put("captchaMode", "auto"); put("vkAuthMode", "vkcalls")
-        put("allowHashRedistribution", false); put("validateVkHashes", false)
+    /**
+     * Дефолтные настройки.
+     *
+     * ВАЖНО: НЕ вызываем getDeviceId() или loadSettings() отсюда —
+     * иначе получим бесконечную рекурсию на чистой установке,
+     * когда settings.json ещё не создан. deviceId генерируем локально.
+     */
+    private fun defaultSettings(): JSONObject = JSONObject().apply {
+        val localDeviceId = UUID.randomUUID().toString().replace("-", "")
+        put("peer", "")
+        put("vkHashes", "")
+        put("vkJsToken", "")
+        put("workers", DEFAULT_WORKERS)
+        put("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
+        put("password", "")
+        put("obfs", "video")
+        put("fingerprint", "firefox")
+        put("clientIds", "8202606,6287487")
+        put("deviceId", localDeviceId)
+        put("authMode", "manual")
+        put("turnTransport", "udp")
+        put("turnHost", "")
+        put("turnPort", "")
+        put("captchaMode", "auto")
+        put("vkAuthMode", "vkcalls")
+        put("allowHashRedistribution", false)
+        put("validateVkHashes", false)
         put("enableSmartTunnel", false)
     }
 
     private fun loadSettings(): JSONObject = try {
         if (settingsFile.exists()) JSONObject(settingsFile.readText()) else defaultSettings()
-    } catch (_: Exception) { defaultSettings() }
+    } catch (_: Exception) {
+        defaultSettings()
+    }
 
     private fun saveSettings(s: JSONObject) {
         val w = s.optInt("workers", DEFAULT_WORKERS).coerceIn(MIN_WORKERS, MAX_WORKERS)
         val aw = s.optInt("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
             .coerceIn(MIN_AUTO_API_WORKERS, MAX_AUTO_API_WORKERS)
-        s.put("workers", w); s.put("autoApiWorkers", aw)
-        settingsFile.writeText(s.toString())
+        s.put("workers", w)
+        s.put("autoApiWorkers", aw)
+        try { settingsFile.writeText(s.toString()) } catch (_: Exception) {}
     }
 
     private fun replaceSettings(body: String): Pair<Int, String> = try {
@@ -579,13 +605,33 @@ class Backend(private val context: Context) {
         saveSettings(s); 200 to jsonOk("ok" to true)
     } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
 
+    /**
+     * ИСПРАВЛЕНО: getDeviceId() больше НЕ вызывает loadSettings().
+     * Читает settings.json напрямую, при отсутствии — создаёт дефолт
+     * с новым deviceId. Цикла нет.
+     */
     private fun getDeviceId(): String {
-        val s = loadSettings(); var id = s.optString("deviceId", "")
-        if (id.isBlank()) {
-            id = UUID.randomUUID().toString().replace("-", "")
-            s.put("deviceId", id); saveSettings(s)
+        // Быстрый путь: файл существует — читаем напрямую.
+        if (settingsFile.exists()) {
+            try {
+                val s = JSONObject(settingsFile.readText())
+                val id = s.optString("deviceId", "")
+                if (id.isNotBlank()) return id
+                // В файле нет deviceId — генерируем и дописываем.
+                val newId = UUID.randomUUID().toString().replace("-", "")
+                s.put("deviceId", newId)
+                saveSettings(s)
+                return newId
+            } catch (_: Exception) {
+                // Файл битый — падаем в fallback ниже.
+            }
         }
-        return id
+        // Файла нет или он битый — генерируем и пишем дефолт.
+        val newId = UUID.randomUUID().toString().replace("-", "")
+        val s = defaultSettings()
+        s.put("deviceId", newId)
+        saveSettings(s)
+        return newId
     }
 
     private fun updateDeviceId(newId: String) {
@@ -630,7 +676,9 @@ class Backend(private val context: Context) {
         if (configsJson.exists()) JSONArray(configsJson.readText()) else JSONArray()
     } catch (_: Exception) { JSONArray() }
 
-    private fun saveConfigs(arr: JSONArray) = configsJson.writeText(arr.toString())
+    private fun saveConfigs(arr: JSONArray) {
+        try { configsJson.writeText(arr.toString()) } catch (_: Exception) {}
+    }
 
     private fun findConfig(id: Long): JSONObject? {
         val arr = loadConfigs()
@@ -686,10 +734,12 @@ class Backend(private val context: Context) {
     } catch (_: Exception) { null }
 
     private fun writeSelectedConfig(c: JSONObject) {
-        selectedConfigFile.writeText(c.toString())
+        try { selectedConfigFile.writeText(c.toString()) } catch (_: Exception) {}
     }
 
-    private fun clearSelectedConfig() { selectedConfigFile.delete() }
+    private fun clearSelectedConfig() {
+        try { selectedConfigFile.delete() } catch (_: Exception) {}
+    }
 
     private fun parseLink(link: String): JSONObject {
         val out = JSONObject().apply {
