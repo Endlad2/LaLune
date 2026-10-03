@@ -2,17 +2,22 @@
 //
 // LaLune backend для Android.
 //
-// Запускает HTTP-сервер на 127.0.0.1:1062, управляет VPN-сервисом,
-// ядром CSQTT, VK-авторизацией, конфигами, настройками.
+// Запускает HTTP-сервер на 127.0.0.1:1062, управляет VpnService,
+// ядром CSQTT, VK-авторизацией (нативный WebView), конфигами, настройками.
 //
-// Точка входа: Backend(context).run()
-//
-// Файлы данных: context.filesDir/la-lune/
+// Точка входа: Backend(context).attachActivity(activity).run()
 
 package com.lalune.backend
 
+import android.app.Activity
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -21,6 +26,7 @@ import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
@@ -30,7 +36,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 
@@ -42,18 +47,6 @@ class Backend(private val context: Context) {
         const val HOST = "127.0.0.1"
         const val VERSION = "0.6.0"
 
-        const val CORE_LISTEN_PORT = 52230
-        const val DEFAULT_TUN_IP = "10.66.67.12"
-        const val DEFAULT_DNS_1 = "8.8.8.8"
-        const val DEFAULT_DNS_2 = "8.8.4.4"
-        const val MTU = 1300
-
-        const val LATEST_URL = "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
-        const val CORE_URL_TEMPLATE = "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
-        const val PROXY_URL = "http://31.77.148.203:8855/?url="
-        const val UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        const val UA_CURL = "curl/7.68.0"
-
         const val DEFAULT_WORKERS = 9
         const val MIN_WORKERS = 1
         const val MAX_WORKERS = 127
@@ -61,22 +54,19 @@ class Backend(private val context: Context) {
         const val MIN_AUTO_API_WORKERS = 9
         const val MAX_AUTO_API_WORKERS = 27
 
-        const val VK_CLIENT_ID = "7793118"
-        const val VK_SCOPE = "1073737727"
-        const val VK_REDIRECT_URI = "https://oauth.vk.ru/blank.html"
         const val VK_API_BASE = "https://api.vk.ru/method/"
         const val VK_API_VERSION = "5.199"
+
+        const val REQ_VPN = 101
     }
 
     // ---------- Пути ----------
     private val appDir = File(context.filesDir, "la-lune").apply { mkdirs() }
-    private val configsFile = File(appDir, "configs.db")   // SQLite на Android отключён, используем JSON
     private val configsJson = File(appDir, "configs.json")
     private val settingsFile = File(appDir, "settings.json")
     private val logsFile = File(appDir, "logs.log")
     private val tokenFile = File(appDir, "token.json")
-    private val latestFile = File(appDir, "LATEST")
-    private val coreDir = File(appDir, "core").apply { mkdirs() }
+    private val selectedConfigFile = File(appDir, "selected_config.json")
 
     // ---------- Состояние ----------
     private val eventSubscribers = CopyOnWriteArrayList<EventStream>()
@@ -89,11 +79,32 @@ class Backend(private val context: Context) {
     @Volatile private var smarttunnelRunning = false
     @Volatile private var coreDownloading = false
 
-    private var vpnService: LaLuneVpnService? = null
+    @Volatile private var vkLoginInProgress = false
+    @Volatile private var vkLoginMessage = ""
+
+    private var activity: Activity? = null
+    private var currentVkFetcher: VkWebViewFetcher? = null
+    private var coreManager: CoreManager? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val vpnStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            val connected = intent?.getBooleanExtra(
+                LaLuneVpnService.EXTRA_CONNECTED, false
+            ) ?: false
+            vpnConnected = connected
+            emit("status", JSONObject().put("connected", connected))
+        }
+    }
 
     // ============================================================
-    //  run() — точка входа
+    //  Публичный API
     // ============================================================
+
+    fun attachActivity(a: Activity) {
+        activity = a
+    }
 
     fun run() {
         if (running) {
@@ -101,8 +112,10 @@ class Backend(private val context: Context) {
             return
         }
         running = true
+        coreManager = CoreManager(context)
 
         ensureDefaults()
+        registerVpnReceiver()
         startHttpServer()
         addLog("[BACKEND] LaLune Android backend started on http://$HOST:$PORT")
     }
@@ -111,6 +124,21 @@ class Backend(private val context: Context) {
         running = false
         try { httpServer?.close() } catch (_: Exception) {}
         httpServer = null
+        try { unregisterVpnReceiver() } catch (_: Exception) {}
+    }
+
+    private fun registerVpnReceiver() {
+        val filter = IntentFilter(LaLuneVpnService.ACTION_STATUS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(vpnStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            context.registerReceiver(vpnStatusReceiver, filter)
+        }
+    }
+
+    private fun unregisterVpnReceiver() {
+        context.unregisterReceiver(vpnStatusReceiver)
     }
 
     // ============================================================
@@ -120,16 +148,15 @@ class Backend(private val context: Context) {
     private fun startHttpServer() {
         thread(name = "lalune-http", isDaemon = true) {
             try {
-                val server = ServerSocket(PORT, 50, java.net.InetAddress.getByName(HOST))
+                val server = ServerSocket(PORT, 50, InetAddress.getByName(HOST))
                 httpServer = server
                 Log.i(TAG, "HTTP listening on $HOST:$PORT")
-
                 while (running) {
                     try {
                         val client = server.accept()
                         thread(isDaemon = true) { handleClient(client) }
                     } catch (e: Exception) {
-                        if (running) Log.e(TAG, "accept error: ${e.message}")
+                        if (running) Log.e(TAG, "accept: ${e.message}")
                     }
                 }
             } catch (e: Exception) {
@@ -155,10 +182,8 @@ class Backend(private val context: Context) {
                     val line = input.readLine() ?: break
                     if (line.isEmpty()) break
                     val idx = line.indexOf(':')
-                    if (idx > 0) {
-                        headers[line.substring(0, idx).trim().lowercase()] =
-                            line.substring(idx + 1).trim()
-                    }
+                    if (idx > 0) headers[line.substring(0, idx).trim().lowercase()] =
+                        line.substring(idx + 1).trim()
                 }
 
                 val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
@@ -173,41 +198,29 @@ class Backend(private val context: Context) {
                     String(buf, 0, read)
                 } else ""
 
-                // CORS + SSE
-                if (pathAndQuery.startsWith("/events")) {
-                    handleSse(s, output)
-                    return
-                }
-                if (pathAndQuery.startsWith("/logs/stream")) {
-                    handleLogsSse(s, output)
-                    return
-                }
+                if (pathAndQuery.startsWith("/events")) { handleSse(s, output); return }
+                if (pathAndQuery.startsWith("/logs/stream")) { handleLogsSse(s, output); return }
 
                 val (code, response) = route(method, pathAndQuery, body)
-
+                val bytes = response.toByteArray(Charsets.UTF_8)
                 output.write("HTTP/1.1 $code ${statusText(code)}\r\n")
                 output.write("Content-Type: application/json; charset=utf-8\r\n")
-                output.write("Content-Length: ${response.toByteArray(Charsets.UTF_8).size}\r\n")
+                output.write("Content-Length: ${bytes.size}\r\n")
                 output.write("Access-Control-Allow-Origin: *\r\n")
                 output.write("Access-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\n")
                 output.write("Access-Control-Allow-Headers: *\r\n")
-                output.write("Connection: close\r\n")
-                output.write("\r\n")
+                output.write("Connection: close\r\n\r\n")
                 output.write(response)
                 output.flush()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "handleClient error: ${e.message}")
+            Log.e(TAG, "handleClient: ${e.message}")
         }
     }
 
     private fun statusText(code: Int): String = when (code) {
-        200 -> "OK"
-        400 -> "Bad Request"
-        401 -> "Unauthorized"
-        404 -> "Not Found"
-        409 -> "Conflict"
-        500 -> "Internal Server Error"
+        200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"
+        404 -> "Not Found"; 409 -> "Conflict"; 500 -> "Internal Server Error"
         else -> "OK"
     }
 
@@ -220,46 +233,27 @@ class Backend(private val context: Context) {
         val path = if (qIdx >= 0) rawPath.substring(0, qIdx) else rawPath
         val query = if (qIdx >= 0) rawPath.substring(qIdx + 1) else ""
 
-        // OPTIONS — CORS preflight
         if (method == "OPTIONS") return 200 to "{}"
 
         try {
             return when {
-                // ---------- Базовые ----------
+                // Базовые
                 path == "/ping" && method == "GET" -> 200 to jsonOk(
-                    "ok" to true,
-                    "version" to VERSION,
-                    "os" to "android",
+                    "ok" to true, "version" to VERSION, "os" to "android",
                     "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
                     "uptime" to 0
                 )
                 path == "/version" && method == "GET" -> 200 to jsonOk(
-                    "api" to 1, "backend" to VERSION, "core" to readLatest(), "ui" to VERSION
+                    "api" to 1, "backend" to VERSION,
+                    "core" to (coreManager?.readLatest() ?: ""), "ui" to VERSION
                 )
-                path == "/shutdown" && method == "POST" -> {
-                    stop(); 200 to jsonOk("ok" to true)
-                }
+                path == "/shutdown" && method == "POST" -> { stop(); 200 to jsonOk("ok" to true) }
 
-                // ---------- Конфиги ----------
+                // Конфиги
                 path == "/configs" && method == "GET" -> 200 to loadConfigs().toString()
-                path.startsWith("/configs/") && method == "GET" && path != "/configs/selected" -> {
-                    val id = path.removePrefix("/configs/").toLongOrNull()
-                    val c = findConfig(id ?: 0L)
-                    if (c != null) 200 to c.toString() else 404 to jsonErr("not found")
-                }
-                path == "/configs" && method == "POST" -> createConfig(body)
-                path.startsWith("/configs/") && method == "PUT" && path != "/configs/selected" -> {
-                    val id = path.removePrefix("/configs/").toLongOrNull() ?: 0L
-                    updateConfig(id, body)
-                }
-                path.startsWith("/configs/") && method == "DELETE" && path != "/configs/selected" -> {
-                    val id = path.removePrefix("/configs/").toLongOrNull() ?: 0L
-                    deleteConfig(id)
-                }
                 path == "/configs/parse" && method == "POST" -> {
                     val b = JSONObject(body)
-                    val link = b.optString("link", "")
-                    200 to parseLink(link).toString()
+                    200 to parseLink(b.optString("link", "")).toString()
                 }
                 path == "/configs/selected" && method == "GET" -> {
                     val sel = readSelectedConfig()
@@ -268,16 +262,27 @@ class Backend(private val context: Context) {
                 path == "/configs/selected" && method == "PUT" -> {
                     val b = JSONObject(body)
                     if (b.has("id")) {
-                        val id = b.getLong("id")
-                        val c = findConfig(id)
+                        val c = findConfig(b.getLong("id"))
                         if (c != null) { writeSelectedConfig(c); 200 to jsonOk("ok" to true) }
                         else 404 to jsonErr("config not found")
-                    } else {
-                        clearSelectedConfig(); 200 to jsonOk("ok" to true)
-                    }
+                    } else { clearSelectedConfig(); 200 to jsonOk("ok" to true) }
+                }
+                path == "/configs" && method == "POST" -> createConfig(body)
+                path.startsWith("/configs/") && method == "GET" && path != "/configs/selected" -> {
+                    val id = path.removePrefix("/configs/").toLongOrNull() ?: 0L
+                    val c = findConfig(id)
+                    if (c != null) 200 to c.toString() else 404 to jsonErr("not found")
+                }
+                path.startsWith("/configs/") && method == "PUT" && path != "/configs/selected" -> {
+                    val id = path.removePrefix("/configs/").toLongOrNull() ?: 0L
+                    updateConfig(id, body)
+                }
+                path.startsWith("/configs/") && method == "DELETE" && path != "/configs/selected" -> {
+                    val id = path.removePrefix("/configs/").toLongOrNull() ?: 0L
+                    deleteConfig(id)
                 }
 
-                // ---------- Настройки ----------
+                // Настройки
                 path == "/settings" && method == "GET" -> 200 to loadSettings().toString()
                 path == "/settings" && method == "PUT" -> replaceSettings(body)
                 path == "/settings" && method == "PATCH" -> patchSettings(body)
@@ -296,35 +301,29 @@ class Backend(private val context: Context) {
                     saveSettings(s); 200 to jsonOk("ok" to true)
                 }
 
-                // ---------- Device ----------
+                // Device
                 path == "/device/id" && method == "GET" -> 200 to jsonOk("deviceId" to getDeviceId())
                 path == "/device/id/regenerate" && method == "POST" -> {
                     val id = UUID.randomUUID().toString().replace("-", "")
-                    updateDeviceId(id)
-                    200 to jsonOk("deviceId" to id)
+                    updateDeviceId(id); 200 to jsonOk("deviceId" to id)
                 }
                 path == "/device/info" && method == "GET" -> 200 to jsonOk(
-                    "os" to "android",
-                    "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
+                    "os" to "android", "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
                     "hostname" to android.os.Build.MODEL,
                     "cores" to Runtime.getRuntime().availableProcessors(),
                     "totalMemMb" to 0
                 )
 
-                // ---------- VPN ----------
+                // VPN
                 path == "/vpn/connect" && method == "POST" -> vpnConnect(body)
                 path == "/vpn/disconnect" && method == "POST" -> vpnDisconnect()
                 path == "/vpn/status" && method == "GET" -> 200 to jsonOk(
                     "state" to if (vpnConnected) "connected" else "disconnected",
-                    "connected" to vpnConnected,
-                    "uptimeSec" to 0,
-                    "configId" to 0,
-                    "message" to "",
-                    "since" to ""
+                    "connected" to vpnConnected, "uptimeSec" to 0,
+                    "configId" to 0, "message" to "", "since" to ""
                 )
                 path == "/vpn/reconnect" && method == "POST" -> {
-                    vpnDisconnect(); Thread.sleep(300)
-                    vpnConnect("{}")
+                    vpnDisconnect(); Thread.sleep(300); vpnConnect("{}")
                 }
                 path == "/vpn/stats" && method == "GET" -> 200 to jsonOk(
                     "rxBytes" to 0, "txBytes" to 0, "rxRate" to 0, "txRate" to 0,
@@ -332,7 +331,7 @@ class Backend(private val context: Context) {
                 )
                 path == "/vpn/tunconf" && method == "GET" -> 200 to "{}"
 
-                // ---------- Логи ----------
+                // Логи
                 path == "/logs" && method == "GET" -> 200 to JSONArray(logs.toList()).toString()
                 path == "/logs/tail" && method == "GET" -> {
                     val n = queryParam(query, "lines")?.toIntOrNull() ?: 100
@@ -340,20 +339,17 @@ class Backend(private val context: Context) {
                     val tail = if (start < logs.size) logs.subList(start, logs.size).toList() else emptyList()
                     200 to JSONArray(tail).toString()
                 }
-                path == "/logs" && method == "DELETE" -> {
-                    logs.clear(); 200 to jsonOk("ok" to true)
-                }
+                path == "/logs" && method == "DELETE" -> { logs.clear(); 200 to jsonOk("ok" to true) }
                 path == "/logs/export" && method == "GET" -> 200 to logs.joinToString("\n")
 
-                // ---------- Ядро ----------
-                path == "/core/version" && method == "GET" -> 200 to jsonOk("version" to readLatest())
-                path == "/core/latest" && method == "GET" -> {
-                    val v = fetchLatestVersion() ?: ""
-                    200 to jsonOk("version" to v)
-                }
+                // Ядро
+                path == "/core/version" && method == "GET" ->
+                    200 to jsonOk("version" to (coreManager?.readLatest() ?: ""))
+                path == "/core/latest" && method == "GET" ->
+                    200 to jsonOk("version" to (coreManager?.fetchLatestVersion() ?: ""))
                 path == "/core/check" && method == "GET" -> {
-                    val local = readLatest()
-                    val remote = fetchLatestVersion() ?: ""
+                    val local = coreManager?.readLatest() ?: ""
+                    val remote = coreManager?.fetchLatestVersion() ?: ""
                     200 to jsonOk(
                         "hasUpdate" to (remote.isNotEmpty() && remote != local),
                         "local" to local, "remote" to remote
@@ -363,29 +359,30 @@ class Backend(private val context: Context) {
                     if (coreDownloading) 409 to jsonErr("already downloading")
                     else {
                         coreDownloading = true
-                        thread { try { downloadCore() } finally { coreDownloading = false } }
+                        thread { try { coreManager?.downloadCore() } finally { coreDownloading = false } }
                         200 to jsonOk("ok" to true, "async" to true)
                     }
                 }
                 path == "/core/download/sync" && method == "POST" -> {
-                    val ok = downloadCore()
+                    val ok = coreManager?.downloadCore() ?: false
                     if (ok) 200 to jsonOk("ok" to true) else 500 to jsonErr("download failed")
                 }
-                path == "/core/path" && method == "GET" -> 200 to jsonOk("path" to (getCorePath() ?: ""))
+                path == "/core/path" && method == "GET" ->
+                    200 to jsonOk("path" to (coreManager?.getCorePath() ?: ""))
                 path == "/core/protocols" && method == "GET" -> 200 to JSONArray(listOf(
                     JSONObject().apply {
                         put("id", "CSQTT"); put("displayName", "CSQTT (VK Calls)")
                         put("repo", "Endlad2/csqtt-core"); put("realtime", true)
                         put("description", "Оригинальный протокол CSQTT")
-                        put("coreAsset", getCoreName() ?: "")
+                        put("coreAsset", coreManager?.getCoreName() ?: "")
                     }
                 )).toString()
                 path == "/core" && method == "DELETE" -> {
-                    getCorePath()?.let { File(it).delete() }
+                    coreManager?.getCorePath()?.let { File(it).delete() }
                     200 to jsonOk("ok" to true)
                 }
 
-                // ---------- Обновление ----------
+                // Update
                 path == "/update/check" && method == "GET" -> 200 to jsonOk(
                     "hasUpdate" to false, "remoteTag" to "", "localVersion" to VERSION
                 )
@@ -393,50 +390,45 @@ class Backend(private val context: Context) {
                     "url" to "https://github.com/Endlad2/LaLune/releases/latest"
                 )
 
-                // ---------- VK ----------
+                // VK
                 path == "/vk/token/state" && method == "GET" -> 200 to readVkState().toString()
-                path == "/vk/token/login" && method == "POST" -> 200 to jsonOk(
-                    "ok" to true, "needsUi" to true, "authUrl" to vkAuthUrl()
-                )
+                path == "/vk/token/login" && method == "POST" -> vkLogin()
                 path == "/vk/token/submit" && method == "POST" -> {
                     val b = JSONObject(body)
                     val token = b.optString("token", "")
                     if (token.isEmpty()) 400 to jsonErr("token empty")
                     else { saveVkToken(token); 200 to jsonOk("ok" to true) }
                 }
-                path == "/vk/token/validate" && method == "GET" -> {
-                    val token = readVkToken()
-                    if (token == null) 200 to jsonOk("valid" to false, "message" to "no token")
-                    else 200 to jsonOk("valid" to true, "message" to "")
+                path == "/vk/token/validate" && method == "GET" -> 200 to jsonOk(
+                    "valid" to (readVkToken() != null), "message" to ""
+                )
+                path == "/vk/token/fetch/cancel" && method == "POST" -> {
+                    mainHandler.post { currentVkFetcher?.cancel() }
+                    200 to jsonOk("ok" to true)
                 }
-                path == "/vk/token/fetch/cancel" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/vk/token" && method == "DELETE" -> {
                     tokenFile.delete(); 200 to jsonOk("ok" to true)
                 }
 
-                // ---------- VK Calls ----------
+                // VK Calls
                 path == "/vk/calls/start" && method == "POST" -> vkCallsStart(body)
                 path == "/vk/calls/stop" && method == "POST" -> {
-                    val b = JSONObject(body)
-                    val arr = b.optJSONArray("callIds") ?: JSONArray()
+                    val b = JSONObject(body); val arr = b.optJSONArray("callIds") ?: JSONArray()
                     activeCallIds.removeAll { id ->
                         var removed = false
-                        for (i in 0 until arr.length()) {
-                            if (arr.getString(i) == id) { removed = true; break }
-                        }
+                        for (i in 0 until arr.length()) if (arr.getString(i) == id) { removed = true; break }
                         removed
                     }
                     200 to jsonOk("finished" to arr.length())
                 }
                 path == "/vk/calls/stop-all" && method == "POST" -> {
-                    val n = activeCallIds.size
-                    activeCallIds.clear()
+                    val n = activeCallIds.size; activeCallIds.clear()
                     200 to jsonOk("finished" to n)
                 }
                 path == "/vk/calls/active" && method == "GET" ->
                     200 to jsonOk("callIds" to JSONArray(activeCallIds.toList()))
 
-                // ---------- SmartTunnel ----------
+                // SmartTunnel
                 path == "/smarttunnel/status" && method == "GET" ->
                     200 to jsonOk("running" to smarttunnelRunning)
                 path == "/smarttunnel/start" && method == "POST" -> {
@@ -450,38 +442,31 @@ class Backend(private val context: Context) {
                 path == "/smarttunnel/args" && method == "GET" -> 200 to "[]"
                 path == "/smarttunnel/args" && method == "PUT" -> 200 to jsonOk("ok" to true)
 
-                // ---------- Deploy (заглушка) ----------
+                // Deploy (заглушка)
                 path == "/deploy/run" && method == "POST" ->
                     200 to jsonOk("stub" to true, "message" to "DeployManager not yet implemented")
                 path == "/deploy/status" && method == "GET" ->
                     200 to jsonOk("busy" to false, "stub" to true)
-                path == "/deploy/log" && method == "GET" ->
-                    200 to jsonOk("log" to "", "stub" to true)
-                path == "/deploy/cancel" && method == "POST" ->
-                    200 to jsonOk("stub" to true)
+                path == "/deploy/log" && method == "GET" -> 200 to jsonOk("log" to "", "stub" to true)
+                path == "/deploy/cancel" && method == "POST" -> 200 to jsonOk("stub" to true)
                 path == "/deploy/protocols" && method == "GET" ->
                     200 to jsonOk("protocols" to JSONArray(), "stub" to true)
 
-                // ---------- Platform ----------
+                // Platform
                 path == "/platform/capabilities" && method == "GET" -> 200 to jsonOk(
-                    "canShowWebView" to true,
-                    "canRunTun" to true,
-                    "canDeploy" to false,
-                    "canAutoUpdate" to false,
-                    "canSendNotifications" to true,
+                    "canShowWebView" to true, "canRunTun" to true, "canDeploy" to false,
+                    "canAutoUpdate" to false, "canSendNotifications" to true,
                     "canOpenExternalUrl" to true,
-                    "os" to "android",
-                    "platform" to "mobile"
+                    "os" to "android", "platform" to "mobile"
                 )
                 path == "/platform/open-url" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/platform/notify" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/platform/open-path" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/platform/share" && method == "POST" -> 200 to jsonOk("ok" to true)
 
-                // ---------- Debug ----------
+                // Debug
                 path == "/debug/state" && method == "GET" -> 200 to jsonOk(
-                    "logCount" to logs.size,
-                    "appDir" to appDir.absolutePath,
+                    "logCount" to logs.size, "appDir" to appDir.absolutePath,
                     "vpnConnected" to vpnConnected
                 )
                 path == "/debug/echo" && method == "POST" -> 200 to body
@@ -491,7 +476,7 @@ class Backend(private val context: Context) {
                     "settingsPath" to settingsFile.absolutePath,
                     "logsPath" to logsFile.absolutePath,
                     "tokenPath" to tokenFile.absolutePath,
-                    "corePath" to (getCorePath() ?: "")
+                    "corePath" to (coreManager?.getCorePath() ?: "")
                 )
                 path == "/debug/reload-config" && method == "POST" -> 200 to jsonOk("ok" to true)
 
@@ -509,10 +494,7 @@ class Backend(private val context: Context) {
 
     private inner class EventStream(val writer: OutputStreamWriter) {
         fun send(data: String) {
-            try {
-                writer.write("data: $data\n\n")
-                writer.flush()
-            } catch (_: Exception) {}
+            try { writer.write("data: $data\n\n"); writer.flush() } catch (_: Exception) {}
         }
     }
 
@@ -520,37 +502,29 @@ class Backend(private val context: Context) {
         try {
             output.write("HTTP/1.1 200 OK\r\n")
             output.write("Content-Type: text/event-stream\r\n")
-            output.write("Cache-Control: no-cache\r\n")
-            output.write("Connection: keep-alive\r\n")
-            output.write("Access-Control-Allow-Origin: *\r\n")
-            output.write("\r\n")
+            output.write("Cache-Control: no-cache\r\nConnection: keep-alive\r\n")
+            output.write("Access-Control-Allow-Origin: *\r\n\r\n")
             output.flush()
-
             val stream = EventStream(output)
             eventSubscribers.add(stream)
-
-            // Держим соединение
             while (running && !socket.isClosed) {
-                try { Thread.sleep(15000); stream.send("""{"type":"ping"}""") } catch (_: Exception) { break }
+                try { Thread.sleep(15_000); stream.send("""{"type":"ping"}""") }
+                catch (_: Exception) { break }
             }
             eventSubscribers.remove(stream)
-        } catch (e: Exception) {
-            Log.e(TAG, "SSE error: ${e.message}")
-        }
+        } catch (e: Exception) { Log.e(TAG, "SSE: ${e.message}") }
     }
 
     private fun handleLogsSse(socket: Socket, output: OutputStreamWriter) {
         try {
             output.write("HTTP/1.1 200 OK\r\n")
             output.write("Content-Type: text/event-stream\r\n")
-            output.write("Cache-Control: no-cache\r\n")
-            output.write("Connection: keep-alive\r\n\r\n")
+            output.write("Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n")
             output.flush()
-
             val stream = EventStream(output)
             eventSubscribers.add(stream)
             while (running && !socket.isClosed) {
-                try { Thread.sleep(15000) } catch (_: Exception) { break }
+                try { Thread.sleep(15_000) } catch (_: Exception) { break }
             }
             eventSubscribers.remove(stream)
         } catch (_: Exception) {}
@@ -573,7 +547,7 @@ class Backend(private val context: Context) {
     }
 
     // ============================================================
-    //  Файлы и настройки
+    //  Файлы
     // ============================================================
 
     private fun ensureDefaults() {
@@ -595,56 +569,39 @@ class Backend(private val context: Context) {
     }
 
     private fun loadSettings(): JSONObject = try {
-        if (settingsFile.exists()) JSONObject(settingsFile.readText())
-        else defaultSettings()
+        if (settingsFile.exists()) JSONObject(settingsFile.readText()) else defaultSettings()
     } catch (_: Exception) { defaultSettings() }
 
     private fun saveSettings(s: JSONObject) {
-        var w = s.optInt("workers", DEFAULT_WORKERS).coerceIn(MIN_WORKERS, MAX_WORKERS)
-        var aw = s.optInt("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
+        val w = s.optInt("workers", DEFAULT_WORKERS).coerceIn(MIN_WORKERS, MAX_WORKERS)
+        val aw = s.optInt("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
             .coerceIn(MIN_AUTO_API_WORKERS, MAX_AUTO_API_WORKERS)
         s.put("workers", w); s.put("autoApiWorkers", aw)
         settingsFile.writeText(s.toString())
     }
 
-    private fun replaceSettings(body: String): Pair<Int, String> {
-        return try {
-            val s = JSONObject(body)
-            saveSettings(s)
-            200 to jsonOk("ok" to true)
-        } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
-    }
+    private fun replaceSettings(body: String): Pair<Int, String> = try {
+        val s = JSONObject(body); saveSettings(s); 200 to jsonOk("ok" to true)
+    } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
 
-    private fun patchSettings(body: String): Pair<Int, String> {
-        return try {
-            val patch = JSONObject(body)
-            val s = loadSettings()
-            patch.keys().forEach { k -> s.put(k, patch.get(k)) }
-            saveSettings(s)
-            200 to jsonOk("ok" to true)
-        } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
-    }
+    private fun patchSettings(body: String): Pair<Int, String> = try {
+        val patch = JSONObject(body); val s = loadSettings()
+        patch.keys().forEach { k -> s.put(k, patch.get(k)) }
+        saveSettings(s); 200 to jsonOk("ok" to true)
+    } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
 
     private fun getDeviceId(): String {
-        val s = loadSettings()
-        var id = s.optString("deviceId", "")
+        val s = loadSettings(); var id = s.optString("deviceId", "")
         if (id.isBlank()) {
             id = UUID.randomUUID().toString().replace("-", "")
-            s.put("deviceId", id)
-            saveSettings(s)
+            s.put("deviceId", id); saveSettings(s)
         }
         return id
     }
 
     private fun updateDeviceId(newId: String) {
-        val s = loadSettings()
-        s.put("deviceId", newId)
-        saveSettings(s)
+        val s = loadSettings(); s.put("deviceId", newId); saveSettings(s)
     }
-
-    private fun readLatest(): String = try {
-        if (latestFile.exists()) latestFile.readText().trim() else ""
-    } catch (_: Exception) { "" }
 
     private fun readVkToken(): String? = try {
         if (!tokenFile.exists()) null
@@ -662,23 +619,18 @@ class Backend(private val context: Context) {
         tokenFile.writeText(JSONObject().apply {
             put("Token", token); put("SavedAt", iso)
         }.toString())
-        addLog("[VK] token saved")
+        addLog("[VK] token saved to ${tokenFile.absolutePath}")
     }
 
     private fun readVkState(): JSONObject {
         val has = readVkToken() != null
         return JSONObject().apply {
             put("hasToken", has)
-            put("fetching", false)
-            put("progress", if (has) 100 else 0)
-            put("message", if (has) "VK token active" else "")
+            put("fetching", vkLoginInProgress)
+            put("progress", if (has) 100 else if (vkLoginInProgress) 40 else 0)
+            put("message", if (has) "VK token active"
+                else if (vkLoginInProgress) vkLoginMessage else "")
         }
-    }
-
-    private fun vkAuthUrl(): String {
-        val redirect = URLEncoder.encode(VK_REDIRECT_URI, "UTF-8")
-        return "https://oauth.vk.ru/authorize?client_id=$VK_CLIENT_ID&scope=$VK_SCOPE" +
-                "&redirect_uri=$redirect&display=page&response_type=token&revoke=1&v=5.199"
     }
 
     // ============================================================
@@ -700,80 +652,63 @@ class Backend(private val context: Context) {
         return null
     }
 
-    private fun createConfig(body: String): Pair<Int, String> {
-        return try {
-            val b = JSONObject(body)
-            val protocol = b.optString("protocol", "CSQTT")
-            val link = b.optString("link", "")
-            val parsed = if (link.isNotEmpty()) parseLink(link) else JSONObject().apply {
-                put("protocol", protocol)
-                put("peer", b.optString("peer", ""))
-                put("password", b.optString("password", ""))
-                put("hashes", b.optString("hashes", ""))
-                put("name", b.optString("name", ""))
-            }
-            val id = System.currentTimeMillis()
-            parsed.put("id", id)
-            parsed.put("rawLink", link)
-            val arr = loadConfigs()
-            arr.put(parsed)
-            saveConfigs(arr)
-            200 to jsonOk("id" to id)
-        } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
-    }
+    private fun createConfig(body: String): Pair<Int, String> = try {
+        val b = JSONObject(body)
+        val protocol = b.optString("protocol", "CSQTT")
+        val link = b.optString("link", "")
+        val parsed = if (link.isNotEmpty()) parseLink(link) else JSONObject().apply {
+            put("protocol", protocol)
+            put("peer", b.optString("peer", ""))
+            put("password", b.optString("password", ""))
+            put("hashes", b.optString("hashes", ""))
+            put("name", b.optString("name", ""))
+        }
+        val id = System.currentTimeMillis()
+        parsed.put("id", id); parsed.put("rawLink", link)
+        val arr = loadConfigs(); arr.put(parsed); saveConfigs(arr)
+        200 to jsonOk("id" to id)
+    } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
 
-    private fun updateConfig(id: Long, body: String): Pair<Int, String> {
-        return try {
-            val b = JSONObject(body)
-            val arr = loadConfigs()
-            var found = false
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                if (o.optLong("id") == id) {
-                    b.keys().forEach { k -> o.put(k, b.get(k)) }
-                    o.put("id", id)
-                    found = true
-                    break
-                }
+    private fun updateConfig(id: Long, body: String): Pair<Int, String> = try {
+        val b = JSONObject(body); val arr = loadConfigs()
+        var found = false
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            if (o.optLong("id") == id) {
+                b.keys().forEach { k -> o.put(k, b.get(k)) }
+                o.put("id", id); found = true; break
             }
-            if (!found) return 404 to jsonErr("not found")
-            saveConfigs(arr)
-            200 to jsonOk("ok" to true)
-        } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
-    }
+        }
+        if (!found) 404 to jsonErr("not found")
+        else { saveConfigs(arr); 200 to jsonOk("ok" to true) }
+    } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
 
     private fun deleteConfig(id: Long): Pair<Int, String> {
-        val arr = loadConfigs()
-        val out = JSONArray()
+        val arr = loadConfigs(); val out = JSONArray()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
             if (o.optLong("id") != id) out.put(o)
         }
-        saveConfigs(out)
-        return 200 to jsonOk("ok" to true)
+        saveConfigs(out); return 200 to jsonOk("ok" to true)
     }
 
     private fun readSelectedConfig(): JSONObject? = try {
-        val f = File(appDir, "selected_config.json")
-        if (f.exists()) JSONObject(f.readText()) else null
+        if (selectedConfigFile.exists()) JSONObject(selectedConfigFile.readText()) else null
     } catch (_: Exception) { null }
 
     private fun writeSelectedConfig(c: JSONObject) {
-        File(appDir, "selected_config.json").writeText(c.toString())
+        selectedConfigFile.writeText(c.toString())
     }
 
-    private fun clearSelectedConfig() {
-        File(appDir, "selected_config.json").delete()
-    }
+    private fun clearSelectedConfig() { selectedConfigFile.delete() }
 
     private fun parseLink(link: String): JSONObject {
         val out = JSONObject().apply {
-            put("protocol", "CSQTT")
-            put("peer", ""); put("password", ""); put("hashes", ""); put("name", "")
+            put("protocol", "CSQTT"); put("peer", ""); put("password", "")
+            put("hashes", ""); put("name", "")
         }
         if (!link.startsWith("csqtt://", ignoreCase = true)) {
-            out.put("peer", link)
-            return out
+            out.put("peer", link); return out
         }
         val rest = link.removePrefix("csqtt://")
         if (rest.startsWith("connect?")) {
@@ -782,8 +717,7 @@ class Backend(private val context: Context) {
             query.split("&").forEach { kv ->
                 val idx = kv.indexOf('=')
                 if (idx > 0) {
-                    val k = kv.substring(0, idx)
-                    val v = kv.substring(idx + 1)
+                    val k = kv.substring(0, idx); val v = kv.substring(idx + 1)
                     when (k) {
                         "host" -> host = v
                         "peer" -> port = v
@@ -800,112 +734,117 @@ class Backend(private val context: Context) {
     }
 
     // ============================================================
-    //  Ядро
-    // ============================================================
-
-    private fun getCoreName(): String? {
-        val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
-        return when {
-            arch.contains("arm64") -> "libclient-android-arm64-v8a.so"
-            arch.contains("arm") -> "libclient-android-armeabi-v7a.so"
-            arch.contains("x86_64") -> "libclient-android-x86_64.so"
-            else -> null
-        }
-    }
-
-    private fun getCorePath(): String? {
-        val name = getCoreName() ?: return null
-        // nativeLibraryDir — для APK-собранного бинарника
-        val native = File(context.applicationInfo.nativeLibraryDir, name)
-        if (native.exists()) return native.absolutePath
-        val cached = File(coreDir, name)
-        if (cached.exists()) return cached.absolutePath
-        return null
-    }
-
-    private fun fetchLatestVersion(): String? {
-        for (level in 1..3) {
-            try {
-                val url = when (level) {
-                    1 -> LATEST_URL
-                    else -> PROXY_URL + URLEncoder.encode(LATEST_URL, "UTF-8")
-                }
-                val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 30000
-                conn.readTimeout = 30000
-                conn.setRequestProperty("User-Agent", if (level == 3) UA_CURL else UA_BROWSER)
-                if (conn.responseCode == 200) {
-                    val text = BufferedReader(InputStreamReader(conn.inputStream)).readText().trim()
-                    if (text.isNotEmpty() && !text.contains("Server error")) return text
-                }
-            } catch (e: Exception) {
-                addLog("[NET][LEVEL $level] ${e.message}")
-            }
-        }
-        return null
-    }
-
-    private fun downloadCore(): Boolean {
-        val name = getCoreName() ?: return false
-        val version = fetchLatestVersion() ?: return false
-        val url = CORE_URL_TEMPLATE.format(version, name)
-        addLog("[CORE] downloading $url")
-
-        for (level in 1..3) {
-            try {
-                val useUrl = when (level) {
-                    1 -> url
-                    else -> PROXY_URL + URLEncoder.encode(url, "UTF-8")
-                }
-                val conn = URL(useUrl).openConnection() as HttpURLConnection
-                conn.connectTimeout = 30000
-                conn.readTimeout = 60000
-                conn.setRequestProperty("User-Agent", if (level == 3) UA_CURL else UA_BROWSER)
-                if (conn.responseCode == 200) {
-                    val dest = File(coreDir, name)
-                    conn.inputStream.use { input -> dest.outputStream().use { input.copyTo(it) } }
-                    if (dest.length() > 1024) {
-                        dest.setExecutable(true, false)
-                        latestFile.writeText(version)
-                        addLog("[CORE] downloaded OK (${dest.length()} bytes)")
-                        return true
-                    }
-                }
-            } catch (e: Exception) {
-                addLog("[DOWNLOAD][LEVEL $level] ${e.message}")
-            }
-        }
-        return false
-    }
-
-    // ============================================================
     //  VPN
     // ============================================================
 
     private fun vpnConnect(body: String): Pair<Int, String> {
         val settings = loadSettings()
-        val peer = settings.optString("peer", "")
-        if (peer.isEmpty()) {
-            // Попробуем из выбранного конфига
-            val sel = readSelectedConfig()
-            if (sel == null) return 400 to jsonErr("no config selected")
+        val sel = readSelectedConfig()
+        val peer = sel?.optString("peer", "") ?: settings.optString("peer", "")
+        if (peer.isNullOrEmpty()) return 400 to jsonErr("no config selected")
+
+        val cm = coreManager ?: return 500 to jsonErr("coreManager not ready")
+        if (cm.getCorePath() == null) {
+            addLog("[VPN] core not installed, downloading...")
+            if (!cm.downloadCore()) return 500 to jsonErr("core download failed")
         }
 
-        return try {
-            vpnConnected = true
-            emit("status", JSONObject().put("connected", true))
-            addLog("[VPN] connect requested")
-            200 to jsonOk("ok" to true, "status" to "connecting")
-        } catch (e: Exception) {
-            500 to jsonErr(e.message ?: "connect failed")
+        val password = sel?.optString("password", "") ?: settings.optString("password", "")
+        val hashes = sel?.optString("hashes", "") ?: settings.optString("vkHashes", "")
+        val started = cm.startCore(peer, password, hashes) { line -> addLog(line) }
+        if (!started) return 500 to jsonErr("core start failed")
+
+        val act = activity
+        if (act == null) {
+            addLog("[VPN] no activity attached, starting service directly")
+            startVpnService()
+            return 200 to jsonOk("ok" to true, "status" to "connecting")
+        }
+
+        mainHandler.post {
+            val intent = VpnService.prepare(act)
+            if (intent != null) {
+                addLog("[VPN] requesting VPN permission")
+                act.startActivityForResult(intent, REQ_VPN)
+            } else {
+                addLog("[VPN] VPN permission already granted")
+                startVpnService()
+            }
+        }
+
+        return 200 to jsonOk("ok" to true, "status" to "connecting")
+    }
+
+    /** Вызывается Activity'ом из onActivityResult(REQ_VPN, RESULT_OK). */
+    fun onVpnPermissionGranted() {
+        addLog("[VPN] permission granted, starting service")
+        startVpnService()
+    }
+
+    fun onVpnPermissionDenied() {
+        addLog("[VPN] permission denied")
+        vpnConnected = false
+        emit("status", JSONObject().put("connected", false))
+    }
+
+    private fun startVpnService() {
+        val i = Intent(context, LaLuneVpnService::class.java).apply { action = "START" }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(i)
+        } else {
+            context.startService(i)
         }
     }
 
     private fun vpnDisconnect(): Pair<Int, String> {
+        val i = Intent(context, LaLuneVpnService::class.java).apply { action = "STOP" }
+        try { context.startService(i) } catch (_: Exception) {}
+        coreManager?.stopCore()
         vpnConnected = false
         emit("status", JSONObject().put("connected", false))
         addLog("[VPN] disconnect")
         return 200 to jsonOk("ok" to true)
+    }
+
+    // ============================================================
+    //  VK — нативный WebView
+    // ============================================================
+
+    private fun vkLogin(): Pair<Int, String> {
+        if (vkLoginInProgress) return 200 to jsonOk(
+            "ok" to true, "needsUi" to false, "message" to "already in progress"
+        )
+
+        val act = activity ?: return 500 to jsonErr("activity not attached")
+
+        vkLoginInProgress = true
+        vkLoginMessage = "Открываю окно авторизации..."
+        addLog("[VK] opening WebView...")
+
+        mainHandler.post {
+            val fetcher = VkWebViewFetcher(
+                activity = act,
+                onSuccess = { token ->
+                    vkLoginInProgress = false
+                    vkLoginMessage = ""
+                    saveVkToken(token)
+                    addLog("[VK] token received successfully")
+                    emit("progress", JSONObject().apply {
+                        put("kind", "vk_token"); put("percent", 100)
+                    })
+                },
+                onError = { message ->
+                    vkLoginInProgress = false
+                    vkLoginMessage = message
+                    addLog("[VK] error: $message")
+                    emit("error", JSONObject().put("message", "VK: $message"))
+                },
+            )
+            currentVkFetcher = fetcher
+            fetcher.start()
+        }
+
+        return 200 to jsonOk("ok" to true, "needsUi" to false)
     }
 
     // ============================================================
@@ -916,8 +855,10 @@ class Backend(private val context: Context) {
         val token = readVkToken() ?: return 400 to jsonErr("no VK token")
         return try {
             val b = JSONObject(body)
-            val workers = b.optInt("workers", loadSettings().optInt("workers", DEFAULT_WORKERS))
-            val aw = b.optInt("autoApiWorkers", loadSettings().optInt("autoApiWorkers", DEFAULT_AUTO_API_WORKERS))
+            val s = loadSettings()
+            val workers = b.optInt("workers", s.optInt("workers", DEFAULT_WORKERS))
+            val aw = b.optInt("autoApiWorkers",
+                s.optInt("autoApiWorkers", DEFAULT_AUTO_API_WORKERS))
             val count = callCountForWorkers(workers, aw)
             val hashes = JSONArray(); val callIds = JSONArray()
 
@@ -945,15 +886,14 @@ class Backend(private val context: Context) {
 
     private fun startVkCall(token: String): Triple<String, String, Int> {
         return try {
-            val url = URL(VK_API_BASE + "calls.start")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
+            val conn = URL(VK_API_BASE + "calls.start").openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"; conn.doOutput = true
+            conn.connectTimeout = 8000; conn.readTimeout = 8000
             conn.setRequestProperty("Authorization", "Bearer $token")
             conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-            conn.setRequestProperty("User-Agent", UA_BROWSER)
+            conn.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             conn.outputStream.use { it.write("v=$VK_API_VERSION".toByteArray()) }
 
             val resp = BufferedReader(InputStreamReader(conn.inputStream)).readText()
@@ -969,9 +909,7 @@ class Backend(private val context: Context) {
                 val hash = if (okLink.isNotEmpty()) okLink else joinLink.substringAfterLast('/')
                 Triple(callId, hash, 0)
             }
-        } catch (e: Exception) {
-            Triple("", "", -1)
-        }
+        } catch (_: Exception) { Triple("", "", -1) }
     }
 
     // ============================================================

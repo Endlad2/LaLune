@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
+# main.cc         — точка входа + запуск backend через GUI sudo
+# my_application.cc — GTK-приложение + shutdown-хук (POST /shutdown)
+# main_hook.cc удалён — хук внутри my_application.cc
 add_executable(${BINARY_NAME}
   "main.cc"
-  "main_hook.cc"
   "my_application.cc"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
 )

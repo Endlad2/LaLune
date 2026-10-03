@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Linux runner: запускает LaLuneManager перед стартом UI, ловит
-// закрытие окна и останавливает бэкенд.
+// Linux runner: запускает LaLuneManager перед стартом UI.
+// Остановка бэкенда — в my_application.cc (хук на GApplication::shutdown).
 
 #include "my_application.h"
 
@@ -18,7 +18,9 @@
 #include <unistd.h>
 #include <csignal>
 
-// --- Пути ---
+// ============================================================
+//  Пути
+// ============================================================
 
 static std::string lalune_home() {
   const char* h = g_get_home_dir();
@@ -42,7 +44,9 @@ static bool file_exists(const std::string& path) {
   return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
-// --- GUI sudo ---
+// ============================================================
+//  GUI sudo
+// ============================================================
 
 static bool run_with_gui_sudo(const std::string& cmd) {
   const char* gui_sudos[] = {"pkexec", "gksudo", "kdesudo", "beesu", nullptr};
@@ -112,14 +116,13 @@ static void start_backend() {
   }
 }
 
-// --- main ---
+// ============================================================
+//  main
+// ============================================================
 
 int main(int argc, char** argv) {
   start_backend();
 
   g_autoptr(MyApplication) app = my_application_new();
-  // Подключаем shutdown-хук (реализация в main_hook.cc).
-  my_application_attach_shutdown_impl(app);
-
   return g_application_run(G_APPLICATION(app), argc, argv);
 }
