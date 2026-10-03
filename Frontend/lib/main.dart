@@ -3,7 +3,7 @@
 // LaLune — точка входа Flutter-приложения.
 //
 // Архитектура:
-//   Flutter UI ⟷ HTTP API (127.0.0.1:1062) ⟷ платформенный бэкенд.
+//   Flutter UI ⟷ HTTP API (127.0.0.1:1062 или IP роутера) ⟷ платформенный бэкенд.
 //
 // Бэкенд запускается платформенным runner'ом:
 //   * Linux   — main.cc запускает ~/.la-lune/LaLuneManager (через GUI sudo),
@@ -14,6 +14,12 @@
 //               watchdog каждые 3 сек перезапускает Backend при смерти.
 //   * iOS     — AppDelegate → Backend.shared.attach(window:).run(),
 //               watchdog каждые 3 сек перезапускает Backend.
+//
+// OpenWRT:
+//   Пользователь может подключиться к роутеру через
+//   Настройки → Экспериментальное → Роутеры → «Подключить OpenWRT».
+//   Тогда все API-запросы идут на IP роутера. Сверху показывается
+//   зелёный баннер. При отключении — возврат на 127.0.0.1.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -25,6 +31,7 @@ import 'pages/logs_page.dart';
 import 'pages/settings_page.dart';
 import 'theme/app_theme.dart';
 import 'widgets/navbar.dart';
+import 'widgets/router_banner.dart';
 
 void main() {
   runApp(const ProviderScope(child: LaLuneApp()));
@@ -60,8 +67,6 @@ class _RootShellState extends ConsumerState<RootShell> {
   @override
   void initState() {
     super.initState();
-    // Прогреваем watchdog — он стартует в конструкторе провайдера.
-    // Просто читаем провайдер, чтобы он инициализировался.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(backendWatchdogProvider);
     });
@@ -112,6 +117,8 @@ class _RootShellState extends ConsumerState<RootShell> {
         child: SafeArea(
           child: Column(
             children: [
+              // Глобальный зелёный баннер, если подключены к OpenWRT-роутеру.
+              const RouterBanner(),
               if (backendStatus == BackendStatus.dead)
                 _BackendOfflineBanner(),
               Expanded(

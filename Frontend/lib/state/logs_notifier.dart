@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_client.dart';
 import '../api/sse_client.dart';
 import 'providers.dart';
 
@@ -21,15 +22,35 @@ class LogsNotifier extends StateNotifier<LogsState> {
   final Ref _ref;
   Timer? _poll;
   SseClient? _sse;
+  StreamSubscription<String>? _baseUrlSub;
 
   LogsNotifier(this._ref) : super(const LogsState()) {
     _refresh();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _refresh());
     _startSse();
+
+    final api = _ref.read(apiClientProvider);
+    _baseUrlSub = api.baseUrlChanges.listen((_) {
+      // Переподключаем SSE, чистим старые логи, подтягиваем с нового хоста.
+      _sse?.dispose();
+      _sse = null;
+      state = state.copyWith(lines: const []);
+      _startSse();
+      _refresh();
+    });
   }
 
   void _startSse() {
-    _sse = SseClient();
+    final api = _ref.read(apiClientProvider);
+    _sse = SseClient(
+      uriProvider: () => Uri(
+        scheme: 'http',
+        host: api.host,
+        port: api.port,
+        path: '/events',
+      ),
+      baseUrlChanges: api.baseUrlChanges,
+    );
     _sse!.stream.listen((ev) {
       if (ev.type == 'log') {
         final line = ev.data['line'] as String? ?? '';
@@ -64,6 +85,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
   void dispose() {
     _poll?.cancel();
     _sse?.dispose();
+    _baseUrlSub?.cancel();
     super.dispose();
   }
 }

@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_client.dart';
 import '../api/sse_client.dart';
 import '../models/vpn_status.dart';
 import 'providers.dart';
@@ -12,10 +13,20 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
   final Ref _ref;
   Timer? _poll;
   SseClient? _sse;
+  StreamSubscription<String>? _baseUrlSub;
 
   VpnNotifier(this._ref) : super(VpnStatus.empty) {
     _startPolling();
     _startSse();
+
+    final api = _ref.read(apiClientProvider);
+    _baseUrlSub = api.baseUrlChanges.listen((_) {
+      // Переподключаем SSE на новый хост и обновляем статус.
+      _sse?.dispose();
+      _sse = null;
+      _startSse();
+      _refresh();
+    });
   }
 
   void _startPolling() {
@@ -24,7 +35,16 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
   }
 
   void _startSse() {
-    _sse = SseClient();
+    final api = _ref.read(apiClientProvider);
+    _sse = SseClient(
+      uriProvider: () => Uri(
+        scheme: 'http',
+        host: api.host,
+        port: api.port,
+        path: '/events',
+      ),
+      baseUrlChanges: api.baseUrlChanges,
+    );
     _sse!.stream.listen((ev) {
       if (ev.type == 'status') {
         final connected = (ev.data['connected'] ?? false) as bool;
@@ -78,6 +98,7 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
   void dispose() {
     _poll?.cancel();
     _sse?.dispose();
+    _baseUrlSub?.cancel();
     super.dispose();
   }
 }

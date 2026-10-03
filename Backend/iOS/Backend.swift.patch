@@ -1,0 +1,9 @@
+--- Backend/iOS/Backend.swift
++++ Backend/iOS/Backend.swift
+@@
+             case ("GET", "/vk/token/state"):
+                 return (200, readVkStateJson())
++            case ("GET", "/vk/token/raw"):
++                return (200, json(["token": readVkToken() ?? ""]))
+             case ("POST", "/vk/token/login"):
+                 return vkLogin()

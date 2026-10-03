@@ -1,0 +1,20 @@
+--- Backend/OpenWRT/src/api.rs
++++ Backend/OpenWRT/src/api.rs
+@@
+         .route("/vk/token/state", get(vk_state))
++        .route("/vk/token/raw", get(vk_raw))
+         .route("/vk/token/login", post(vk_login))
+         .route("/vk/token/submit", post(vk_submit))
+         .route("/vk/token/validate", get(vk_validate))
+@@
+ async fn vk_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+     Json(json!(vk::token_state(&state.app_dir)))
+ }
+ 
++// GET /vk/token/raw — возвращает сам токен (не только его наличие).
++async fn vk_raw(State(state): State<Arc<AppState>>) -> impl IntoResponse {
++    let token = vk::read_token(&state.app_dir).unwrap_or_default();
++    Json(json!({ "token": token }))
++}
++
+ async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {

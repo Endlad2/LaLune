@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_client.dart';
 import '../models/settings.dart';
 import 'providers.dart';
 
@@ -31,9 +34,15 @@ class SettingsState {
 
 class SettingsNotifier extends StateNotifier<SettingsState> {
   final Ref _ref;
+  StreamSubscription<String>? _baseUrlSub;
 
-  SettingsNotifier(this._ref)
-      : super(SettingsState(data: Settings()));
+  SettingsNotifier(this._ref) : super(SettingsState(data: Settings())) {
+    // При смене baseUrl (подключение/отключение роутера) — перезагружаем.
+    final api = _ref.read(apiClientProvider);
+    _baseUrlSub = api.baseUrlChanges.listen((_) {
+      reload();
+    });
+  }
 
   Future<void> reload() async {
     state = state.copyWith(loading: true, clearError: true);
@@ -73,6 +82,12 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       state = state.copyWith(error: '$e');
       return '';
     }
+  }
+
+  @override
+  void dispose() {
+    _baseUrlSub?.cancel();
+    super.dispose();
   }
 }
 

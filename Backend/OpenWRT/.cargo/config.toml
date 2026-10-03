@@ -1,0 +1,6 @@
+# Этот файл перезаписывается build.sh при каждом запуске.
+# Оставлен для справки — что нужно указать для кросс-компиляции.
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-openwrt-linux-musl-gcc"
+ar = "aarch64-openwrt-linux-musl-ar"

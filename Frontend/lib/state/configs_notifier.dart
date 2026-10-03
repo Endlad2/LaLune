@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_client.dart';
 import '../models/config_item.dart';
 import 'providers.dart';
 
@@ -44,8 +47,14 @@ class ConfigsState {
 
 class ConfigsNotifier extends StateNotifier<ConfigsState> {
   final Ref _ref;
+  StreamSubscription<String>? _baseUrlSub;
 
-  ConfigsNotifier(this._ref) : super(const ConfigsState());
+  ConfigsNotifier(this._ref) : super(const ConfigsState()) {
+    final api = _ref.read(apiClientProvider);
+    _baseUrlSub = api.baseUrlChanges.listen((_) {
+      reload();
+    });
+  }
 
   Future<void> reload() async {
     state = state.copyWith(loading: true, clearError: true);
@@ -113,6 +122,12 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
       state = state.copyWith(error: '$e');
       return false;
     }
+  }
+
+  @override
+  void dispose() {
+    _baseUrlSub?.cancel();
+    super.dispose();
   }
 }
 

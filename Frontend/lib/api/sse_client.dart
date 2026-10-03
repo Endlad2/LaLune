@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// SSE-клиент для /events. Простой парсер text/event-stream.
+// SSE-клиент для /events. Учитывает смену baseUrl (роутер ↔ localhost).
 
 import 'dart:async';
 import 'dart:convert';
@@ -18,21 +18,37 @@ class SseEvent {
 
 class SseClient {
   final http.Client _http;
-  final Uri _uri;
+  final Uri Function() _uriProvider;
+
   StreamSubscription? _sub;
   final _controller = StreamController<SseEvent>.broadcast();
   bool _closed = false;
 
-  SseClient({http.Client? httpClient})
-      : _http = httpClient ?? http.Client(),
-        _uri = Uri(scheme: 'http', host: '127.0.0.1', port: 1062, path: '/events');
+  /// Смена хоста — переподключаемся.
+  StreamSubscription? _baseUrlSub;
+
+  SseClient({
+    http.Client? httpClient,
+    required Uri Function() uriProvider,
+    Stream<String>? baseUrlChanges,
+  })  : _http = httpClient ?? http.Client(),
+        _uriProvider = uriProvider {
+    if (baseUrlChanges != null) {
+      _baseUrlSub = baseUrlChanges.listen((_) {
+        // Переподключаемся на новом адресе.
+        _sub?.cancel();
+        _sub = null;
+        connect();
+      });
+    }
+  }
 
   Stream<SseEvent> get stream => _controller.stream;
 
   Future<void> connect() async {
     if (_closed) return;
     try {
-      final req = http.Request('GET', _uri);
+      final req = http.Request('GET', _uriProvider());
       req.headers['Accept'] = 'text/event-stream';
       req.headers['Cache-Control'] = 'no-cache';
       final resp = await _http.send(req);
@@ -46,7 +62,6 @@ class SseClient {
       _sub = resp.stream.transform(utf8.decoder).listen(
         (chunk) {
           buffer += chunk;
-          // Разделяем по \n\n — это границы событий SSE.
           while (true) {
             final idx = buffer.indexOf('\n\n');
             if (idx < 0) break;
@@ -88,11 +103,11 @@ class SseClient {
 
   void dispose() {
     _closed = true;
+    _baseUrlSub?.cancel();
     _sub?.cancel();
     _controller.close();
   }
 
-  /// Хелпер: превращает SSE-событие типа "log" в LogLine.
   static LogLine? parseLog(SseEvent ev) {
     if (ev.type != 'log') return null;
     final line = ev.data['line'] as String? ?? '';

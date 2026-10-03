@@ -1,0 +1,25 @@
+--- Backend/Desktop/src/api.rs
++++ Backend/Desktop/src/api.rs
+@@
+         // VK
+         .route("/vk/token/state", get(vk_state))
++        .route("/vk/token/raw", get(vk_raw))
+         .route("/vk/token/login", post(vk_login))
+         .route("/vk/token/submit", post(vk_submit))
+         .route("/vk/token/validate", get(vk_validate))
+         .route("/vk/token/fetch/cancel", post(vk_cancel))
+         .route("/vk/token", delete(vk_delete))
+@@
+ async fn vk_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+     let s = vk::token_state(&state.app_dir);
+     Json(json!(s))
+ }
+ 
++// GET /vk/token/raw — возвращает сам токен (не только его наличие).
++// Используется UI для передачи токена роутеру через POST /vk/token/submit.
++async fn vk_raw(State(state): State<Arc<AppState>>) -> impl IntoResponse {
++    let token = vk::read_token(&state.app_dir).unwrap_or_default();
++    Json(json!({ "token": token }))
++}
++
+ async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {

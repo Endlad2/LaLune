@@ -4,16 +4,23 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_client.dart';
 import '../models/vk_token_state.dart';
 import 'providers.dart';
 
 class VkNotifier extends StateNotifier<VkTokenState> {
   final Ref _ref;
   Timer? _poll;
+  StreamSubscription<String>? _baseUrlSub;
 
   VkNotifier(this._ref) : super(VkTokenState.empty) {
     _refresh();
     _poll = Timer.periodic(const Duration(milliseconds: 500), (_) => _refresh());
+
+    final api = _ref.read(apiClientProvider);
+    _baseUrlSub = api.baseUrlChanges.listen((_) {
+      _refresh();
+    });
   }
 
   Future<void> _refresh() async {
@@ -36,8 +43,11 @@ class VkNotifier extends StateNotifier<VkTokenState> {
       // Бэкенд сам открывает WebView (Android/iOS) или запускает
       // Token.ps1/Token.sh (Desktop).
       await api.postJson('/vk/token/login', {});
-      state = const VkTokenState(fetching: true, progress: 10,
-          message: 'Открываю окно авторизации...');
+      state = const VkTokenState(
+        fetching: true,
+        progress: 10,
+        message: 'Открываю окно авторизации...',
+      );
       return true;
     } catch (e) {
       state = VkTokenState(message: '$e');
@@ -59,6 +69,7 @@ class VkNotifier extends StateNotifier<VkTokenState> {
   @override
   void dispose() {
     _poll?.cancel();
+    _baseUrlSub?.cancel();
     super.dispose();
   }
 }

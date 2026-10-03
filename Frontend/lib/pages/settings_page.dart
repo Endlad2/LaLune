@@ -6,13 +6,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/config_item.dart';
+import '../models/router_info.dart';
 import '../models/settings.dart';
 import '../models/vk_token_state.dart';
 import '../state/configs_notifier.dart';
+import '../state/router_notifier.dart';
 import '../state/settings_notifier.dart';
 import '../state/vk_notifier.dart';
+import '../widgets/confirm_dialog.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/input_row.dart';
+import '../widgets/router_modal.dart';
 import '../widgets/toast.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
@@ -166,6 +170,57 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   // ============================================================
+  //  Роутеры (OpenWRT)
+  // ============================================================
+
+  Future<void> _onConnectRouter() async {
+    final chosen = await showRouterModal(context);
+    if (chosen == null || !mounted) return;
+
+    final ok = await showConfirmDialog(
+      context,
+      title: 'Установить соединение?',
+      message:
+          'Все API-запросы будут переключены на ${chosen.displayName} '
+          '(${chosen.ip}:1062). Настройки, конфиги и логи станут общими с роутером.',
+      confirmLabel: 'Подключить',
+    );
+    if (ok != true || !mounted) return;
+
+    final success = await ref.read(routerProvider.notifier).connect(chosen);
+    if (!mounted) return;
+    if (success) {
+      Toast.show(context, 'Подключено к роутеру ${chosen.displayName}');
+    } else {
+      final err = ref.read(routerProvider).error ?? 'Ошибка подключения';
+      Toast.show(context, err, isError: true);
+    }
+  }
+
+  Future<void> _onDisconnectRouter() async {
+    final ok = await showConfirmDialog(
+      context,
+      title: 'Отключиться от роутера?',
+      message:
+          'API вернётся на 127.0.0.1. Процессы на роутере продолжат работу.',
+      confirmLabel: 'Отключить',
+    );
+    if (ok != true || !mounted) return;
+    await ref.read(routerProvider.notifier).disconnect();
+  }
+
+  Future<void> _onRemoveRouter(RouterInfo r) async {
+    final ok = await showConfirmDialog(
+      context,
+      title: 'Удалить роутер?',
+      message: '${r.displayName} (${r.ip}) будет удалён из списка.',
+      confirmLabel: 'Удалить',
+    );
+    if (ok != true || !mounted) return;
+    await ref.read(routerProvider.notifier).removeRouter(r.ip);
+  }
+
+  // ============================================================
   //  UI
   // ============================================================
 
@@ -174,6 +229,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (_loading) return const Center(child: CircularProgressIndicator());
 
     final vk = ref.watch(vkProvider);
+    final routerState = ref.watch(routerProvider);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
@@ -331,7 +387,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               ),
               const SizedBox(height: 18),
 
-              _sectionTitle('Экспериментальные'),
+              _sectionTitle('Экспериментальное'),
               GlassCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -350,6 +406,143 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           height: 1.5,
                           color: Colors.white.withOpacity(0.55)),
                     ),
+                    const SizedBox(height: 14),
+                    const Divider(height: 1),
+                    const SizedBox(height: 14),
+                    Text(
+                      'РОУТЕРЫ',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        letterSpacing: 0.7,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white.withOpacity(0.4),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _onConnectRouter,
+                        icon: const Icon(Icons.router, size: 16),
+                        label: const Text('Подключить OpenWRT'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF4A6CF7),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                    if (routerState.activeRouter != null) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF2E7D32).withOpacity(0.18),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: const Color(0xFF2E7D32).withOpacity(0.55),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.check_circle,
+                                size: 16, color: Color(0xFF7CFF9A)),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Подключено к '
+                                '${routerState.activeRouter!.displayName}',
+                                style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: _onDisconnectRouter,
+                              style: TextButton.styleFrom(
+                                  foregroundColor: Colors.redAccent),
+                              child: const Text('Отключить'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    if (routerState.savedRouters.isEmpty)
+                      Text(
+                        'Сохранённых роутеров нет',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.white.withOpacity(0.45),
+                        ),
+                      )
+                    else
+                      ...routerState.savedRouters.map((r) {
+                        final active =
+                            routerState.activeRouter?.ip == r.ip;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: active
+                                  ? const Color(0xFF4A6CF7)
+                                      .withOpacity(0.14)
+                                  : Colors.white.withOpacity(0.03),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: active
+                                    ? const Color(0xFF4A6CF7)
+                                        .withOpacity(0.5)
+                                    : Colors.white.withOpacity(0.08),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.router,
+                                    size: 16, color: Colors.white70),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        r.displayName,
+                                        style: const TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600),
+                                      ),
+                                      Text(
+                                        '${r.ip}:1062',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.white
+                                              .withOpacity(0.55),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Удалить',
+                                  onPressed: () => _onRemoveRouter(r),
+                                  iconSize: 16,
+                                  icon: Icon(
+                                    Icons.delete_outline,
+                                    color:
+                                        Colors.white.withOpacity(0.5),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
                   ],
                 ),
               ),

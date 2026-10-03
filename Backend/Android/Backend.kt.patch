@@ -1,0 +1,9 @@
+--- Backend/Android/Backend.kt
++++ Backend/Android/Backend.kt
+@@
+                 // VK
+                 path == "/vk/token/state" && method == "GET" -> 200 to readVkState().toString()
++                path == "/vk/token/raw" && method == "GET" ->
++                    200 to jsonOk("token" to (readVkToken() ?: ""))
+                 path == "/vk/token/login" && method == "POST" -> vkLogin()
+                 path == "/vk/token/submit" && method == "POST" -> {
