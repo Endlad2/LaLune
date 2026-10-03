@@ -2,9 +2,7 @@
 #
 # Сборка LaLune под iOS (Flutter native + Swift backend).
 #
-# ВАЖНО: фиксируем Flutter version (3.29.0), чтобы API совпадал с
-# остальными платформами. Без flutter-version action ставит самый
-# свежий stable (3.47+), где удалён DialogTheme и др. deprecated API.
+# Фиксируем Flutter version (3.29.0).
 
 name: Build iOS
 
@@ -96,20 +94,25 @@ jobs:
         working-directory: Frontend
         run: flutter pub get
 
+      # ── Build Flutter framework'и для iOS ─────────────────────
+      #
+      # В Flutter 3.29 у `ios-framework` НЕТ флага --no-codesign.
+      # Эта команда и так не подписывает framework'и — codesign только
+      # для `flutter build ios` (готовое приложение).
       - name: Build Flutter iOS frameworks
         working-directory: Frontend
         run: |
           set -e
-          flutter build ios-framework \
-            --output=ios/Flutter \
-            --release \
-            --no-codesign
+          flutter build ios-framework --output=ios/Flutter --release
 
           echo "=== Generated frameworks ==="
           ls -la ios/Flutter/Release/
           echo ""
           echo "=== Flutter.xcframework ==="
           ls -la ios/Flutter/Release/Flutter.xcframework/ || true
+          echo ""
+          echo "=== App.xcframework ==="
+          ls -la ios/Flutter/Release/App.xcframework/ || true
 
       - name: Download CSQTT iOS core
         run: |
