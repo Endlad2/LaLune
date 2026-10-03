@@ -2,6 +2,9 @@
 //
 // MainActivity: поднимает Backend, подключает Flutter UI поверх,
 // следит за жизнью API (каждые 3 сек) и перезапускает при необходимости.
+//
+// ВАЖНО: Backend и LaLuneVpnService теперь в ТОМ ЖЕ package
+// (com.lalune.lalune) — импорты не нужны.
 
 package com.lalune.lalune
 
@@ -14,7 +17,6 @@ import android.os.Bundle
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.lalune.backend.Backend
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -80,10 +82,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ============================================================
-    //  Разрешения
-    // ============================================================
-
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val granted = ContextCompat.checkSelfPermission(
@@ -117,10 +115,6 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-
-    // ============================================================
-    //  Watchdog: проверяем API каждые 3 сек
-    // ============================================================
 
     private fun startApiWatchdog() {
         watchdogJob?.cancel()

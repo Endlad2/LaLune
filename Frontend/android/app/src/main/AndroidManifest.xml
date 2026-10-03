@@ -12,10 +12,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Battery optimization bypass (нужно для стабильного VpnService) -->
+    <!-- Battery optimization bypass -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- Чтение/запись для files dir ядра и конфигов -->
+    <!-- Storage (только до API 32/28) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -48,9 +48,10 @@
             </intent-filter>
         </activity>
 
-        <!-- VpnService: TUN + UDP-мост -->
+        <!-- VpnService: TUN + UDP-мост.
+             ВАЖНО: класс теперь в com.lalune.lalune (тот же package, что MainActivity). -->
         <service
-            android:name="com.lalune.backend.LaLuneVpnService"
+            android:name="com.lalune.lalune.LaLuneVpnService"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse">

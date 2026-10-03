@@ -50,8 +50,7 @@ jobs:
       - name: Build (CI mode)
         run: python build.py --ci --target linux
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: Output-Linux
           path: Output/*.zip
@@ -80,18 +79,6 @@ jobs:
           channel: stable
           cache: true
 
-      # ────────────────────────────────────────────────────────
-      #  Windows: готовим VS2022 + MSVC
-      #
-      #  windows-latest образ содержит VS2026 Enterprise, которая
-      #  Flutter 3.24 ещё НЕ поддерживает. Flutter её находит,
-      #  но затем падает с "could not find VS 2019" (некорректно
-      #  определяет версию CMake-генератора).
-      #
-      #  Решение: ставим VS2022 Community и ВРЕМЕННО переименовываем
-      #  папку VS2026, чтобы vswhere возвращал только VS2022.
-      # ────────────────────────────────────────────────────────
-
       - name: Install VS2022 Community (Native Desktop C++)
         shell: pwsh
         run: |
@@ -101,28 +88,20 @@ jobs:
       - name: Hide VS2026 from vswhere
         shell: pwsh
         run: |
-          # VS2026 Enterprise живёт в C:\Program Files\Microsoft Visual Studio\18
-          # Переименовываем в .hidden, чтобы vswhere её не нашёл.
           $vs18 = "C:\Program Files\Microsoft Visual Studio\18"
           if (Test-Path $vs18) {
-            Write-Host "Renaming $vs18 → $vs18.hidden"
             Rename-Item -Path $vs18 -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
-          } else {
-            Write-Host "VS2026 (18) not found — nothing to hide"
           }
-          # Также проверим альтернативный путь
           $vs18x86 = "C:\Program Files (x86)\Microsoft Visual Studio\18"
           if (Test-Path $vs18x86) {
             Rename-Item -Path $vs18x86 -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Verify vswhere now finds VS2022
+      - name: Verify vswhere
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           & $vswhere -all -products * -property installationPath
-          Write-Host "---"
-          & $vswhere -latest -products * -property installationPath
 
       - name: Setup MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -135,15 +114,13 @@ jobs:
           Write-Host "VCToolsInstallDir: $env:VCToolsInstallDir"
           where.exe cl.exe
           where.exe mt.exe
-          Write-Host "---"
           flutter doctor -v
 
       - name: Build (CI mode)
         shell: cmd
         run: python build.py --ci --target windows
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: Output-Windows
           path: Output/*.zip
@@ -190,9 +167,12 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
           ls -la "$ANDROID_HOME/ndk/" || true
 
+      # ── Копируем Kotlin-бэкенд в ТОТ ЖЕ package, что MainActivity ──
+      # package теперь com.lalune.lalune (не .backend!), поэтому и
+      # путь назначения — com/lalune/lalune/.
       - name: Copy Android backend
         run: |
-          DST="Frontend/android/app/src/main/kotlin/com/lalune/backend"
+          DST="Frontend/android/app/src/main/kotlin/com/lalune/lalune"
           mkdir -p "$DST"
           cp Backend/Android/*.kt "$DST/"
           ls -la "$DST"
@@ -242,7 +222,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  LaLuneTokenFetcher (без изменений)
+  #  LaLuneTokenFetcher
   # ============================================================
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
@@ -285,7 +265,6 @@ jobs:
           ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
 
           if [ ! -d "$OUTPUT_BIN" ]; then
-            echo "Не найдена папка с результатом сборки: $OUTPUT_BIN"
             find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
             exit 1
           fi
@@ -310,21 +289,7 @@ jobs:
             popd >/dev/null
           fi
 
-          echo "=== $ZIP_PATH ==="
           ls -la "$ZIP_PATH"
-
-      - name: Verify zip
-        shell: bash
-        run: |
-          ZIP="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
-          test -f "$ZIP" || { echo "$ZIP not found"; exit 1; }
-
-          if [ "${{ matrix.platform }}" = "Windows" ]; then
-            powershell -Command "Expand-Archive -Path '$ZIP' -DestinationPath 'verify_zip' -Force"
-            ls -la verify_zip/vk-token-fetcher
-          else
-            unzip -l "$ZIP"
-          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -348,26 +313,18 @@ jobs:
         with:
           path: release
 
-      - name: Show artifacts
-        run: find release -type f | head -50
-
       - name: Flatten artifacts into release/
         run: |
           set -e
           cd release
-
           find . -name 'LaLune-Windows.zip' -exec cp {} ./ \;
           find . -name 'Backend-Windows.zip' -exec cp {} ./ \;
           find . -name 'Installer-Windows.zip' -exec cp {} ./ \;
           find . -name 'LaLune-Linux.zip'   -exec cp {} ./ \;
           find . -name 'Backend-Linux.zip'  -exec cp {} ./ \;
-
           find . -name 'LaLune-Android.apk' -exec cp {} ./ \;
-
           find . -name 'LaLuneTokenFetcher_Windows.zip' -exec cp {} ./ \;
           find . -name 'LaLuneTokenFetcher_Linux.zip'   -exec cp {} ./ \;
-
-          echo "=== release/ contents ==="
           ls -la
 
       - id: date

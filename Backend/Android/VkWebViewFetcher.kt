@@ -1,26 +1,19 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // Нативный WebView для OAuth-авторизации ВК.
-// Цикл (как в Desktop PlaywrightTokenFetcher):
 //
+// package = com.lalune.lalune — тот же, что у MainActivity и Backend.
+//
+// Цикл:
 //   Pass 1: WebView грузит AUTH_URL.
-//           VK логинит → редирект на blank.html.
 //             - access_token=...     → сохраняем, выходим.
-//             - payload=... (silent) → НЕ закрываем WebView.
-//                                      1. page.loadUrl("https://vk.com/")
-//                                      2. ждём VK_DOT_COM_WAIT_MS (2000)
-//                                         чтобы VK проставил cookies
-//                                      3. снова page.loadUrl(AUTH_URL)
-//                                      → Pass 2.
+//             - payload=... (silent) → идём на vk.com на 2 сек, потом снова
+//                                       на AUTH_URL в ТОМ ЖЕ WebView.
 //             - error=...            → сообщаем ошибку.
-//
-//   Pass 2: VK видит cookies активной сессии → показывает
-//           "Продолжить как <Имя>" → отдаёт access_token.
-//
-//   Максимум MAX_SILENT_RESTARTS проходов после silent_token.
-//   Общий таймаут 5 минут — не сбрасывается между проходами.
+//   Pass 2: VK видит cookies → показывает "Продолжить как Имя" → access_token.
+//   Максимум MAX_SILENT_RESTARTS проходов.
 
-package com.lalune.backend
+package com.lalune.lalune
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -79,11 +72,7 @@ class VkWebViewFetcher(
         private const val POLL_INTERVAL_MS = 1000L
         private const val TIMEOUT_MS = 5 * 60 * 1000L
         private const val FIRST_LOAD_TIMEOUT_MS = 15_000L
-
-        /** Сколько ждать на vk.com, чтобы VK проставил cookies активной сессии. */
         private const val VK_DOT_COM_WAIT_MS = 2000L
-
-        /** Максимум silent_token-перезапусков. 1 = не более 2 проходов. */
         private const val MAX_SILENT_RESTARTS = 1
     }
 
@@ -92,18 +81,11 @@ class VkWebViewFetcher(
     private val handler = Handler(Looper.getMainLooper())
     private val finished = AtomicBoolean(false)
     private var pollRunnable: Runnable? = null
-    private var timeoutRunnable: Runnable? = null
     private var firstLoadReceived = false
     private var firstLoadTimeoutRunnable: Runnable? = null
     private var lastLoggedUrl: String = ""
-
-    /** Счётчик перезапусков после silent_token. */
     private var silentRestarts = 0
-
-    /** Общий дедлайн (5 минут). */
     private var deadlineMs = 0L
-
-    /** Флаг: сейчас идёт обработка silent_token (vk.com → AUTH_URL). */
     private var inSilentRecovery = false
 
     fun start() {
@@ -123,10 +105,6 @@ class VkWebViewFetcher(
         onError("cancelled")
     }
 
-    // ============================================================
-    //  UI: диалог + WebView
-    // ============================================================
-
     private fun showDialogAndLoad() {
         Log.d(TAG, "showDialogAndLoad")
 
@@ -138,9 +116,7 @@ class VkWebViewFetcher(
         d.setCanceledOnTouchOutside(false)
         d.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                if (!finished.get()) {
-                    finishWithError("окно закрыто пользователем")
-                }
+                if (!finished.get()) finishWithError("окно закрыто пользователем")
                 true
             } else false
         }
@@ -159,7 +135,6 @@ class VkWebViewFetcher(
         try {
             d.show()
         } catch (e: Exception) {
-            Log.e(TAG, "dialog.show() failed", e)
             finishWithError("не удалось открыть окно: ${e.message}")
             return
         }
@@ -230,31 +205,22 @@ class VkWebViewFetcher(
         return wv
     }
 
-    // ============================================================
-    //  URL handling
-    // ============================================================
-
     private fun handleUrl(url: String?) {
         if (finished.get() || url == null) return
         if (System.currentTimeMillis() > deadlineMs) {
             finishWithError("тайм-аут ожидания токена")
             return
         }
-
-        // Пока идёт silent recovery — не трогаем логику распознавания,
-        // мы намеренно ходим на vk.com и обратно.
         if (inSilentRecovery) {
             logUrl(url)
             return
         }
-
         logUrl(url)
         if (!isBlankRedirect(url)) return
 
         val fragment = extractFragment(url) ?: return
         if (fragment.isEmpty()) return
 
-        // 1) Настоящий access_token
         val token = extractQueryParam(fragment, "access_token")
         if (!token.isNullOrEmpty()) {
             Log.i(TAG, "access_token received (pass=${silentRestarts + 1})")
@@ -262,13 +228,11 @@ class VkWebViewFetcher(
             return
         }
 
-        // 2) silent_token
         if (fragment.contains("payload=")) {
             handleSilentToken()
             return
         }
 
-        // 3) Ошибка OAuth
         if (fragment.contains("error=")) {
             var desc = extractQueryParam(fragment, "error_description")
             if (desc.isNullOrEmpty()) desc = extractQueryParam(fragment, "error")
@@ -276,16 +240,9 @@ class VkWebViewFetcher(
         }
     }
 
-    /**
-     * Silent_token: НЕ закрываем WebView. Идём на vk.com, ждём 2 сек,
-     * возвращаемся на AUTH_URL в ТОМ ЖЕ WebView.
-     */
     private fun handleSilentToken() {
         if (silentRestarts >= MAX_SILENT_RESTARTS) {
-            Log.w(TAG, "silent_token on pass ${silentRestarts + 1} — giving up")
-            finishWithError(
-                "VK вернул silent_token дважды. Войдите заново вручную."
-            )
+            finishWithError("VK вернул silent_token дважды. Войдите заново вручную.")
             return
         }
 
@@ -306,14 +263,11 @@ class VkWebViewFetcher(
             return
         }
 
-        // 1. Идём на vk.com — VK проставит cookies активной сессии.
         wv.loadUrl(VK_DOT_COM_URL)
 
-        // 2. Через VK_DOT_COM_WAIT_MS — возвращаемся на AUTH_URL.
         handler.postDelayed({
             if (finished.get()) return@postDelayed
             val wv2 = webView ?: return@postDelayed
-            Log.i(TAG, "silent recovery → back to AUTH_URL")
             inSilentRecovery = false
             wv2.loadUrl(AUTH_URL)
         }, VK_DOT_COM_WAIT_MS)
@@ -352,10 +306,6 @@ class VkWebViewFetcher(
         return null
     }
 
-    // ============================================================
-    //  Таймеры
-    // ============================================================
-
     private fun schedulePolling() {
         pollRunnable?.let { handler.removeCallbacks(it) }
         val r = object : Runnable {
@@ -377,7 +327,6 @@ class VkWebViewFetcher(
         val r = Runnable {
             if (finished.get()) return@Runnable
             if (!firstLoadReceived) {
-                Log.e(TAG, "WebView not loaded in $FIRST_LOAD_TIMEOUT_MS ms")
                 try {
                     Toast.makeText(
                         activity,
@@ -398,10 +347,6 @@ class VkWebViewFetcher(
         Log.i(TAG, "[VK] URL: $url")
     }
 
-    // ============================================================
-    //  Финализация
-    // ============================================================
-
     private fun finishWithToken(token: String) {
         if (!finished.compareAndSet(false, true)) return
         cleanup()
@@ -417,8 +362,6 @@ class VkWebViewFetcher(
     private fun cleanup() {
         pollRunnable?.let { handler.removeCallbacks(it) }
         pollRunnable = null
-        timeoutRunnable?.let { handler.removeCallbacks(it) }
-        timeoutRunnable = null
         firstLoadTimeoutRunnable?.let { handler.removeCallbacks(it) }
         firstLoadTimeoutRunnable = null
 

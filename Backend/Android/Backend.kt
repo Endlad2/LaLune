@@ -6,8 +6,11 @@
 // ядром CSQTT, VK-авторизацией (нативный WebView), конфигами, настройками.
 //
 // Точка входа: Backend(context).attachActivity(activity).run()
+//
+// ВАЖНО: package совпадает с MainActivity (com.lalune.lalune), чтобы
+// Gradle компилировал всё в одном sourceSet без дополнительных srcDirs.
 
-package com.lalune.backend
+package com.lalune.lalune
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -237,7 +240,6 @@ class Backend(private val context: Context) {
 
         try {
             return when {
-                // Базовые
                 path == "/ping" && method == "GET" -> 200 to jsonOk(
                     "ok" to true, "version" to VERSION, "os" to "android",
                     "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
@@ -249,7 +251,6 @@ class Backend(private val context: Context) {
                 )
                 path == "/shutdown" && method == "POST" -> { stop(); 200 to jsonOk("ok" to true) }
 
-                // Конфиги
                 path == "/configs" && method == "GET" -> 200 to loadConfigs().toString()
                 path == "/configs/parse" && method == "POST" -> {
                     val b = JSONObject(body)
@@ -282,7 +283,6 @@ class Backend(private val context: Context) {
                     deleteConfig(id)
                 }
 
-                // Настройки
                 path == "/settings" && method == "GET" -> 200 to loadSettings().toString()
                 path == "/settings" && method == "PUT" -> replaceSettings(body)
                 path == "/settings" && method == "PATCH" -> patchSettings(body)
@@ -301,7 +301,6 @@ class Backend(private val context: Context) {
                     saveSettings(s); 200 to jsonOk("ok" to true)
                 }
 
-                // Device
                 path == "/device/id" && method == "GET" -> 200 to jsonOk("deviceId" to getDeviceId())
                 path == "/device/id/regenerate" && method == "POST" -> {
                     val id = UUID.randomUUID().toString().replace("-", "")
@@ -314,7 +313,6 @@ class Backend(private val context: Context) {
                     "totalMemMb" to 0
                 )
 
-                // VPN
                 path == "/vpn/connect" && method == "POST" -> vpnConnect(body)
                 path == "/vpn/disconnect" && method == "POST" -> vpnDisconnect()
                 path == "/vpn/status" && method == "GET" -> 200 to jsonOk(
@@ -331,7 +329,6 @@ class Backend(private val context: Context) {
                 )
                 path == "/vpn/tunconf" && method == "GET" -> 200 to "{}"
 
-                // Логи
                 path == "/logs" && method == "GET" -> 200 to JSONArray(logs.toList()).toString()
                 path == "/logs/tail" && method == "GET" -> {
                     val n = queryParam(query, "lines")?.toIntOrNull() ?: 100
@@ -342,7 +339,6 @@ class Backend(private val context: Context) {
                 path == "/logs" && method == "DELETE" -> { logs.clear(); 200 to jsonOk("ok" to true) }
                 path == "/logs/export" && method == "GET" -> 200 to logs.joinToString("\n")
 
-                // Ядро
                 path == "/core/version" && method == "GET" ->
                     200 to jsonOk("version" to (coreManager?.readLatest() ?: ""))
                 path == "/core/latest" && method == "GET" ->
@@ -382,7 +378,6 @@ class Backend(private val context: Context) {
                     200 to jsonOk("ok" to true)
                 }
 
-                // Update
                 path == "/update/check" && method == "GET" -> 200 to jsonOk(
                     "hasUpdate" to false, "remoteTag" to "", "localVersion" to VERSION
                 )
@@ -390,7 +385,6 @@ class Backend(private val context: Context) {
                     "url" to "https://github.com/Endlad2/LaLune/releases/latest"
                 )
 
-                // VK
                 path == "/vk/token/state" && method == "GET" -> 200 to readVkState().toString()
                 path == "/vk/token/login" && method == "POST" -> vkLogin()
                 path == "/vk/token/submit" && method == "POST" -> {
@@ -410,7 +404,6 @@ class Backend(private val context: Context) {
                     tokenFile.delete(); 200 to jsonOk("ok" to true)
                 }
 
-                // VK Calls
                 path == "/vk/calls/start" && method == "POST" -> vkCallsStart(body)
                 path == "/vk/calls/stop" && method == "POST" -> {
                     val b = JSONObject(body); val arr = b.optJSONArray("callIds") ?: JSONArray()
@@ -428,7 +421,6 @@ class Backend(private val context: Context) {
                 path == "/vk/calls/active" && method == "GET" ->
                     200 to jsonOk("callIds" to JSONArray(activeCallIds.toList()))
 
-                // SmartTunnel
                 path == "/smarttunnel/status" && method == "GET" ->
                     200 to jsonOk("running" to smarttunnelRunning)
                 path == "/smarttunnel/start" && method == "POST" -> {
@@ -442,7 +434,6 @@ class Backend(private val context: Context) {
                 path == "/smarttunnel/args" && method == "GET" -> 200 to "[]"
                 path == "/smarttunnel/args" && method == "PUT" -> 200 to jsonOk("ok" to true)
 
-                // Deploy (заглушка)
                 path == "/deploy/run" && method == "POST" ->
                     200 to jsonOk("stub" to true, "message" to "DeployManager not yet implemented")
                 path == "/deploy/status" && method == "GET" ->
@@ -452,7 +443,6 @@ class Backend(private val context: Context) {
                 path == "/deploy/protocols" && method == "GET" ->
                     200 to jsonOk("protocols" to JSONArray(), "stub" to true)
 
-                // Platform
                 path == "/platform/capabilities" && method == "GET" -> 200 to jsonOk(
                     "canShowWebView" to true, "canRunTun" to true, "canDeploy" to false,
                     "canAutoUpdate" to false, "canSendNotifications" to true,
@@ -464,7 +454,6 @@ class Backend(private val context: Context) {
                 path == "/platform/open-path" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/platform/share" && method == "POST" -> 200 to jsonOk("ok" to true)
 
-                // Debug
                 path == "/debug/state" && method == "GET" -> 200 to jsonOk(
                     "logCount" to logs.size, "appDir" to appDir.absolutePath,
                     "vpnConnected" to vpnConnected
@@ -775,7 +764,6 @@ class Backend(private val context: Context) {
         return 200 to jsonOk("ok" to true, "status" to "connecting")
     }
 
-    /** Вызывается Activity'ом из onActivityResult(REQ_VPN, RESULT_OK). */
     fun onVpnPermissionGranted() {
         addLog("[VPN] permission granted, starting service")
         startVpnService()
