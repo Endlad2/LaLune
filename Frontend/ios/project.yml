@@ -40,11 +40,15 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Entitlements/Runner.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Runner/Runner-Bridging-Header.h
 
-        # Flutter framework'и, сгенерированные `flutter build ios-framework --release`.
-        # Путь: Flutter/Release/*.xcframework
+        # Flutter framework'и лежат внутри .xcframework/ios-arm64/.
+        # Xcode НЕ заходит автоматически в .xcframework — надо указать
+        # конкретную архитектуру в FRAMEWORK_SEARCH_PATHS.
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
-          - "$(PROJECT_DIR)/Flutter/Release"
+          - "$(PROJECT_DIR)/Flutter/Release/Flutter.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/Flutter/Release/App.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/Flutter/Release/FlutterPluginRegistrant.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/Flutter/Release/shared_preferences_foundation.xcframework/ios-arm64"
 
         OTHER_LDFLAGS:
           - "$(inherited)"
@@ -66,8 +70,6 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
-
-    # НЕТ preBuildScripts — framework'и уже готовы на момент архивации.
 
     # Embed Flutter.framework и plugin-фреймворки в .app/Frameworks/
     postCompileScripts:
@@ -99,7 +101,6 @@ targets:
           DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
           mkdir -p "$DST"
 
-          # flutter_assets лежат внутри App.framework
           SRC="${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/App.framework/flutter_assets"
           if [ -d "$SRC" ]; then
             rm -rf "$DST/flutter_assets"
@@ -107,7 +108,6 @@ targets:
             echo "Copied flutter_assets"
           else
             echo "WARNING: flutter_assets not found at $SRC"
-            # Fallback: возможно, flutter_assets лежат рядом с App.framework
             ALT="${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/flutter_assets"
             if [ -d "$ALT" ]; then
               cp -R "$ALT" "$DST/"
