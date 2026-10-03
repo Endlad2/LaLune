@@ -60,15 +60,20 @@ jobs:
   #  Desktop Windows
   #
   #  ПРОБЛЕМА: LNK1327 при mt.exe из Windows SDK 10.0.26100.
-  #  Flutter 3.24 зовёт mt.exe с синтаксисом "-outputresource:file;#"
-  #  (без номера ресурса), а mt.exe из 26100 требует явный номер.
+  #  Flutter 3.24 зовёт mt.exe с "-outputresource:file;#" (без
+  #  номера ресурса), а mt.exe из 26100 требует явный номер.
   #
-  #  VS2022, cl.exe, link.exe, rc.exe — работают нормально (иначе
-  #  Flutter упал бы раньше). Падает ТОЛЬКО mt.exe.
+  #  VS2022, cl.exe, link.exe, rc.exe — работают (иначе Flutter
+  #  упал бы раньше). Падает ТОЛЬКО mt.exe.
   #
-  #  РЕШЕНИЕ: скачать SDK 10.0.19041 (старый mt.exe), взять из него
-  #  mt.exe/rc.exe/rcdll.dll и скопировать ПОВЕРХ 26100. Ничего не
-  #  удаляем, ничего не переименовываем — точечная подмена.
+  #  РЕШЕНИЕ: подменяем mt.exe/rc.exe/rcdll.dll в папке 26100 на
+  #  версии из ДРУГОГО SDK, который уже есть в образе. В
+  #  windows-latest есть:
+  #    10.0.17134.0   (Windows 10 1803)
+  #    10.0.20348.0   (Windows Server 2022) ← используем этот
+  #    10.0.26100.0   (наш проблемный)
+  #
+  #  Если 20348 вдруг нет — берём 17134.
   # ============================================================
   build-desktop-windows:
     name: Desktop Windows
@@ -97,54 +102,57 @@ jobs:
           choco install visualstudio2022community -y --no-progress `
             --package-parameters "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
 
-      # ── Старый Windows SDK 10.0.19041 (для mt.exe/rc.exe) ────
-      - name: Install Windows SDK 10.0.19041
-        shell: pwsh
-        run: |
-          choco install windows-sdk-10-version-2104-all -y --no-progress
-          Write-Host "=== Installed SDK versions ==="
-          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty Name
-
-      # ── Подменяем mt.exe / rc.exe в 26100 на версии из 19041 ─
-      #
-      # Это ключевой шаг. Flutter сам находит SDK 26100 (самую новую
-      # версию) и вызывает C:\Program Files (x86)\Windows Kits\10\
-      # bin\10.0.26100.0\x64\mt.exe. Заменяем этот файл на рабочий
-      # из 19041 — Flutter об этом даже не узнает.
+      # ── Подменяем mt.exe / rc.exe в SDK 26100 на версии из
+      #    другого установленного SDK (20348 → fallback 17134).
       - name: Replace mt.exe/rc.exe in SDK 26100
         shell: pwsh
         run: |
-          $old = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64"
-          $new = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"
+          $sdkBinRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
+          $target = Join-Path $sdkBinRoot "10.0.26100.0\x64"
 
-          if (-not (Test-Path $old)) {
-            Write-Error "Old SDK bin not found: $old"
-            Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory |
-              Select-Object -ExpandProperty Name
+          if (-not (Test-Path $target)) {
+            Write-Error "Target SDK bin not found: $target"
+            Get-ChildItem $sdkBinRoot -Directory | Select-Object -ExpandProperty Name
             exit 1
           }
-          if (-not (Test-Path $new)) {
-            Write-Error "New SDK bin not found: $new"
+
+          # Ищем "старый" SDK — 20348, потом 17134.
+          $candidates = @("10.0.20348.0", "10.0.17134.0")
+          $source = $null
+          foreach ($ver in $candidates) {
+            $p = Join-Path $sdkBinRoot "$ver\x64"
+            if (Test-Path (Join-Path $p "mt.exe")) {
+              $source = $p
+              Write-Host "Using source SDK: $ver"
+              break
+            }
+          }
+
+          if (-not $source) {
+            Write-Error "No usable older SDK found in $sdkBinRoot"
+            Get-ChildItem $sdkBinRoot -Directory | Select-Object -ExpandProperty Name
             exit 1
           }
+
+          Write-Host "Source: $source"
+          Write-Host "Target: $target"
 
           foreach ($f in @("mt.exe", "rc.exe", "rcdll.dll")) {
-            $src = Join-Path $old $f
-            $dst = Join-Path $new $f
+            $src = Join-Path $source $f
+            $dst = Join-Path $target $f
             if (Test-Path $src) {
               Write-Host "Copying $f : $src → $dst"
               Copy-Item -Path $src -Destination $dst -Force
             } else {
-              Write-Warning "$f not found in $old"
+              Write-Warning "$f not found in $source"
             }
           }
 
           Write-Host "=== After replacement ==="
-          Get-Item "$new\mt.exe" | Select-Object Name, Length, LastWriteTime
-          Get-Item "$new\rc.exe" | Select-Object Name, Length, LastWriteTime
+          Get-Item "$target\mt.exe" | Select-Object Name, Length, LastWriteTime
+          Get-Item "$target\rc.exe" | Select-Object Name, Length, LastWriteTime
 
-      # ── Проверка: mt.exe работает и умеет -outputresource ────
+      # ── Проверка: mt.exe работает ────────────────────────────
       - name: Verify mt.exe works
         shell: pwsh
         run: |
@@ -156,12 +164,8 @@ jobs:
             exit 1
           }
           Write-Host "OK: mt.exe responds"
-          Write-Host $out
 
-      # ── Опционально: скрываем VS2026 от vswhere ──────────────
-      # VS2022 у нас поставлена — Flutter её найдёт. VS2026 (если
-      # есть в образе) может перепутать vswhere, но Flutter обычно
-      # берёт самую СТАРУЮ поддерживаемую — поэтому VS2026 не мешает.
+      # ── Скрываем VS2026 (необязательно) ──────────────────────
       - name: Hide VS2026 from vswhere (optional)
         shell: pwsh
         continue-on-error: true
@@ -171,7 +175,6 @@ jobs:
             "C:\Program Files (x86)\Microsoft Visual Studio\18"
           )) {
             if (Test-Path $p) {
-              Write-Host "Renaming $p → $p.hidden"
               Rename-Item -Path $p -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
             }
           }
@@ -183,7 +186,7 @@ jobs:
           Write-Host "--- latest ---"
           & $vswhere -latest -products * -property installationPath
 
-      # ── Активация MSVC (обычный ilammy — VS2022 найдётся сам) ─
+      # ── Активация MSVC ───────────────────────────────────────
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
