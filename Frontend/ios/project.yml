@@ -40,17 +40,12 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Entitlements/Runner.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Runner/Runner-Bridging-Header.h
 
-        # Flutter framework'и, сгенерированные `flutter build ios-framework`.
-        # Структура:
-        #   Flutter/Release/Flutter.xcframework
-        #   Flutter/Release/App.xcframework
-        #   Flutter/Release/FlutterPluginRegistrant.xcframework
-        #   Flutter/Release/<PluginName>.xcframework
+        # Flutter framework'и, сгенерированные `flutter build ios-framework --release`.
+        # Путь: Flutter/Release/*.xcframework
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/Flutter/Release"
 
-        # Подключаем фреймворки Flutter + App + все плагины.
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-framework"
@@ -72,50 +67,52 @@ targets:
           - "$(inherited)"
           - "@executable_path/Frameworks"
 
-        # Скрипты Flutter (аналог того, что делает `flutter create`).
-        # Скрипт `embed_and_thin` копирует Flutter.framework в bundle.
-        # `xcode_backend build` вызывается как пред-сборка.
+    # НЕТ preBuildScripts — framework'и уже готовы на момент архивации.
 
-    # Pre-build: копирование Flutter.xcframework перед линковкой
-    preBuildScripts:
-      - name: "Flutter Build (xcode_backend build)"
-        basedOnDependencyAnalysis: false
-        script: |
-          set -e
-          # flutter build ios-framework уже создал фреймворки в Flutter/Release
-          # Этот шаг оставлен для совместимости — при необходимости, здесь
-          # можно вызвать `flutter build ios` (но это отдельный билд).
-          echo "Pre-build: Flutter frameworks already in Flutter/Release"
-
+    # Embed Flutter.framework и plugin-фреймворки в .app/Frameworks/
     postCompileScripts:
-      - name: "Thin Flutter Frameworks (embed_and_thin)"
+      - name: "Embed Flutter Frameworks"
         basedOnDependencyAnalysis: false
         script: |
           set -e
-          # Аналог `xcode_backend.sh embed_and_thin` из обычного Flutter runner.
-          # Тонкие бинарники (arm64) копируются в .app/Frameworks.
-          if [ -f "${SRCROOT}/Flutter/Release/Flutter.xcframework/ios-arm64/Flutter.framework/Flutter" ]; then
-            mkdir -p "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
-            for fw in Flutter App FlutterPluginRegistrant shared_preferences_foundation; do
-              SRC="${SRCROOT}/Flutter/Release/${fw}.xcframework/ios-arm64/${fw}.framework"
-              if [ -d "$SRC" ]; then
-                cp -R "$SRC" "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
-                echo "Embedded: ${fw}.framework"
-              fi
-            done
-          fi
+
+          FW_DST="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          mkdir -p "$FW_DST"
+
+          for fw in Flutter App FlutterPluginRegistrant shared_preferences_foundation; do
+            SRC="${SRCROOT}/Flutter/Release/${fw}.xcframework/ios-arm64/${fw}.framework"
+            if [ -d "$SRC" ]; then
+              rm -rf "$FW_DST/${fw}.framework"
+              cp -R "$SRC" "$FW_DST/"
+              echo "Embedded: ${fw}.framework"
+            else
+              echo "WARNING: not found ${SRC}"
+            fi
+          done
 
     postBuildScripts:
       - name: "Copy Flutter Assets"
         basedOnDependencyAnalysis: false
         script: |
           set -e
-          # Копируем flutter_assets (создаётся flutter build ios-framework).
-          if [ -d "${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/App.framework/flutter_assets" ]; then
-            mkdir -p "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
-            cp -R "${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/App.framework/flutter_assets" \
-                  "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/"
+
+          DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          mkdir -p "$DST"
+
+          # flutter_assets лежат внутри App.framework
+          SRC="${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/App.framework/flutter_assets"
+          if [ -d "$SRC" ]; then
+            rm -rf "$DST/flutter_assets"
+            cp -R "$SRC" "$DST/"
             echo "Copied flutter_assets"
+          else
+            echo "WARNING: flutter_assets not found at $SRC"
+            # Fallback: возможно, flutter_assets лежат рядом с App.framework
+            ALT="${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/flutter_assets"
+            if [ -d "$ALT" ]; then
+              cp -R "$ALT" "$DST/"
+              echo "Copied flutter_assets (fallback)"
+            fi
           fi
 
     dependencies:
