@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Тема приложения. Совместима с Flutter 3.24+ (DialogTheme) и 3.27+
-// (DialogThemeData). Здесь используется DialogTheme — он работает везде
-// до момента удаления из SDK.
+// Тема приложения. Использует DialogThemeData — актуальный API
+// Flutter 3.29+. DialogTheme (старый) удалён в Flutter 3.47.
 
 import 'package:flutter/material.dart';
 
@@ -56,9 +55,8 @@ ThemeData buildAppTheme() {
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(foregroundColor: Colors.white70),
     ),
-    // DialogTheme работает и в 3.24, и в 3.29 (устаревший алиас).
-    // Не используем DialogThemeData — его нет в 3.24.
-    dialogTheme: const DialogTheme(
+    // DialogThemeData — актуальное имя класса в Flutter 3.29+.
+    dialogTheme: const DialogThemeData(
       backgroundColor: kSurface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.all(Radius.circular(16)),

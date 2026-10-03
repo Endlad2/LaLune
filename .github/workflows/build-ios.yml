@@ -2,16 +2,9 @@
 #
 # Сборка LaLune под iOS (Flutter native + Swift backend).
 #
-# Ключевые шаги:
-#   1. flutter build ios-framework  → создаёт Flutter/Release/*.xcframework
-#   2. Копируем Backend/iOS/*.swift в Runner/ и Tunnel/
-#   3. xcodegen generate            → Runner.xcodeproj с двумя target'ами
-#   4. xcodebuild archive (unsigned)
-#   5. упаковка Payload/ → LaLune.ipa
-#
-# ВАЖНО: `flutter build ios-framework` подготавливает Flutter.xcframework
-# и App.framework (со встроенными flutter_assets), которые затем
-# подключаются в XcodeGen-проект через FRAMEWORK_SEARCH_PATHS.
+# ВАЖНО: фиксируем Flutter version (3.29.0), чтобы API совпадал с
+# остальными платформами. Без flutter-version action ставит самый
+# свежий stable (3.47+), где удалён DialogTheme и др. deprecated API.
 
 name: Build iOS
 
@@ -28,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: "3.29.0"
   XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
 
@@ -63,7 +56,8 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Flutter version
@@ -102,9 +96,6 @@ jobs:
         working-directory: Frontend
         run: flutter pub get
 
-      # ── КРИТИЧНО: собираем Flutter framework'и ───────────────
-      # Создаёт Frontend/ios/Flutter/Release/{Flutter,App,...}.xcframework
-      # Именно эти framework'и потом подключаются в project.yml.
       - name: Build Flutter iOS frameworks
         working-directory: Frontend
         run: |
@@ -120,7 +111,6 @@ jobs:
           echo "=== Flutter.xcframework ==="
           ls -la ios/Flutter/Release/Flutter.xcframework/ || true
 
-      # ── Нативное ядро CSQTT ─────────────────────────────────
       - name: Download CSQTT iOS core
         run: |
           set -e
@@ -135,7 +125,6 @@ jobs:
           file libcsqtt_ios_core.a || true
           lipo -info libcsqtt_ios_core.a || true
 
-      # ── Генерация Xcode-проекта ─────────────────────────────
       - name: Generate Xcode project
         working-directory: Frontend/ios
         run: |
@@ -157,8 +146,6 @@ jobs:
           echo "objectVersion after xcodegen:"
           grep -m1 'objectVersion' "$PBX" || true
 
-          # XcodeGen может записать 77 (формат Xcode 16), который Xcode 15.4
-          # не читает. Патчим на 56 (формат Xcode 14).
           if grep -q 'objectVersion = 77;' "$PBX"; then
             echo "note: downgrading objectVersion 77 -> 56"
             sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' "$PBX"
@@ -169,7 +156,6 @@ jobs:
           echo "$FINAL" | grep -q '56' \
             || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open"; exit 1; }
 
-      # ── Архив (unsigned) ────────────────────────────────────
       - name: Archive (unsigned)
         working-directory: Frontend/ios
         run: |
@@ -187,7 +173,6 @@ jobs:
             DEVELOPMENT_TEAM="" \
             ONLY_ACTIVE_ARCH=NO
 
-      # ── Упаковка IPA ────────────────────────────────────────
       - name: Package unsigned IPA
         working-directory: Frontend/ios
         run: |
@@ -215,7 +200,6 @@ jobs:
 
           ls -la build/LaLune.ipa
 
-      # ── Артефакты ───────────────────────────────────────────
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:

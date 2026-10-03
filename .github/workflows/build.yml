@@ -11,7 +11,7 @@ permissions:
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: "1"
-  FLUTTER_VERSION: "3.24.5"
+  FLUTTER_VERSION: "3.29.0"
   RUST_VERSION: "stable"
 
 jobs:
@@ -58,14 +58,6 @@ jobs:
 
   # ============================================================
   #  Desktop Windows
-  #
-  #  ОБХОД LNK1327:
-  #  CMake больше не добавляет "runner.exe.manifest" в add_executable
-  #  (см. Frontend/windows/runner/CMakeLists.txt). Значит, mt.exe
-  #  не вызывается — LNK1327 не появляется.
-  #
-  #  Админ-права запрашиваются в runtime через ShellExecuteExW("runas")
-  #  в main.cpp → IsRunningAsAdmin() / RelaunchAsAdmin().
   # ============================================================
   build-desktop-windows:
     name: Desktop Windows
