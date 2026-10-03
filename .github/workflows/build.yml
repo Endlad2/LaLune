@@ -58,6 +58,17 @@ jobs:
 
   # ============================================================
   #  Desktop Windows
+  #
+  #  ПРОБЛЕМА: LNK1327 при mt.exe из Windows SDK 10.0.26100.
+  #  Flutter 3.24 зовёт mt.exe с синтаксисом "-outputresource:file;#"
+  #  (без номера ресурса), а mt.exe из 26100 требует явный номер.
+  #
+  #  VS2022, cl.exe, link.exe, rc.exe — работают нормально (иначе
+  #  Flutter упал бы раньше). Падает ТОЛЬКО mt.exe.
+  #
+  #  РЕШЕНИЕ: скачать SDK 10.0.19041 (старый mt.exe), взять из него
+  #  mt.exe/rc.exe/rcdll.dll и скопировать ПОВЕРХ 26100. Ничего не
+  #  удаляем, ничего не переименовываем — точечная подмена.
   # ============================================================
   build-desktop-windows:
     name: Desktop Windows
@@ -79,31 +90,101 @@ jobs:
           channel: stable
           cache: true
 
+      # ── VS2022 Community (Native Desktop C++) ───────────────
       - name: Install VS2022 Community (Native Desktop C++)
         shell: pwsh
         run: |
           choco install visualstudio2022community -y --no-progress `
             --package-parameters "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
 
-      - name: Hide VS2026 from vswhere
+      # ── Старый Windows SDK 10.0.19041 (для mt.exe/rc.exe) ────
+      - name: Install Windows SDK 10.0.19041
         shell: pwsh
         run: |
-          $vs18 = "C:\Program Files\Microsoft Visual Studio\18"
-          if (Test-Path $vs18) {
-            Rename-Item -Path $vs18 -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
+          choco install windows-sdk-10-version-2104-all -y --no-progress
+          Write-Host "=== Installed SDK versions ==="
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name
+
+      # ── Подменяем mt.exe / rc.exe в 26100 на версии из 19041 ─
+      #
+      # Это ключевой шаг. Flutter сам находит SDK 26100 (самую новую
+      # версию) и вызывает C:\Program Files (x86)\Windows Kits\10\
+      # bin\10.0.26100.0\x64\mt.exe. Заменяем этот файл на рабочий
+      # из 19041 — Flutter об этом даже не узнает.
+      - name: Replace mt.exe/rc.exe in SDK 26100
+        shell: pwsh
+        run: |
+          $old = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64"
+          $new = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"
+
+          if (-not (Test-Path $old)) {
+            Write-Error "Old SDK bin not found: $old"
+            Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory |
+              Select-Object -ExpandProperty Name
+            exit 1
           }
-          $vs18x86 = "C:\Program Files (x86)\Microsoft Visual Studio\18"
-          if (Test-Path $vs18x86) {
-            Rename-Item -Path $vs18x86 -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path $new)) {
+            Write-Error "New SDK bin not found: $new"
+            exit 1
+          }
+
+          foreach ($f in @("mt.exe", "rc.exe", "rcdll.dll")) {
+            $src = Join-Path $old $f
+            $dst = Join-Path $new $f
+            if (Test-Path $src) {
+              Write-Host "Copying $f : $src → $dst"
+              Copy-Item -Path $src -Destination $dst -Force
+            } else {
+              Write-Warning "$f not found in $old"
+            }
+          }
+
+          Write-Host "=== After replacement ==="
+          Get-Item "$new\mt.exe" | Select-Object Name, Length, LastWriteTime
+          Get-Item "$new\rc.exe" | Select-Object Name, Length, LastWriteTime
+
+      # ── Проверка: mt.exe работает и умеет -outputresource ────
+      - name: Verify mt.exe works
+        shell: pwsh
+        run: |
+          $mt = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe"
+          Write-Host "Path: $mt"
+          $out = & $mt 2>&1 | Out-String
+          if ($out -notmatch "Manifest Tool") {
+            Write-Error "mt.exe did not print usage: $out"
+            exit 1
+          }
+          Write-Host "OK: mt.exe responds"
+          Write-Host $out
+
+      # ── Опционально: скрываем VS2026 от vswhere ──────────────
+      # VS2022 у нас поставлена — Flutter её найдёт. VS2026 (если
+      # есть в образе) может перепутать vswhere, но Flutter обычно
+      # берёт самую СТАРУЮ поддерживаемую — поэтому VS2026 не мешает.
+      - name: Hide VS2026 from vswhere (optional)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          foreach ($p in @(
+            "C:\Program Files\Microsoft Visual Studio\18",
+            "C:\Program Files (x86)\Microsoft Visual Studio\18"
+          )) {
+            if (Test-Path $p) {
+              Write-Host "Renaming $p → $p.hidden"
+              Rename-Item -Path $p -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
+            }
           }
 
       - name: Verify vswhere
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          & $vswhere -all -products * -property installationPath
+          Write-Host "--- latest ---"
+          & $vswhere -latest -products * -property installationPath
 
-      - name: Setup MSVC environment
+      # ── Активация MSVC (обычный ilammy — VS2022 найдётся сам) ─
+      - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -112,10 +193,16 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "VCToolsInstallDir: $env:VCToolsInstallDir"
+          Write-Host "WindowsSdkDir: $env:WindowsSdkDir"
+          Write-Host "WindowsSDKVersion: $env:WindowsSDKVersion"
           where.exe cl.exe
           where.exe mt.exe
-          flutter doctor -v
+          where.exe link.exe
 
+      - name: Flutter doctor (diagnostics)
+        run: flutter doctor -v
+
+      # ── Сборка ────────────────────────────────────────────────
       - name: Build (CI mode)
         shell: cmd
         run: python build.py --ci --target windows
@@ -167,9 +254,6 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
           ls -la "$ANDROID_HOME/ndk/" || true
 
-      # ── Копируем Kotlin-бэкенд в ТОТ ЖЕ package, что MainActivity ──
-      # package теперь com.lalune.lalune (не .backend!), поэтому и
-      # путь назначения — com/lalune/lalune/.
       - name: Copy Android backend
         run: |
           DST="Frontend/android/app/src/main/kotlin/com/lalune/lalune"
