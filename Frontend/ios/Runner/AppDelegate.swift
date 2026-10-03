@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// iOS runner: запускает Backend (HTTP API + управление NETunnelProviderManager),
-// следит за API каждые 3 сек и перезапускает, если процесс упал/убит системой.
+// Классический AppDelegate для Flutter 3.29.
+//
+// НЕ использует FlutterImplicitEngineDelegate / FlutterImplicitEngineBridge —
+// эти типы доступны только при сборке через `flutter build ios` (или
+// Runner.xcodeproj от flutter create), но НЕ экспортируются в
+// Flutter.framework, который создаётся `flutter build ios-framework`.
+//
+// Приложение поднимает Backend (HTTP API) на 127.0.0.1:1062 и следит за
+// его жизнью каждые 3 секунды.
 
 import Flutter
 import UIKit
@@ -10,63 +17,31 @@ import BackgroundTasks
 import UserNotifications
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate {
 
     private var backend: Backend?
     private var watchdogTimer: Timer?
-    private var methodChannel: FlutterMethodChannel?
 
     private let API_URL = URL(string: "http://127.0.0.1:1062/ping")!
-    private let CHANNEL = "com.lalune/native"
     private let BG_TASK_ID = "com.lalune.app.refresh"
 
     override func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
-        // 1. Регистрируем фоновую задачу (для периодического «пинга» API).
         registerBackgroundTask()
-
-        // 2. Просим разрешение на уведомления (нужно VpnService).
         requestNotificationPermission()
 
-        // 3. Стартуем Backend — он поднимает HTTP API на 127.0.0.1:1062.
+        // Стартуем Backend (HTTP API).
         let b = Backend.shared
         b.attach(window: self.window)
         b.run()
         self.backend = b
         NSLog("[LaLune] Backend.run() called")
 
-        // 4. Watchdog: каждые 3 сек проверяем, что API живой.
         startApiWatchdog()
 
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-    }
-
-    func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-        GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-
-        // MethodChannel для Flutter: isBackendAlive / restartBackend / requestVpnPermission
-        let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LaLuneNative")!
-        let channel = FlutterMethodChannel(
-            name: CHANNEL,
-            binaryMessenger: registrar.messenger()
-        )
-        channel.setMethodCallHandler { [weak self] call, result in
-            guard let self = self else { result(nil); return }
-            switch call.method {
-            case "isBackendAlive":
-                self.isBackendAlive { alive in result(alive) }
-            case "restartBackend":
-                self.restartBackend()
-                result(true)
-            case "requestVpnPermission":
-                self.requestVpnPermission { ok in result(ok) }
-            default:
-                result(FlutterMethodNotImplemented)
-            }
-        }
-        self.methodChannel = channel
     }
 
     // ============================================================
@@ -86,7 +61,7 @@ import UserNotifications
     }
 
     // ============================================================
-    //  Watchdog: каждые 3 сек проверяем /ping
+    //  Watchdog
     // ============================================================
 
     private func startApiWatchdog() {
@@ -98,27 +73,17 @@ import UserNotifications
     }
 
     private func checkApi() {
-        isBackendAlive { [weak self] alive in
-            guard let self = self else { return }
-            if !alive {
-                NSLog("[LaLune] API not responding — restarting backend")
-                DispatchQueue.main.async {
-                    self.restartBackend()
-                }
-            }
-        }
-    }
-
-    private func isBackendAlive(completion: @escaping (Bool) -> Void) {
         var req = URLRequest(url: API_URL)
         req.timeoutInterval = 1.5
         req.httpMethod = "GET"
-        URLSession.shared.dataTask(with: req) { _, resp, _ in
-            if let http = resp as? HTTPURLResponse,
-               (200..<300).contains(http.statusCode) {
-                completion(true)
-            } else {
-                completion(false)
+        URLSession.shared.dataTask(with: req) { [weak self] _, resp, _ in
+            guard let self = self else { return }
+            let ok = (resp as? HTTPURLResponse).map {
+                (200..<300).contains($0.statusCode)
+            } ?? false
+            if !ok {
+                NSLog("[LaLune] API not responding — restarting backend")
+                DispatchQueue.main.async { self.restartBackend() }
             }
         }.resume()
     }
@@ -133,26 +98,7 @@ import UserNotifications
     }
 
     // ============================================================
-    //  VPN permission: на iOS это NETunnelProviderManager.
-    //  Реально разрешение спрашивает система при первом startVPNTunnel().
-    //  Мы просто проверяем, что extension зарегистрирован.
-    // ============================================================
-
-    private func requestVpnPermission(completion: @escaping (Bool) -> Void) {
-        NETunnelProviderManager.loadAllFromPreferences { managers, error in
-            if let error = error {
-                NSLog("[LaLune] loadAllFromPreferences: \(error.localizedDescription)")
-                completion(false)
-                return
-            }
-            completion(true)
-        }
-    }
-
-    // ============================================================
-    //  Background task: iOS может прибить процесс — BGTask даст немного
-    //  времени, чтобы API успел ответить на запросы. Не даёт жить
-    //  вечно, но снижает вероятность «отвалилось в фоне».
+    //  Background task
     // ============================================================
 
     private func registerBackgroundTask() {
@@ -175,20 +121,26 @@ import UserNotifications
     }
 
     private func handleBackgroundRefresh(task: BGAppRefreshTask) {
-        // Сразу планируем следующий.
         scheduleBackgroundRefresh()
 
         task.expirationHandler = {
             self.watchdogTimer?.invalidate()
         }
 
-        // Проверяем и, если надо, поднимаем API.
-        isBackendAlive { [weak self] alive in
-            guard let self = self else { return }
-            if !alive {
-                self.restartBackend()
+        var req = URLRequest(url: API_URL)
+        req.timeoutInterval = 1.5
+        URLSession.shared.dataTask(with: req) { [weak self] _, resp, _ in
+            guard let self = self else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            let ok = (resp as? HTTPURLResponse).map {
+                (200..<300).contains($0.statusCode)
+            } ?? false
+            if !ok {
+                DispatchQueue.main.async { self.restartBackend() }
             }
             task.setTaskCompleted(success: true)
-        }
+        }.resume()
     }
 }

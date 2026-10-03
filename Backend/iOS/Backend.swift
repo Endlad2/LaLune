@@ -151,7 +151,6 @@ public final class Backend {
             case ("POST", "/shutdown"):
                 stop(); return (200, json(["ok": true]))
 
-            // Конфиги
             case ("GET", "/configs"):
                 return (200, loadConfigsJson())
             case ("GET", "/configs/selected"):
@@ -177,7 +176,6 @@ public final class Backend {
             case ("POST", "/configs"):
                 return createConfig(body: body)
 
-            // Настройки
             case ("GET", "/settings"):
                 return (200, loadSettingsJson())
             case ("PUT", "/settings"):
@@ -188,7 +186,6 @@ public final class Backend {
                 saveSettings(defaultSettings())
                 return (200, json(["ok": true]))
 
-            // Device
             case ("GET", "/device/id"):
                 return (200, json(["deviceId": getDeviceId()]))
             case ("POST", "/device/id/regenerate"):
@@ -197,11 +194,10 @@ public final class Backend {
                 return (200, json(["deviceId": new]))
             case ("GET", "/device/info"):
                 return (200, json(["os": "ios", "arch": "arm64",
-                                   "hostname": Host.current().name ?? "",
+                                   "hostname": UIDevice.current.name,
                                    "cores": ProcessInfo.processInfo.processorCount,
                                    "totalMemMb": Int(ProcessInfo.processInfo.physicalMemory / 1024 / 1024)]))
 
-            // VPN
             case ("POST", "/vpn/connect"):
                 return vpnConnect(body: body)
             case ("POST", "/vpn/disconnect"):
@@ -223,7 +219,6 @@ public final class Backend {
             case ("GET", "/vpn/tunconf"):
                 return (200, "{}")
 
-            // Логи
             case ("GET", "/logs"):
                 return (200, jsonArrayFromLogs())
             case ("GET", "/logs/tail"):
@@ -235,7 +230,6 @@ public final class Backend {
             case ("GET", "/logs/export"):
                 return (200, currentLogs().joined(separator: "\n"))
 
-            // Ядро
             case ("GET", "/core/version"):
                 return (200, json(["version": CoreManager.shared.readLatest()]))
             case ("GET", "/core/latest"):
@@ -262,14 +256,12 @@ public final class Backend {
                 }
                 return (200, json(["ok": true]))
 
-            // Update
             case ("GET", "/update/check"):
                 return (200, json(["hasUpdate": false, "remoteTag": "",
                                    "localVersion": VERSION]))
             case ("GET", "/update/url"):
                 return (200, json(["url": "https://github.com/Endlad2/LaLune/releases/latest"]))
 
-            // VK
             case ("GET", "/vk/token/state"):
                 return (200, readVkStateJson())
             case ("POST", "/vk/token/login"):
@@ -292,7 +284,6 @@ public final class Backend {
                 try? FileManager.default.removeItem(at: tokenURL)
                 return (200, json(["ok": true]))
 
-            // VK Calls
             case ("POST", "/vk/calls/start"):
                 return vkCallsStart(body: body)
             case ("POST", "/vk/calls/stop"):
@@ -304,7 +295,6 @@ public final class Backend {
             case ("GET", "/vk/calls/active"):
                 return (200, json(["callIds": activeCallIds]))
 
-            // SmartTunnel
             case ("GET", "/smarttunnel/status"):
                 return (200, json(["running": smarttunnelRunning]))
             case ("POST", "/smarttunnel/start"):
@@ -322,7 +312,6 @@ public final class Backend {
             case ("PUT", "/smarttunnel/args"):
                 return (200, json(["ok": true]))
 
-            // Deploy (заглушка)
             case ("POST", "/deploy/run"):
                 return (200, json(["stub": true, "message": "DeployManager not yet implemented"]))
             case ("GET", "/deploy/status"):
@@ -334,7 +323,6 @@ public final class Backend {
             case ("GET", "/deploy/protocols"):
                 return (200, json(["protocols": [], "stub": true]))
 
-            // Platform
             case ("GET", "/platform/capabilities"):
                 return (200, json([
                     "canShowWebView": true, "canRunTun": true, "canDeploy": false,
@@ -365,7 +353,6 @@ public final class Backend {
             case ("POST", "/platform/share"):
                 return (200, json(["ok": true]))
 
-            // Debug
             case ("GET", "/debug/state"):
                 return (200, json([
                     "logCount": currentLogs().count,
