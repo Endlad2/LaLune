@@ -20,7 +20,7 @@ settings:
 targets:
 
   # ──────────────────────────────────────────────────────────
-  #  Основное приложение
+  #  Основное приложение (Flutter runner)
   # ──────────────────────────────────────────────────────────
   Runner:
     type: application
@@ -39,17 +39,85 @@ targets:
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Entitlements/Runner.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Runner/Runner-Bridging-Header.h
+
+        # Flutter framework'и, сгенерированные `flutter build ios-framework`.
+        # Структура:
+        #   Flutter/Release/Flutter.xcframework
+        #   Flutter/Release/App.xcframework
+        #   Flutter/Release/FlutterPluginRegistrant.xcframework
+        #   Flutter/Release/<PluginName>.xcframework
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/Flutter/Release"
+
+        # Подключаем фреймворки Flutter + App + все плагины.
         OTHER_LDFLAGS:
           - "$(inherited)"
+          - "-framework"
+          - "Flutter"
+          - "-framework"
+          - "App"
+          - "-framework"
+          - "FlutterPluginRegistrant"
+          - "-framework"
+          - "shared_preferences_foundation"
           - "-framework"
           - "NetworkExtension"
           - "-framework"
           - "WebKit"
           - "-framework"
           - "AuthenticationServices"
+
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
+
+        # Скрипты Flutter (аналог того, что делает `flutter create`).
+        # Скрипт `embed_and_thin` копирует Flutter.framework в bundle.
+        # `xcode_backend build` вызывается как пред-сборка.
+
+    # Pre-build: копирование Flutter.xcframework перед линковкой
+    preBuildScripts:
+      - name: "Flutter Build (xcode_backend build)"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          # flutter build ios-framework уже создал фреймворки в Flutter/Release
+          # Этот шаг оставлен для совместимости — при необходимости, здесь
+          # можно вызвать `flutter build ios` (но это отдельный билд).
+          echo "Pre-build: Flutter frameworks already in Flutter/Release"
+
+    postCompileScripts:
+      - name: "Thin Flutter Frameworks (embed_and_thin)"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          # Аналог `xcode_backend.sh embed_and_thin` из обычного Flutter runner.
+          # Тонкие бинарники (arm64) копируются в .app/Frameworks.
+          if [ -f "${SRCROOT}/Flutter/Release/Flutter.xcframework/ios-arm64/Flutter.framework/Flutter" ]; then
+            mkdir -p "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+            for fw in Flutter App FlutterPluginRegistrant shared_preferences_foundation; do
+              SRC="${SRCROOT}/Flutter/Release/${fw}.xcframework/ios-arm64/${fw}.framework"
+              if [ -d "$SRC" ]; then
+                cp -R "$SRC" "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+                echo "Embedded: ${fw}.framework"
+              fi
+            done
+          fi
+
+    postBuildScripts:
+      - name: "Copy Flutter Assets"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          # Копируем flutter_assets (создаётся flutter build ios-framework).
+          if [ -d "${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/App.framework/flutter_assets" ]; then
+            mkdir -p "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+            cp -R "${SRCROOT}/Flutter/Release/App.xcframework/ios-arm64/App.framework/flutter_assets" \
+                  "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/"
+            echo "Copied flutter_assets"
+          fi
+
     dependencies:
       - target: LaLuneTunnel
         embed: true
