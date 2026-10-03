@@ -10,9 +10,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const REPO_LALUNE: &str = "Endlad2/LaLune";
-const REPO_CORE: &str = "Endlad2/csqtt-core";
-
 const URL_LALUNE_ZIP: &str =
     "https://github.com/Endlad2/LaLune/releases/latest/download/LaLune-Windows.zip";
 const URL_BACKEND_ZIP: &str =
@@ -138,7 +135,6 @@ fn main() -> Result<()> {
     let out = out_dir();
     fs::create_dir_all(&out).ok();
 
-    // Не перекачиваем, если уже есть.
     println!("cargo:rerun-if-changed=build.rs");
 
     let client = reqwest::blocking::Client::builder()

@@ -5,6 +5,12 @@
 // При сборке build.rs скачивает все нужные файлы и кладёт их в OUT_DIR.
 // Здесь мы их включаем через include_bytes! и при нажатии «Установить»
 // распаковываем в %TEMP%\.la-lune_downloader\ и запускаем install.ps1 -ci.
+//
+// API native-windows-gui:
+//   * nwg::init()            — инициализация
+//   * nwg::dispatch_thread_events() — блокирующий event loop
+//   * nwg::simple_message()  — модальный MessageBox (блокирует)
+//   * nwg::stop_thread_dispatch() — выход из event loop
 
 #![windows_subsystem = "windows"]
 
@@ -98,8 +104,9 @@ fn stage_resources() -> anyhow::Result<PathBuf> {
         let mut buf = Vec::with_capacity(WINTUN_DLL.len() + 512);
         {
             let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
+            let opts: zip::write::SimpleFileOptions =
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
             zw.start_file("wintun/bin/amd64/wintun.dll", opts)?;
             zw.write_all(WINTUN_DLL)?;
             zw.finish()?;
@@ -116,9 +123,6 @@ fn run_install_ps1(dir: &Path) -> std::io::Result<()> {
     let script = dir.join("install.ps1");
     let script_str = script.to_string_lossy().to_string();
 
-    // -NoProfile        — не читать профиль юзера
-    // -ExecutionPolicy Bypass — обойти политику
-    // -File <script> -ci      — сам скрипт + флаг CI
     let status = Command::new("powershell")
         .args([
             "-NoProfile",
@@ -141,12 +145,12 @@ fn run_install_ps1(dir: &Path) -> std::io::Result<()> {
 // ==== GUI ====
 
 struct Gui {
-    window:        nwg::Window,
-    label_title:   nwg::Label,
-    label_desc:    nwg::Label,
-    btn_install:   nwg::Button,
-    btn_exit:      nwg::Button,
-    label_status:  nwg::Label,
+    window:       nwg::Window,
+    label_title:  nwg::Label,
+    label_desc:   nwg::Label,
+    btn_install:  nwg::Button,
+    btn_exit:     nwg::Button,
+    label_status: nwg::Label,
 }
 
 fn build_gui() -> Result<Gui, nwg::NwgError> {
@@ -201,75 +205,84 @@ fn build_gui() -> Result<Gui, nwg::NwgError> {
         .parent(&window)
         .build(&mut label_status)?;
 
-    Ok(Gui { window, label_title, label_desc, btn_install, btn_exit, label_status })
+    Ok(Gui {
+        window,
+        label_title,
+        label_desc,
+        btn_install,
+        btn_exit,
+        label_status,
+    })
 }
 
 fn main() {
     let gui = match build_gui() {
         Ok(g) => g,
         Err(e) => {
-            nwg::simple_message("LaLune Installer", &format!("Не удалось создать окно: {e}"));
+            // MessageBox напрямую через WinAPI, если даже окно не создалось.
+            let msg = format!("Не удалось создать окно: {e}");
+            let _ = nwg::simple_message("LaLune Installer", &msg);
             return;
         }
     };
 
-    let handle = nwg::GlobalUI::init();
+    // Обработчики событий.
+    let gui_events = nwg::full_bind_event_handler(
+        &gui.window.handle,
+        move |evt, _evt_data, handle| {
+            use nwg::Event as E;
+            match evt {
+                E::OnButtonClick => {
+                    if handle == gui.btn_exit.handle {
+                        nwg::stop_thread_dispatch();
+                    } else if handle == gui.btn_install.handle {
+                        gui.label_status.set_text("Распаковка...");
+                        nwg::simple_message(
+                            "Установка",
+                            "Начинаю установку. Это может занять несколько секунд.",
+                        );
 
-    // Обработчики кнопок
-    let gui_events = nwg::full_bind_event_handler(&gui.window.handle, move |evt, evt_data, handle| {
-        use nwg::Event as E;
-        match evt {
-            E::OnButtonClick => {
-                if handle == gui.btn_exit.handle {
-                    nwg::stop_thread_dispatch();
-                } else if handle == gui.btn_install.handle {
-                    gui.label_status.set_text("Распаковка...");
-                    nwg::ModalMessageBoxSync(
-                        "Установка",
-                        "Начинаю установку. Это может занять несколько секунд.",
-                    );
-
-                    match stage_resources() {
-                        Ok(dir) => {
-                            gui.label_status.set_text("Запуск install.ps1...");
-                            match run_install_ps1(&dir) {
-                                Ok(_) => {
-                                    nwg::simple_message(
-                                        "LaLune Installer",
-                                        "Установка завершена успешно!\n\n\
-                                         Ярлыки LaLune добавлены на рабочий стол \
-                                         и в меню Пуск.",
-                                    );
-                                    nwg::stop_thread_dispatch();
-                                }
-                                Err(e) => {
-                                    nwg::simple_message(
-                                        "LaLune Installer",
-                                        &format!("Ошибка установки:\n{e}"),
-                                    );
-                                    gui.label_status.set_text("Ошибка установки.");
+                        match stage_resources() {
+                            Ok(dir) => {
+                                gui.label_status.set_text("Запуск install.ps1...");
+                                match run_install_ps1(&dir) {
+                                    Ok(_) => {
+                                        nwg::simple_message(
+                                            "LaLune Installer",
+                                            "Установка завершена успешно!\n\n\
+                                             Ярлыки LaLune добавлены на рабочий стол \
+                                             и в меню Пуск.",
+                                        );
+                                        nwg::stop_thread_dispatch();
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("Ошибка установки:\n{e}");
+                                        nwg::simple_message("LaLune Installer", &msg);
+                                        gui.label_status.set_text("Ошибка установки.");
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            nwg::simple_message(
-                                "LaLune Installer",
-                                &format!("Ошибка распаковки:\n{e}"),
-                            );
-                            gui.label_status.set_text("Ошибка распаковки.");
+                            Err(e) => {
+                                let msg = format!("Ошибка распаковки:\n{e}");
+                                nwg::simple_message("LaLune Installer", &msg);
+                                gui.label_status.set_text("Ошибка распаковки.");
+                            }
                         }
                     }
                 }
-            }
-            E::OnWindowClose => {
-                if handle == gui.window.handle {
-                    nwg::stop_thread_dispatch();
+                E::OnWindowClose => {
+                    if handle == gui.window.handle {
+                        nwg::stop_thread_dispatch();
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        }
-    });
+        },
+    );
 
-    handle.join().ok();
-    let _ = &gui;
+    // Блокирующий event loop.
+    nwg::dispatch_thread_events();
+
+    // Cleanup.
+    nwg::unbind_event_handler(&gui_events);
 }
