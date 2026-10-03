@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки (тот же файл, что в Desktop).
+// Настройки (то же, что в Desktop).
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,7 @@ pub struct Settings {
     pub allow_hash_redistribution: bool,
     pub validate_vk_hashes: bool,
     pub enable_smart_tunnel: bool,
+    pub show_core_logs: bool,
 }
 
 impl Default for Settings {
@@ -57,6 +58,7 @@ impl Default for Settings {
             allow_hash_redistribution: false,
             validate_vk_hashes: false,
             enable_smart_tunnel: false,
+            show_core_logs: false,
         }
     }
 }

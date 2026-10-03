@@ -47,6 +47,12 @@ jobs:
             libgtk-3-dev liblzma-dev \
             libstdc++-12-dev
 
+      - name: Install Pillow (для make_icons.py)
+        run: python -m pip install --upgrade pip Pillow
+
+      - name: Generate icons
+        run: python make_icons.py
+
       - name: Build (CI mode)
         run: python build.py --ci --target linux
 
@@ -118,6 +124,12 @@ jobs:
           Write-Host "WindowsSDKVersion: $env:WindowsSDKVersion"
           where.exe cl.exe
           where.exe link.exe
+
+      - name: Install Pillow (для make_icons.py)
+        run: python -m pip install --upgrade pip Pillow
+
+      - name: Generate icons (PNG→ICO + foreground)
+        run: python make_icons.py
 
       - name: Flutter doctor (diagnostics)
         run: flutter doctor -v
@@ -237,9 +249,19 @@ jobs:
           mkdir -p Frontend/android/app/src/main/assets
           cp Core/SmartTunnel.lua Frontend/android/app/src/main/assets/SmartTunnel.lua
 
+      - name: Install Pillow (для make_icons.py)
+        run: python -m pip install --upgrade pip Pillow
+
+      - name: Generate icons (foreground + ico)
+        run: python make_icons.py
+
       - name: Flutter pub get
         working-directory: Frontend
         run: flutter pub get
+
+      - name: Generate launcher icons (mipmap + AppIcon)
+        working-directory: Frontend
+        run: flutter pub run flutter_launcher_icons
 
       - name: Build Android APK (debug)
         working-directory: Frontend

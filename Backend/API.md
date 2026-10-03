@@ -1,7 +1,8 @@
 # LaLune API — `http://127.0.0.1:1062`
 
-Единый HTTP-интерфейс для всех бэкендов (Desktop Rust, Android Kotlin, iOS Swift).
-Все ответы — JSON. Ошибки: `{ "error": "...", "code": 4xx|5xx }`.
+Единый HTTP-интерфейс для всех бэкендов (Desktop Rust, Android Kotlin,
+iOS Swift, OpenWRT Rust). Все ответы — JSON. Ошибки:
+`{ "error": "...", "code": 4xx|5xx }`.
 
 ---
 
@@ -10,29 +11,31 @@
 ### `GET /ping`
 
 ```
+
 { "ok": true, "version": "0.6.0", "os": "linux", "arch": "x86_64", "uptime": 1234 }
+
 ```
 
 ### `GET /version`
 
 ```
+
 { "api": 1, "backend": "0.6.0", "core": "2026.09.12", "ui": "0.6.0" }
+
 ```
 
 ### `GET /events` (SSE)
 
 ```
+
 data: {"type":"log","line":"[INFO] ...","ts":1759331294}
-
+data: {"type":"log","line":"[CORE] [СТАТИСТИКА] ...","ts":1759331294}
 data: {"type":"status","connected":true,"ts":1759331294}
-
 data: {"type":"progress","kind":"core_download","percent":42}
-
 data: {"type":"progress","kind":"vk_token","percent":60,"message":"..."}
-
 data: {"type":"event","name":"tun_ready","data":{"ip":"10.66.67.12","dns":"8.8.8.8"}}
-
 data: {"type":"error","message":"..."}
+
 ```
 
 ### `POST /shutdown` → `{ "ok": true }`
@@ -41,35 +44,33 @@ data: {"type":"error","message":"..."}
 
 ## Конфиги
 
-| Метод ↕▾ | Тело / Ответ ↕▾ |
+| Метод | Тело / Ответ |
 |---|---|
-| −`GET /configs` | `[{"id":1,"protocol":"CSQTT","peer":"host:46000","password":"...","hashes":"...","name":"Home","rawLink":"csqtt://..."}]` |
-| −`GET /configs/{id}` | один конфиг или 404 |
-| −`POST /configs` | `{protocol, link}` или `{protocol, peer, password, hashes, name}` → `{id:42}` |
-| −`PUT /configs/{id}` | как POST → `{ok:true}` |
-| −`DELETE /configs/{id}` | → `{ok:true}` |
-| −`POST /configs/parse` | `{link:"csqtt://..."}` → распарсенный конфиг |
-| −`GET /configs/selected` | выбранный или `{}` |
-| −`PUT /configs/selected` | `{id:42}` или `{}` |
-⚙
+| `GET /configs` | `[{"id":1,"protocol":"CSQTT","peer":"host:46000",...}]` |
+| `GET /configs/{id}` | один конфиг или 404 |
+| `POST /configs` | `{protocol, link}` или `{protocol, peer, password, hashes, name}` → `{id:42}` |
+| `PUT /configs/{id}` | как POST → `{ok:true}` |
+| `DELETE /configs/{id}` | → `{ok:true}` |
+| `POST /configs/parse` | `{link:"csqtt://..."}` → распарсенный конфиг |
+| `GET /configs/selected` | выбранный или `{}` |
+| `PUT /configs/selected` | `{id:42}` или `{}` |
 
 ---
 
 ## Настройки
 
-| Метод ↕▾ | Описание ↕▾ |
+| Метод | Описание |
 |---|---|
-| −`GET /settings` | все настройки |
-| −`PUT /settings` | заменить целиком |
-| −`PATCH /settings` | частично |
-| −`POST /settings/reset` | сброс к дефолтам |
-| −`GET /settings/{key}` | одна |
-| −`PUT /settings/{key}` | обновить одну |
-⚙
+| `GET /settings` | все настройки |
+| `PUT /settings` | заменить целиком |
+| `PATCH /settings` | частично |
+| `POST /settings/reset` | сброс к дефолтам |
+| `GET /settings/{key}` | одна |
+| `PUT /settings/{key}` | обновить одну |
 
 ### Схема настроек
 
-```
+```json
 {
   "peer": "", "vkHashes": "", "vkJsToken": "",
   "workers": 9, "autoApiWorkers": 9,
@@ -79,9 +80,13 @@ data: {"type":"error","message":"..."}
   "turnHost": "", "turnPort": "",
   "captchaMode": "auto", "vkAuthMode": "vkcalls",
   "allowHashRedistribution": false, "validateVkHashes": false,
-  "enableSmartTunnel": false
+  "enableSmartTunnel": false,
+  "showCoreLogs": false
 }
 ```
+
+`showCoreLogs` — показывать ли в UI логи ядра (строки с префиксом `[CORE] `).
+По умолчанию `false`.
 
 ---
 
@@ -112,13 +117,20 @@ data: {"type":"error","message":"..."}
 
 ## Логи
 
+Все эндпоинты поддерживают query-параметр `?source=backend|core|all`
+(по умолчанию `all`):
+
+- `source=backend` — только строки бэкенда (без префикса `[CORE] `)
+- `source=core` — только строки ядра CSQTT (начинаются с `[CORE] `)
+- `source=all` — всё вместе
+
 | Метод ↕▾ | Ответ ↕▾ |
 |---|---|
-| −`GET /logs` | `["line1","line2",...]` |
-| −`GET /logs/tail?lines=100` | последние N |
-| −`DELETE /logs` | `{ok:true}` |
+| −`GET /logs?source=all` | `["line1","line2",...]` |
+| −`GET /logs/tail?lines=100&source=backend` | последние N |
+| −`DELETE /logs` | `{ok:true}` (очищает весь буфер) |
 | −`GET /logs/stream` | SSE только логов |
-| −`GET /logs/export` | `text/plain` файл |
+| −`GET /logs/export?source=all` | `text/plain` файл |
 ⚙
 
 ---
@@ -156,6 +168,7 @@ data: {"type":"error","message":"..."}
 | −`GET /vk/token/state` | `{hasToken,fetching,progress,message}` |
 | −`POST /vk/token/login` | Desktop: запускает Token.ps1/Token.sh. Mobile: `{needsUi:true,authUrl:"https://oauth.vk.ru/..."}` |
 | −`POST /vk/token/submit` | `{token:"vk1.a.xxx"}` → `{ok:true}` |
+| −`GET /vk/token/raw` | `{token:"vk1.a.xxx"}` — сырой токен (для передачи на роутер) |
 | −`DELETE /vk/token` | `{ok:true}` |
 | −`GET /vk/token/validate` | `{valid:true,message:""}` |
 | −`POST /vk/token/fetch/cancel` | `{ok:true}` |
@@ -192,8 +205,6 @@ data: {"type":"error","message":"..."}
 
 ## Deploy (заглушка)
 
-Все методы возвращают `{ "stub": true, "message": "DeployManager not yet implemented" }`:
-
 | Метод ↕▾ | Ответ ↕▾ |
 |---|---|
 | −`POST /deploy/run` | `{stub:true}` |
@@ -226,4 +237,5 @@ data: {"type":"error","message":"..."}
 | −`POST /debug/echo` | эхо тела запроса |
 | −`GET /debug/config` | `{appDir,configsPath,settingsPath,logsPath,tokenPath,corePath}` |
 | −`POST /debug/reload-config` | `{ok:true}` |
-| −
+⚙
+

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // HTTP API. Полностью совпадает с Desktop/src/api.rs.
+// Поддерживает ?source=backend|core|all в /logs*.
 
 use axum::{
     extract::{Path, Query, State},
@@ -26,6 +27,8 @@ use crate::events::Event;
 use crate::state::AppState;
 use crate::vk;
 use crate::vpn;
+
+pub const CORE_PREFIX: &str = "[CORE] ";
 
 pub fn router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
@@ -99,13 +102,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-// ==== Базовые ====
-
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "ok": true, "version": "0.6.0",
-        "os": "linux", "arch": "aarch64",
-        "platform": "openwrt",
+        "os": "linux", "arch": "aarch64", "platform": "openwrt",
         "hostname": hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_default(),
         "uptime": state.uptime(),
     }))
@@ -159,8 +159,6 @@ async fn sse_logs(State(state): State<Arc<AppState>>)
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-// ==== Конфиги ====
-
 async fn configs_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.configs.list() {
         Ok(v) => Json(json!(v)).into_response(),
@@ -189,10 +187,7 @@ struct ConfigCreateBody {
 async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
     let protocol = body.protocol.unwrap_or_else(|| "CSQTT".to_string());
     let mut config = if let Some(link) = body.link {
-        match parse_link(&link) {
-            Ok(c) => c,
-            Err(e) => return err(400, e.to_string()),
-        }
+        match parse_link(&link) { Ok(c) => c, Err(e) => return err(400, e.to_string()) }
     } else {
         ConfigItem {
             id: 0, protocol,
@@ -204,7 +199,6 @@ async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<Con
         }
     };
     if config.name.is_empty() { config.name = config.peer.clone(); }
-
     match state.configs.insert(&config) {
         Ok(id) => Json(json!({"id": id})).into_response(),
         Err(e) => err(500, e.to_string()),
@@ -273,8 +267,6 @@ async fn selected_set(State(state): State<Arc<AppState>>, Json(body): Json<Selec
     }
 }
 
-// ==== Настройки ====
-
 async fn settings_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let s = state.settings.read().clone();
     Json(json!(s))
@@ -322,8 +314,6 @@ async fn settings_put_key(State(state): State<Arc<AppState>>, Path(key): Path<St
     Json(json!({"ok": true})).into_response()
 }
 
-// ==== Device ====
-
 async fn device_id(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let id = state.settings.read().device_id.clone();
     Json(json!({"deviceId": id}))
@@ -344,8 +334,6 @@ async fn device_info() -> impl IntoResponse {
         "hostname": hostname, "cores": cores, "totalMemMb": 0,
     }))
 }
-
-// ==== VPN ====
 
 #[derive(Deserialize)]
 struct ConnectBody { #[serde(rename = "configId")] config_id: Option<i64> }
@@ -472,20 +460,40 @@ async fn vpn_tunconf(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match c { Some(c) => Json(json!(c)).into_response(), None => Json(json!({})).into_response() }
 }
 
-// ==== Логи ====
+// ---------- ЛОГИ с фильтром по source ----------
 
-async fn logs_all(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!(state.logs_snapshot()))
+fn filter_logs(all: &[String], source: Option<&str>) -> Vec<String> {
+    match source {
+        Some("core") => all.iter().filter(|l| l.starts_with(CORE_PREFIX)).cloned().collect(),
+        Some("backend") => all.iter().filter(|l| !l.starts_with(CORE_PREFIX)).cloned().collect(),
+        _ => all.to_vec(),
+    }
 }
 
 #[derive(Deserialize)]
-struct TailQuery { lines: Option<usize> }
+struct LogsQuery {
+    lines: Option<usize>,
+    source: Option<String>,
+}
 
-async fn logs_tail(State(state): State<Arc<AppState>>, Query(q): Query<TailQuery>) -> impl IntoResponse {
+async fn logs_all(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> impl IntoResponse {
+    let logs = state.logs_snapshot();
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    Json(json!(filtered))
+}
+
+async fn logs_tail(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> impl IntoResponse {
     let n = q.lines.unwrap_or(100);
     let logs = state.logs_snapshot();
-    let start = logs.len().saturating_sub(n);
-    Json(json!(logs[start..].to_vec()))
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    let start = filtered.len().saturating_sub(n);
+    Json(json!(filtered[start..].to_vec()))
 }
 
 async fn logs_clear(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -493,12 +501,16 @@ async fn logs_clear(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-async fn logs_export(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn logs_export(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> impl IntoResponse {
     let logs = state.logs_snapshot();
-    (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], logs.join("\n"))
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], filtered.join("\n"))
 }
 
-// ==== Ядро ====
+// ---------- остальное без изменений ----------
 
 async fn core_version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let version = tokio::fs::read_to_string(state.app_dir.join("LATEST")).await
@@ -578,8 +590,6 @@ async fn core_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-// ==== Update ====
-
 async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
     let url = "https://api.github.com/repos/Endlad2/LaLune/releases/latest";
@@ -603,20 +613,13 @@ async fn update_url() -> impl IntoResponse {
     Json(json!({"url": "https://github.com/Endlad2/LaLune/releases/latest"}))
 }
 
-// ==== VK ====
-
 async fn vk_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!(vk::token_state(&state.app_dir)))
 }
 
 async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // OpenWRT не имеет браузера. Возвращаем authUrl — UI сам авторизуется.
     let _ = state;
-    Json(json!({
-        "ok": true,
-        "needsUi": true,
-        "authUrl": vk::auth_url(),
-    })).into_response()
+    Json(json!({"ok": true, "needsUi": true, "authUrl": vk::auth_url()})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -647,8 +650,6 @@ async fn vk_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.log("[VK] token deleted");
     Json(json!({"ok": true}))
 }
-
-// ==== VK Calls ====
 
 #[derive(Deserialize)]
 struct VkCallsStartBody {
@@ -695,13 +696,10 @@ async fn vk_calls_stop(State(state): State<Arc<AppState>>, Json(body): Json<VkCa
 }
 
 async fn vk_calls_stop_all(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = state;
-    Json(json!({"finished": 0}))
+    let _ = state; Json(json!({"finished": 0}))
 }
 
 async fn vk_calls_active() -> impl IntoResponse { Json(json!({"callIds": []})) }
-
-// ==== SmartTunnel ====
 
 async fn st_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"running": *state.smarttunnel_running.lock()}))
@@ -719,16 +717,12 @@ async fn st_logs() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
 async fn st_args() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
 async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse { Json(json!({"ok": true})) }
 
-// ==== Deploy — заглушка ====
-
 async fn deploy_stub() -> impl IntoResponse {
     Json(json!({"stub": true, "message": "DeployManager not yet implemented"}))
 }
 async fn deploy_status_stub() -> impl IntoResponse { Json(json!({"busy": false, "stub": true})) }
 async fn deploy_log_stub() -> impl IntoResponse { Json(json!({"log": "", "stub": true})) }
 async fn deploy_protocols_stub() -> impl IntoResponse { Json(json!({"protocols": [], "stub": true})) }
-
-// ==== Platform ====
 
 async fn platform_caps() -> impl IntoResponse {
     Json(json!({
@@ -746,8 +740,6 @@ async fn platform_open_url() -> impl IntoResponse { Json(json!({"ok": true})) }
 async fn platform_notify() -> impl IntoResponse { Json(json!({"ok": true})) }
 async fn platform_open_path() -> impl IntoResponse { Json(json!({"ok": true})) }
 async fn platform_share() -> impl IntoResponse { Json(json!({"ok": true})) }
-
-// ==== Debug ====
 
 async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let logs = state.logs_snapshot();
@@ -785,8 +777,6 @@ async fn debug_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
     Json(json!({"ok": true}))
 }
-
-// ==== Helpers ====
 
 fn err(code: u16, msg: impl Into<String>) -> axum::response::Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

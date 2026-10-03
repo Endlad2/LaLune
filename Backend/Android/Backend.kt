@@ -5,7 +5,8 @@
 // Запускает HTTP-сервер на 127.0.0.1:1062, управляет VpnService,
 // ядром CSQTT, VK-авторизацией (нативный WebView), конфигами, настройками.
 //
-// Точка входа: Backend(context).attachActivity(activity).run()
+// Логи ядра маркируются префиксом [CORE] и попадают в общий поток /logs.
+// Фронт фильтрует их по настройке showCoreLogs.
 //
 // package = com.lalune.lalune — тот же, что у MainActivity.
 
@@ -60,6 +61,9 @@ class Backend(private val context: Context) {
         const val VK_API_VERSION = "5.199"
 
         const val REQ_VPN = 101
+
+        // Префикс строк ядра CSQTT в общем потоке логов.
+        const val CORE_PREFIX = "[CORE] "
     }
 
     // ---------- Пути ----------
@@ -330,15 +334,19 @@ class Backend(private val context: Context) {
                 )
                 path == "/vpn/tunconf" && method == "GET" -> 200 to "{}"
 
-                path == "/logs" && method == "GET" -> 200 to JSONArray(logs.toList()).toString()
+                // ---------- ЛОГИ ----------
+                path == "/logs" && method == "GET" ->
+                    200 to JSONArray(filterLogs(logs.toList(), queryParam(query, "source"))).toString()
                 path == "/logs/tail" && method == "GET" -> {
                     val n = queryParam(query, "lines")?.toIntOrNull() ?: 100
-                    val start = (logs.size - n).coerceAtLeast(0)
-                    val tail = if (start < logs.size) logs.subList(start, logs.size).toList() else emptyList()
+                    val filtered = filterLogs(logs.toList(), queryParam(query, "source"))
+                    val start = (filtered.size - n).coerceAtLeast(0)
+                    val tail = if (start < filtered.size) filtered.subList(start, filtered.size) else emptyList()
                     200 to JSONArray(tail).toString()
                 }
                 path == "/logs" && method == "DELETE" -> { logs.clear(); 200 to jsonOk("ok" to true) }
-                path == "/logs/export" && method == "GET" -> 200 to logs.joinToString("\n")
+                path == "/logs/export" && method == "GET" ->
+                    200 to filterLogs(logs.toList(), queryParam(query, "source")).joinToString("\n")
 
                 path == "/core/version" && method == "GET" ->
                     200 to jsonOk("version" to (coreManager?.readLatest() ?: ""))
@@ -482,6 +490,20 @@ class Backend(private val context: Context) {
         }
     }
 
+    /**
+     * Фильтр логов по источнику.
+     *   source == "core"    → только строки с префиксом [CORE]
+     *   source == "backend" → только строки БЕЗ префикса
+     *   source == null/"all"→ все строки
+     */
+    private fun filterLogs(all: List<String>, source: String?): List<String> {
+        return when (source) {
+            "core" -> all.filter { it.startsWith(CORE_PREFIX) }
+            "backend" -> all.filter { !it.startsWith(CORE_PREFIX) }
+            else -> all
+        }
+    }
+
     // ============================================================
     //  SSE
     // ============================================================
@@ -532,12 +554,23 @@ class Backend(private val context: Context) {
         eventSubscribers.forEach { it.send(event) }
     }
 
+    /** Лог от бэкенда (без префикса). */
     private fun addLog(line: String) {
         Log.d(TAG, line)
         logs.add(line)
-        if (logs.size > 1000) logs.removeAt(0)
+        if (logs.size > 2000) logs.removeAt(0)
         try { logsFile.appendText(line + "\n") } catch (_: Exception) {}
         emit("log", JSONObject().put("line", line).put("ts", System.currentTimeMillis() / 1000))
+    }
+
+    /** Лог от ядра CSQTT — с префиксом [CORE]. */
+    private fun addCoreLog(line: String) {
+        Log.d(TAG, "[core] $line")
+        val tagged = CORE_PREFIX + line
+        logs.add(tagged)
+        if (logs.size > 2000) logs.removeAt(0)
+        // logs.log уже содержит сырые строки ядра — не дублируем в файл.
+        emit("log", JSONObject().put("line", tagged).put("ts", System.currentTimeMillis() / 1000))
     }
 
     // ============================================================
@@ -578,6 +611,7 @@ class Backend(private val context: Context) {
         put("allowHashRedistribution", false)
         put("validateVkHashes", false)
         put("enableSmartTunnel", false)
+        put("showCoreLogs", false)
     }
 
     private fun loadSettings(): JSONObject = try {
@@ -611,22 +645,17 @@ class Backend(private val context: Context) {
      * с новым deviceId. Цикла нет.
      */
     private fun getDeviceId(): String {
-        // Быстрый путь: файл существует — читаем напрямую.
         if (settingsFile.exists()) {
             try {
                 val s = JSONObject(settingsFile.readText())
                 val id = s.optString("deviceId", "")
                 if (id.isNotBlank()) return id
-                // В файле нет deviceId — генерируем и дописываем.
                 val newId = UUID.randomUUID().toString().replace("-", "")
                 s.put("deviceId", newId)
                 saveSettings(s)
                 return newId
-            } catch (_: Exception) {
-                // Файл битый — падаем в fallback ниже.
-            }
+            } catch (_: Exception) {}
         }
-        // Файла нет или он битый — генерируем и пишем дефолт.
         val newId = UUID.randomUUID().toString().replace("-", "")
         val s = defaultSettings()
         s.put("deviceId", newId)
@@ -790,7 +819,9 @@ class Backend(private val context: Context) {
 
         val password = sel?.optString("password", "") ?: settings.optString("password", "")
         val hashes = sel?.optString("hashes", "") ?: settings.optString("vkHashes", "")
-        val started = cm.startCore(peer, password, hashes) { line -> addLog(line) }
+
+        // Колбэк ядра → addCoreLog (с префиксом [CORE]).
+        val started = cm.startCore(peer, password, hashes) { line -> addCoreLog(line) }
         if (!started) return 500 to jsonErr("core start failed")
 
         val act = activity

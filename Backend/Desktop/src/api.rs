@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // HTTP API: все роуты, обработчики, SSE.
+//
+// Логи: строки ядра маркируются префиксом `[CORE] `. Параметр
+// `?source=backend|core|all` фильтрует /logs* (default: all).
 
 use axum::{
     extract::{Path, Query, State},
@@ -27,6 +30,9 @@ use crate::state::AppState;
 use crate::vk;
 use crate::vpn;
 
+/// Префикс строк ядра CSQTT в общем потоке логов.
+pub const CORE_PREFIX: &str = "[CORE] ";
+
 pub fn router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -34,46 +40,30 @@ pub fn router(state: Arc<AppState>) -> Router {
         .allow_headers(Any);
 
     Router::new()
-        // Базовые
         .route("/ping", get(ping))
         .route("/version", get(version))
         .route("/events", get(sse_events))
         .route("/shutdown", post(shutdown))
-        // Конфиги
         .route("/configs", get(configs_list).post(configs_create))
         .route("/configs/parse", post(configs_parse))
         .route("/configs/selected", get(selected_get).put(selected_set))
-        .route(
-            "/configs/:id",
-            get(configs_get).put(configs_update).delete(configs_delete),
-        )
-        // Настройки
-        .route(
-            "/settings",
-            get(settings_get).put(settings_put).patch(settings_patch),
-        )
+        .route("/configs/:id", get(configs_get).put(configs_update).delete(configs_delete))
+        .route("/settings", get(settings_get).put(settings_put).patch(settings_patch))
         .route("/settings/reset", post(settings_reset))
-        .route(
-            "/settings/:key",
-            get(settings_get_key).put(settings_put_key),
-        )
-        // Device
+        .route("/settings/:key", get(settings_get_key).put(settings_put_key))
         .route("/device/id", get(device_id))
         .route("/device/id/regenerate", post(device_id_regen))
         .route("/device/info", get(device_info))
-        // VPN
         .route("/vpn/connect", post(vpn_connect))
         .route("/vpn/disconnect", post(vpn_disconnect))
         .route("/vpn/status", get(vpn_status))
         .route("/vpn/reconnect", post(vpn_reconnect))
         .route("/vpn/stats", get(vpn_stats))
         .route("/vpn/tunconf", get(vpn_tunconf))
-        // Логи
         .route("/logs", get(logs_all).delete(logs_clear))
         .route("/logs/tail", get(logs_tail))
         .route("/logs/stream", get(sse_logs))
         .route("/logs/export", get(logs_export))
-        // Ядро
         .route("/core/version", get(core_version))
         .route("/core/latest", get(core_latest))
         .route("/core/check", get(core_check))
@@ -82,41 +72,34 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/core/path", get(core_path))
         .route("/core/protocols", get(core_protocols))
         .route("/core", delete(core_delete))
-        // Обновления
         .route("/update/check", get(update_check))
         .route("/update/url", get(update_url))
-        // VK
         .route("/vk/token/state", get(vk_state))
         .route("/vk/token/login", post(vk_login))
         .route("/vk/token/submit", post(vk_submit))
         .route("/vk/token/validate", get(vk_validate))
         .route("/vk/token/fetch/cancel", post(vk_cancel))
         .route("/vk/token", delete(vk_delete))
-        // VK Calls
         .route("/vk/calls/start", post(vk_calls_start))
         .route("/vk/calls/stop", post(vk_calls_stop))
         .route("/vk/calls/stop-all", post(vk_calls_stop_all))
         .route("/vk/calls/active", get(vk_calls_active))
-        // SmartTunnel
         .route("/smarttunnel/status", get(st_status))
         .route("/smarttunnel/start", post(st_start))
         .route("/smarttunnel/stop", post(st_stop))
         .route("/smarttunnel/reload", post(st_reload))
         .route("/smarttunnel/logs", get(st_logs))
         .route("/smarttunnel/args", get(st_args).put(st_args_put))
-        // Deploy — заглушки
         .route("/deploy/run", post(deploy_stub))
         .route("/deploy/status", get(deploy_status_stub))
         .route("/deploy/log", get(deploy_log_stub))
         .route("/deploy/cancel", post(deploy_stub))
         .route("/deploy/protocols", get(deploy_protocols_stub))
-        // Platform
         .route("/platform/capabilities", get(platform_caps))
         .route("/platform/open-url", post(platform_open_url))
         .route("/platform/notify", post(platform_notify))
         .route("/platform/open-path", post(platform_open_path))
         .route("/platform/share", post(platform_share))
-        // Debug
         .route("/debug/state", get(debug_state))
         .route("/debug/echo", post(debug_echo))
         .route("/debug/config", get(debug_config))
@@ -245,9 +228,7 @@ async fn configs_create(
             raw_link: String::new(),
         }
     };
-    if config.name.is_empty() {
-        config.name = config.peer.clone();
-    }
+    if config.name.is_empty() { config.name = config.peer.clone(); }
 
     match state.configs.insert(&config) {
         Ok(id) => Json(json!({"id": id})).into_response(),
@@ -276,9 +257,7 @@ async fn configs_update(
             raw_link: String::new(),
         }
     };
-    if config.name.is_empty() {
-        config.name = config.peer.clone();
-    }
+    if config.name.is_empty() { config.name = config.peer.clone(); }
     match state.configs.update(id, &config) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, e.to_string()),
@@ -296,9 +275,7 @@ async fn configs_delete(
 }
 
 #[derive(Deserialize)]
-struct ParseBody {
-    link: String,
-}
+struct ParseBody { link: String }
 
 async fn configs_parse(Json(body): Json<ParseBody>) -> impl IntoResponse {
     match parse_link(&body.link) {
@@ -316,9 +293,7 @@ async fn selected_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
-struct SelectedSetBody {
-    id: Option<i64>,
-}
+struct SelectedSetBody { id: Option<i64> }
 
 async fn selected_set(
     State(state): State<Arc<AppState>>,
@@ -358,9 +333,7 @@ async fn settings_put(
     };
     s.normalize();
     *state.settings.write() = s;
-    if let Err(e) = state.save_settings() {
-        return err(500, e.to_string());
-    }
+    if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
     Json(json!({"ok": true})).into_response()
 }
 
@@ -369,13 +342,9 @@ async fn settings_patch(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
-    if let Err(e) = s.merge_from_json(body) {
-        return err(400, e.to_string());
-    }
+    if let Err(e) = s.merge_from_json(body) { return err(400, e.to_string()); }
     *state.settings.write() = s;
-    if let Err(e) = state.save_settings() {
-        return err(500, e.to_string());
-    }
+    if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
     Json(json!({"ok": true})).into_response()
 }
 
@@ -404,9 +373,7 @@ async fn settings_put_key(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
-    if let Err(e) = s.set_field(&key, body) {
-        return err(400, e.to_string());
-    }
+    if let Err(e) = s.set_field(&key, body) { return err(400, e.to_string()); }
     *state.settings.write() = s;
     let _ = state.save_settings();
     Json(json!({"ok": true})).into_response()
@@ -482,14 +449,7 @@ async fn vpn_connect(
             Some(v) => v,
             None => return err(500, "cannot fetch LATEST"),
         };
-        if let Err(e) = core_manager::download_core(
-            &client,
-            &version,
-            &state.core_path,
-            &state.events,
-        )
-        .await
-        {
+        if let Err(e) = core_manager::download_core(&client, &version, &state.core_path, &state.events).await {
             return err(500, format!("download failed: {}", e));
         }
     }
@@ -498,21 +458,14 @@ async fn vpn_connect(
     let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
     state.log(format!("[VPN] core args: {}", args.join(" ")));
 
-    let core = match CoreProcess::spawn(
-        &state.core_path,
-        &args,
-        &state.logs_path,
-        state.events.clone(),
-    )
-    .await
-    {
+    let core = match CoreProcess::spawn(&state.core_path, &args, &state.logs_path, state.events.clone()).await {
         Ok(c) => c,
         Err(e) => return err(500, format!("spawn failed: {}", e)),
     };
     *state.core.lock() = Some(core);
 
-    // Фоновый watchdog: читает лог ядра, ждёт TUNCONF + Активных>0 (2 тика подряд),
-    // добавляет bypass-маршруты для TURN/Relay (Windows), поднимает TUN.
+    // Watchdog: читает logs.log, ждёт TUNCONF + Активных>0 два тика подряд,
+    // добавляет bypass-маршруты, поднимает TUN.
     let state2 = state.clone();
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -531,33 +484,24 @@ async fn vpn_connect(
                         let start = (last_size as usize).min(content.len());
                         let new_part = &content[start..];
                         for line in new_part.lines() {
-                            // 1. TUNCONF
                             if let Some((ip, dns)) = vpn::parse_tunconf(line) {
                                 tun_ip = Some(ip);
                                 tun_dns = Some(dns);
                             }
 
-                            // 2. TURN/Relay → bypass-маршруты (только Windows)
                             #[cfg(target_os = "windows")]
                             if line.contains("TURN") || line.contains("Relay") {
                                 for ip in vpn::extract_ipv4_addrs(line) {
                                     if bypass_ips_seen.insert(ip.clone()) {
                                         vpn::add_bypass_route(&state2.vpn, &ip);
-                                        state2.log(format!(
-                                            "[TUN] bypass route added for {}",
-                                            ip
-                                        ));
+                                        state2.log(format!("[TUN] bypass route added for {}", ip));
                                     }
                                 }
                             }
 
-                            // 3. Статистика: Активных>0 два тика подряд
                             if let Some((active, _traffic)) = vpn::parse_stats(line) {
-                                if active > 0 {
-                                    consecutive_active_ticks += 1;
-                                } else {
-                                    consecutive_active_ticks = 0;
-                                }
+                                if active > 0 { consecutive_active_ticks += 1; }
+                                else { consecutive_active_ticks = 0; }
                             }
                         }
                         last_size = meta.len();
@@ -565,12 +509,7 @@ async fn vpn_connect(
                 }
             }
 
-            // Условия для поднятия TUN:
-            //   есть TUNCONF  +  Активных>0 зафиксировано минимум 2 тика подряд.
-            if tun_ip.is_some()
-                && tun_dns.is_some()
-                && consecutive_active_ticks >= 2
-            {
+            if tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2 {
                 let ip = tun_ip.clone().unwrap();
                 let dns = tun_dns.clone().unwrap();
                 state2.log(format!(
@@ -578,13 +517,9 @@ async fn vpn_connect(
                     ip, dns, consecutive_active_ticks
                 ));
 
-                if let Err(e) =
-                    vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone())
-                {
+                if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
                     state2.log(format!("[VPN] tun start failed: {}", e));
-                    state2
-                        .events
-                        .emit(Event::error(format!("tun start failed: {}", e)));
+                    state2.events.emit(Event::error(format!("tun start failed: {}", e)));
                     return;
                 }
 
@@ -599,9 +534,7 @@ async fn vpn_connect(
         }
 
         if !tun_started {
-            state2.log(
-                "[VPN] timeout: TUNCONF or Активных>0 not seen within 90s",
-            );
+            state2.log("[VPN] timeout: TUNCONF or Активных>0 not seen within 90s");
             state2.events.emit(Event::status(false));
         }
     });
@@ -614,24 +547,14 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
     state.vpn.stop();
     vpn::cleanup_routes(&state.vpn, &state.events);
 
-    let maybe_proc = {
-        let mut core = state.core.lock();
-        core.take()
-    };
-    if let Some(mut p) = maybe_proc {
-        let _ = p.kill().await;
-    }
+    let maybe_proc = { let mut core = state.core.lock(); core.take() };
+    if let Some(mut p) = maybe_proc { let _ = p.kill().await; }
     state.events.emit(Event::status(false));
     Json(json!({"ok": true}))
 }
 
 async fn vpn_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let cfg_id = state
-        .selected_config
-        .read()
-        .as_ref()
-        .map(|c| c.id)
-        .unwrap_or(0);
+    let cfg_id = state.selected_config.read().as_ref().map(|c| c.id).unwrap_or(0);
     let s = state.vpn.status(cfg_id);
     Json(json!(s))
 }
@@ -639,11 +562,7 @@ async fn vpn_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn vpn_reconnect(state: State<Arc<AppState>>) -> impl IntoResponse {
     let _ = vpn_disconnect(state.clone()).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let _ = vpn_connect(
-        state,
-        Json(ConnectBody { config_id: None }),
-    )
-    .await;
+    let _ = vpn_connect(state, Json(ConnectBody { config_id: None })).await;
     Json(json!({"ok": true}))
 }
 
@@ -654,34 +573,45 @@ async fn vpn_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn vpn_tunconf(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let c = state.vpn.tun_conf.lock().clone();
-    match c {
-        Some(c) => Json(json!(c)).into_response(),
-        None => Json(json!({})).into_response(),
-    }
+    match c { Some(c) => Json(json!(c)).into_response(), None => Json(json!({})).into_response() }
 }
 
 // ============================================================
 //  Логи
 // ============================================================
 
-async fn logs_all(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let logs = state.logs_snapshot();
-    Json(json!(logs))
+fn filter_logs(all: &[String], source: Option<&str>) -> Vec<String> {
+    match source {
+        Some("core") => all.iter().filter(|l| l.starts_with(CORE_PREFIX)).cloned().collect(),
+        Some("backend") => all.iter().filter(|l| !l.starts_with(CORE_PREFIX)).cloned().collect(),
+        _ => all.to_vec(),
+    }
 }
 
 #[derive(Deserialize)]
-struct TailQuery {
+struct LogsQuery {
     lines: Option<usize>,
+    source: Option<String>,
+}
+
+async fn logs_all(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> impl IntoResponse {
+    let logs = state.logs_snapshot();
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    Json(json!(filtered))
 }
 
 async fn logs_tail(
     State(state): State<Arc<AppState>>,
-    Query(q): Query<TailQuery>,
+    Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
     let n = q.lines.unwrap_or(100);
     let logs = state.logs_snapshot();
-    let start = logs.len().saturating_sub(n);
-    Json(json!(logs[start..].to_vec()))
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    let start = filtered.len().saturating_sub(n);
+    Json(json!(filtered[start..].to_vec()))
 }
 
 async fn logs_clear(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -689,35 +619,26 @@ async fn logs_clear(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-async fn logs_export(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn logs_export(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<LogsQuery>,
+) -> impl IntoResponse {
     let logs = state.logs_snapshot();
-    let body = logs.join("\n");
-    (
-        StatusCode::OK,
-        [("content-type", "text/plain; charset=utf-8")],
-        body,
-    )
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    let body = filtered.join("\n");
+    (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], body)
 }
 
-// ============================================================
-//  Ядро
-// ============================================================
+// ... остальные хендлеры без изменений ...
 
 async fn core_version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let latest_path = state.app_dir.join("LATEST");
-    let version = tokio::fs::read_to_string(&latest_path)
-        .await
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let version = tokio::fs::read_to_string(state.app_dir.join("LATEST"))
+        .await.unwrap_or_default().trim().to_string();
     Json(json!({"version": version}))
 }
 
 async fn core_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
     match core_manager::fetch_latest(&client, &state.events).await {
         Some(v) => Json(json!({"version": v})).into_response(),
         None => err(500, "cannot fetch LATEST"),
@@ -725,49 +646,25 @@ async fn core_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn core_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap();
-    let remote = core_manager::fetch_latest(&client, &state.events)
-        .await
-        .unwrap_or_default();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+    let remote = core_manager::fetch_latest(&client, &state.events).await.unwrap_or_default();
     let local = tokio::fs::read_to_string(state.app_dir.join("LATEST"))
-        .await
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .await.unwrap_or_default().trim().to_string();
     let has_update = !remote.is_empty() && remote != local;
-    Json(json!({
-        "hasUpdate": has_update,
-        "local": local,
-        "remote": remote,
-    }))
+    Json(json!({"hasUpdate": has_update, "local": local, "remote": remote}))
 }
 
 async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if *state.core_downloading.lock() {
-        return err(409, "already downloading");
-    }
+    if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
     let state2 = state.clone();
     tokio::spawn(async move {
         state2.events.emit(Event::progress("core_download", 0));
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .unwrap();
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
         if let Some(version) = core_manager::fetch_latest(&client, &state2.events).await {
             state2.events.emit(Event::progress("core_download", 20));
-            match core_manager::download_core(
-                &client,
-                &version,
-                &state2.core_path,
-                &state2.events,
-            )
-            .await
-            {
+            match core_manager::download_core(&client, &version, &state2.core_path, &state2.events).await {
                 Ok(_) => {
                     let _ = tokio::fs::write(state2.app_dir.join("LATEST"), &version).await;
                     state2.events.emit(Event::progress("core_download", 100));
@@ -786,23 +683,13 @@ async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoRes
 }
 
 async fn core_download_sync(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if *state.core_downloading.lock() {
-        return err(409, "already downloading");
-    }
+    if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
     let version = match core_manager::fetch_latest(&client, &state.events).await {
-        Some(v) => v,
-        None => {
-            *state.core_downloading.lock() = false;
-            return err(500, "cannot fetch LATEST");
-        }
+        Some(v) => v, None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
     };
-    let result =
-        core_manager::download_core(&client, &version, &state.core_path, &state.events).await;
+    let result = core_manager::download_core(&client, &version, &state.core_path, &state.events).await;
     *state.core_downloading.lock() = false;
 
     match result {
@@ -827,56 +714,31 @@ async fn core_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-// ============================================================
-//  Update
-// ============================================================
-
 async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .unwrap();
-
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
     let url = "https://api.github.com/repos/Endlad2/LaLune/releases/latest";
-    let resp = client
-        .get(url)
+    let resp = client.get(url)
         .header("User-Agent", core_manager::USER_AGENT_BROWSER)
         .header("Accept", "application/vnd.github+json")
-        .send()
-        .await;
-
+        .send().await;
     let remote_tag = match resp {
-        Ok(r) => r
-            .json::<Value>()
-            .await
-            .ok()
+        Ok(r) => r.json::<Value>().await.ok()
             .and_then(|v| v.get("tag_name").and_then(|x| x.as_str()).map(String::from))
             .unwrap_or_default(),
         Err(_) => String::new(),
     };
-
     let local = "0.6.0";
     let has_update = !remote_tag.is_empty() && remote_tag != local;
-
     let _ = &state;
-    Json(json!({
-        "hasUpdate": has_update,
-        "remoteTag": remote_tag,
-        "localVersion": local,
-    }))
+    Json(json!({"hasUpdate": has_update, "remoteTag": remote_tag, "localVersion": local}))
 }
 
 async fn update_url() -> impl IntoResponse {
     Json(json!({"url": "https://github.com/Endlad2/LaLune/releases/latest"}))
 }
 
-// ============================================================
-//  VK
-// ============================================================
-
 async fn vk_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let s = vk::token_state(&state.app_dir);
-    Json(json!(s))
+    Json(json!(vk::token_state(&state.app_dir)))
 }
 
 async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -889,29 +751,19 @@ async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
-        Json(json!({
-            "ok": true,
-            "needsUi": true,
-            "authUrl": vk::auth_url(),
-        }))
-        .into_response()
+        Json(json!({"ok": true, "needsUi": true, "authUrl": vk::auth_url()})).into_response()
     }
 }
 
 #[derive(Deserialize)]
-struct VkSubmitBody {
-    token: String,
-}
+struct VkSubmitBody { token: String }
 
 async fn vk_submit(
     State(state): State<Arc<AppState>>,
     Json(body): Json<VkSubmitBody>,
 ) -> impl IntoResponse {
     match vk::save_token(&state.app_dir, &body.token) {
-        Ok(_) => {
-            state.log("[VK] token saved via /vk/token/submit");
-            Json(json!({"ok": true})).into_response()
-        }
+        Ok(_) => { state.log("[VK] token saved via /vk/token/submit"); Json(json!({"ok": true})).into_response() }
         Err(e) => err(500, e.to_string()),
     }
 }
@@ -920,18 +772,14 @@ async fn vk_validate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match vk::read_token(&state.app_dir) {
         Some(t) => match vk::validate_token(&t).await {
             Ok(true) => Json(json!({"valid": true, "message": ""})).into_response(),
-            Ok(false) => {
-                Json(json!({"valid": false, "message": "invalid token"})).into_response()
-            }
+            Ok(false) => Json(json!({"valid": false, "message": "invalid token"})).into_response(),
             Err(e) => Json(json!({"valid": false, "message": e.to_string()})).into_response(),
         },
         None => Json(json!({"valid": false, "message": "no token"})).into_response(),
     }
 }
 
-async fn vk_cancel() -> impl IntoResponse {
-    Json(json!({"ok": true}))
-}
+async fn vk_cancel() -> impl IntoResponse { Json(json!({"ok": true})) }
 
 async fn vk_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let _ = vk::delete_token(&state.app_dir);
@@ -939,33 +787,21 @@ async fn vk_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-// ============================================================
-//  VK Calls
-// ============================================================
-
 #[derive(Deserialize)]
 struct VkCallsStartBody {
     workers: Option<i32>,
-    #[serde(rename = "autoApiWorkers")]
-    auto_api_workers: Option<i32>,
+    #[serde(rename = "autoApiWorkers")] auto_api_workers: Option<i32>,
 }
 
 async fn vk_calls_start(
     State(state): State<Arc<AppState>>,
     Json(body): Json<VkCallsStartBody>,
 ) -> impl IntoResponse {
-    let token = match vk::read_token(&state.app_dir) {
-        Some(t) => t,
-        None => return err(400, "no VK token"),
-    };
-
+    let token = match vk::read_token(&state.app_dir) { Some(t) => t, None => return err(400, "no VK token") };
     let settings = state.settings.read().clone();
     let workers = body.workers.unwrap_or(settings.workers);
-    let auto_api_workers = body
-        .auto_api_workers
-        .unwrap_or(settings.auto_api_workers);
+    let auto_api_workers = body.auto_api_workers.unwrap_or(settings.auto_api_workers);
     let count = vk::call_count_for_workers(workers, auto_api_workers);
-
     let client = vk::VkApiClient::new(token);
     let mut hashes = Vec::new();
     let mut call_ids = Vec::new();
@@ -977,118 +813,63 @@ async fn vk_calls_start(
         }
         let result = client.start_call().await;
         if result.is_success() {
-            hashes.push(result.hash.clone());
-            call_ids.push(result.call_id.clone());
+            hashes.push(result.hash.clone()); call_ids.push(result.call_id.clone());
         } else if result.token_invalid() {
-            state.log("[VK CALLS] token invalid");
             return err(401, "VK token invalid");
         }
     }
 
-    if hashes.is_empty() {
-        return err(500, "no calls created");
-    }
-
-    Json(json!({
-        "hashes": hashes,
-        "callIds": call_ids,
-    }))
-    .into_response()
+    if hashes.is_empty() { return err(500, "no calls created"); }
+    Json(json!({"hashes": hashes, "callIds": call_ids})).into_response()
 }
 
 #[derive(Deserialize)]
-struct VkCallsStopBody {
-    #[serde(rename = "callIds")]
-    call_ids: Vec<String>,
-}
+struct VkCallsStopBody { #[serde(rename = "callIds")] call_ids: Vec<String> }
 
 async fn vk_calls_stop(
     State(state): State<Arc<AppState>>,
     Json(body): Json<VkCallsStopBody>,
 ) -> impl IntoResponse {
-    let token = match vk::read_token(&state.app_dir) {
-        Some(t) => t,
-        None => return err(400, "no VK token"),
-    };
+    let token = match vk::read_token(&state.app_dir) { Some(t) => t, None => return err(400, "no VK token") };
     let client = vk::VkApiClient::new(token);
     let mut finished = 0;
-    for id in body.call_ids {
-        if client.force_finish(&id).await {
-            finished += 1;
-        }
-    }
+    for id in body.call_ids { if client.force_finish(&id).await { finished += 1; } }
     Json(json!({"finished": finished})).into_response()
 }
 
 async fn vk_calls_stop_all(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = state;
-    Json(json!({"finished": 0}))
+    let _ = state; Json(json!({"finished": 0}))
 }
 
-async fn vk_calls_active() -> impl IntoResponse {
-    Json(json!({"callIds": []}))
-}
-
-// ============================================================
-//  SmartTunnel (заглушка)
-// ============================================================
+async fn vk_calls_active() -> impl IntoResponse { Json(json!({"callIds": []})) }
 
 async fn st_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"running": *state.smarttunnel_running.lock()}))
 }
-
 async fn st_start(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = true;
     state.log("[SMART-TUNNEL] start");
     Json(json!({"ok": true}))
 }
-
 async fn st_stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = false;
     state.log("[SMART-TUNNEL] stop");
     Json(json!({"ok": true}))
 }
-
 async fn st_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.log("[SMART-TUNNEL] reload");
     Json(json!({"ok": true}))
 }
-
-async fn st_logs() -> impl IntoResponse {
-    Json(json!(Vec::<String>::new()))
-}
-
-async fn st_args() -> impl IntoResponse {
-    Json(json!(Vec::<String>::new()))
-}
-
-async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse {
-    Json(json!({"ok": true}))
-}
-
-// ============================================================
-//  Deploy — заглушка
-// ============================================================
+async fn st_logs() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
+async fn st_args() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
+async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse { Json(json!({"ok": true})) }
 
 async fn deploy_stub() -> impl IntoResponse {
     Json(json!({"stub": true, "message": "DeployManager not yet implemented"}))
 }
-
-async fn deploy_status_stub() -> impl IntoResponse {
-    Json(json!({"busy": false, "stub": true}))
-}
-
-async fn deploy_log_stub() -> impl IntoResponse {
-    Json(json!({"log": "", "stub": true}))
-}
-
-async fn deploy_protocols_stub() -> impl IntoResponse {
-    Json(json!({"protocols": [], "stub": true}))
-}
-
-// ============================================================
-//  Platform
-// ============================================================
+async fn deploy_status_stub() -> impl IntoResponse { Json(json!({"busy": false, "stub": true})) }
+async fn deploy_log_stub() -> impl IntoResponse { Json(json!({"log": "", "stub": true})) }
+async fn deploy_protocols_stub() -> impl IntoResponse { Json(json!({"protocols": [], "stub": true})) }
 
 async fn platform_caps() -> impl IntoResponse {
     Json(json!({
@@ -1104,92 +885,61 @@ async fn platform_caps() -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
-struct OpenUrlBody {
-    url: String,
-}
+struct OpenUrlBody { url: String }
 
 async fn platform_open_url(Json(body): Json<OpenUrlBody>) -> impl IntoResponse {
     #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&body.url).spawn();
-    }
+    { let _ = std::process::Command::new("xdg-open").arg(&body.url).spawn(); }
     #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", &body.url])
-            .spawn();
-    }
+    { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &body.url]).spawn(); }
     Json(json!({"ok": true}))
 }
 
 #[derive(Deserialize)]
-struct NotifyBody {
-    title: String,
-    body: String,
-}
+struct NotifyBody { title: String, body: String }
 
 async fn platform_notify(Json(body): Json<NotifyBody>) -> impl IntoResponse {
     #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("notify-send")
-            .args([&body.title, &body.body])
-            .spawn();
-    }
+    { let _ = std::process::Command::new("notify-send").args([&body.title, &body.body]).spawn(); }
     #[cfg(target_os = "windows")]
     {
         let script = format!(
             "[reflection.assembly]::loadwithpartialname('System.Windows.Forms'); \
              [System.Windows.Forms.MessageBox]::Show('{}', '{}')",
-            body.body.replace('\'', " "),
-            body.title.replace('\'', " ")
+            body.body.replace('\'', " "), body.title.replace('\'', " ")
         );
         let _ = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .spawn();
+            .args(["-NoProfile", "-Command", &script]).spawn();
     }
     Json(json!({"ok": true}))
 }
 
 #[derive(Deserialize)]
-struct OpenPathBody {
-    path: String,
-}
+struct OpenPathBody { path: String }
 
 async fn platform_open_path(Json(body): Json<OpenPathBody>) -> impl IntoResponse {
     #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&body.path).spawn();
-    }
+    { let _ = std::process::Command::new("xdg-open").arg(&body.path).spawn(); }
     #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer").arg(&body.path).spawn();
-    }
+    { let _ = std::process::Command::new("explorer").arg(&body.path).spawn(); }
     Json(json!({"ok": true}))
 }
 
 #[derive(Deserialize)]
 struct ShareBody {
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default, rename = "filePath")]
-    file_path: Option<String>,
+    #[serde(default)] text: Option<String>,
+    #[serde(default, rename = "filePath")] file_path: Option<String>,
 }
 
 async fn platform_share(Json(_body): Json<ShareBody>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-// ============================================================
-//  Debug
-// ============================================================
-
 async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let logs = state.logs_snapshot();
     let settings = state.settings.read().clone();
     let selected = state.selected_config.read().clone();
-    let vpn_status = state
-        .vpn
-        .status(selected.as_ref().map(|c| c.id).unwrap_or(0));
+    let vpn_status = state.vpn.status(selected.as_ref().map(|c| c.id).unwrap_or(0));
     Json(json!({
         "settings": settings,
         "selectedConfig": selected,
@@ -1199,9 +949,7 @@ async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }))
 }
 
-async fn debug_echo(Json(body): Json<Value>) -> impl IntoResponse {
-    Json(body)
-}
+async fn debug_echo(Json(body): Json<Value>) -> impl IntoResponse { Json(body) }
 
 async fn debug_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({
@@ -1223,10 +971,6 @@ async fn debug_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
     Json(json!({"ok": true}))
 }
-
-// ============================================================
-//  Helpers
-// ============================================================
 
 fn err(code: u16, msg: impl Into<String>) -> axum::response::Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

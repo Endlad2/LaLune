@@ -2,11 +2,15 @@
 //
 // Ядро CSQTT: скачивание бинарника, запуск, остановка.
 // Трёхуровневый fallback (direct / proxy-browserUA / proxy-curlUA).
+//
+// ВАЖНО: stdout/stderr ядра читаются построчно и эмитятся в EventBus
+// с префиксом [CORE] — чтобы /logs их показывал. Параллельно всё
+// пишется в logs.log (для watchdog'а, который парсит TUNCONF/статистику).
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use std::process::Stdio;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::events::{Event, EventBus};
@@ -56,42 +60,26 @@ pub async fn fetch_latest(client: &reqwest::Client, events: &EventBus) -> Option
 
     for (i, url) in urls.iter().enumerate() {
         let level = i + 1;
-        let ua = if level == 3 {
-            USER_AGENT_CURL
-        } else {
-            USER_AGENT_BROWSER
-        };
+        let ua = if level == 3 { USER_AGENT_CURL } else { USER_AGENT_BROWSER };
 
         events.emit(Event::log(format!(
-            "[NET][LEVEL {}] Fetching LATEST: {}",
-            level,
-            truncate(url, 100)
+            "[NET][LEVEL {}] Fetching LATEST: {}", level, truncate(url, 100)
         )));
 
         let resp = match client.get(url).header("User-Agent", ua).send().await {
             Ok(r) => r,
             Err(e) => {
-                events.emit(Event::log(format!(
-                    "[NET][LEVEL {}] error: {}",
-                    level, e
-                )));
+                events.emit(Event::log(format!("[NET][LEVEL {}] error: {}", level, e)));
                 continue;
             }
         };
 
         if resp.status().as_u16() != 200 {
-            events.emit(Event::log(format!(
-                "[NET][LEVEL {}] HTTP {}",
-                level,
-                resp.status()
-            )));
+            events.emit(Event::log(format!("[NET][LEVEL {}] HTTP {}", level, resp.status())));
             continue;
         }
 
-        let text = match resp.text().await {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
+        let text = match resp.text().await { Ok(t) => t, Err(_) => continue };
 
         let version: String = text
             .chars()
@@ -105,17 +93,11 @@ pub async fn fetch_latest(client: &reqwest::Client, events: &EventBus) -> Option
             || version.contains("No connection adapters")
             || version.contains("curl error")
         {
-            events.emit(Event::log(format!(
-                "[NET][LEVEL {}] server error payload",
-                level
-            )));
+            events.emit(Event::log(format!("[NET][LEVEL {}] server error payload", level)));
             continue;
         }
 
-        events.emit(Event::log(format!(
-            "[NET][LEVEL {}] LATEST = {}",
-            level, version
-        )));
+        events.emit(Event::log(format!("[NET][LEVEL {}] LATEST = {}", level, version)));
         return Some(version);
     }
 
@@ -141,37 +123,22 @@ pub async fn download_core(
 
     for (i, url) in urls.iter().enumerate() {
         let level = i + 1;
-        let ua = if level == 3 {
-            USER_AGENT_CURL
-        } else {
-            USER_AGENT_BROWSER
-        };
+        let ua = if level == 3 { USER_AGENT_CURL } else { USER_AGENT_BROWSER };
 
-        events.emit(Event::log(format!(
-            "[DOWNLOAD][LEVEL {}] {}",
-            level,
-            truncate(url, 120)
-        )));
+        events.emit(Event::log(format!("[DOWNLOAD][LEVEL {}] {}", level, truncate(url, 120))));
 
         let resp = match client.get(url).header("User-Agent", ua).send().await {
             Ok(r) => r,
             Err(_) => continue,
         };
 
-        if resp.status().as_u16() != 200 {
-            continue;
-        }
+        if resp.status().as_u16() != 200 { continue; }
 
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
+        let bytes = match resp.bytes().await { Ok(b) => b, Err(_) => continue };
 
         if bytes.len() < 1024 {
             events.emit(Event::log(format!(
-                "[DOWNLOAD][LEVEL {}] too small ({} bytes)",
-                level,
-                bytes.len()
+                "[DOWNLOAD][LEVEL {}] too small ({} bytes)", level, bytes.len()
             )));
             continue;
         }
@@ -199,10 +166,7 @@ pub async fn download_core(
         tokio::fs::rename(&tmp, dest).await?;
 
         events.emit(Event::log(format!(
-            "[DOWNLOAD][LEVEL {}] OK ({} bytes) → {}",
-            level,
-            bytes.len(),
-            dest.display()
+            "[DOWNLOAD][LEVEL {}] OK ({} bytes) → {}", level, bytes.len(), dest.display()
         )));
         return Ok(());
     }
@@ -220,11 +184,7 @@ fn urlencode(s: &str) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
+    if s.len() <= max { s.to_string() } else { format!("{}...", &s[..max]) }
 }
 
 pub struct CoreProcess {
@@ -232,27 +192,89 @@ pub struct CoreProcess {
 }
 
 impl CoreProcess {
+    /// Запустить ядро.
+    ///
+    /// stdout/stderr читаются построчно в отдельной задаче:
+    ///   * каждая строка добавляется в logs.log (для watchdog),
+    ///   * каждая строка эмитится в EventBus с префиксом `[CORE] `
+    ///     (чтобы UI её видел в /logs).
     pub async fn spawn(
         core_path: &Path,
         args: &[String],
         log_file: &Path,
         events: EventBus,
     ) -> Result<Self> {
+        // Открываем logs.log в режиме перезаписи.
         let log = std::fs::File::create(log_file)?;
         let log_err = log.try_clone()?;
 
         let mut cmd = Command::new(core_path);
         cmd.args(args);
 
+        // stdout/stderr — pipe, чтобы читать построчно.
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_err));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let child = cmd.spawn()?;
-        events.emit(Event::log(format!(
-            "[CORE] spawned pid={:?}",
-            child.id()
-        )));
+        let mut child = cmd.spawn()?;
+        let pid = child.id();
+
+        events.emit(Event::log(format!("[CORE] spawned pid={:?}", pid)));
+
+        // --- stdout reader ---
+        if let Some(stdout) = child.stdout.take() {
+            let log_path = log_file.to_path_buf();
+            let events_out = events.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stdout).lines();
+                let mut file = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .await
+                    .ok();
+
+                while let Ok(Some(line)) = reader.next_line().await {
+                    // 1. Пишем в logs.log (для watchdog).
+                    if let Some(f) = file.as_mut() {
+                        let _ = f.write_all(line.as_bytes()).await;
+                        let _ = f.write_all(b"\n").await;
+                        let _ = f.flush().await;
+                    }
+                    // 2. Эмитим в EventBus с префиксом.
+                    events_out.emit(Event::log(format!("[CORE] {}", line)));
+                }
+            });
+        }
+
+        // --- stderr reader ---
+        if let Some(stderr) = child.stderr.take() {
+            let log_path = log_file.to_path_buf();
+            let events_err = events.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                let mut file = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .await
+                    .ok();
+
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if let Some(f) = file.as_mut() {
+                        let _ = f.write_all(line.as_bytes()).await;
+                        let _ = f.write_all(b"\n").await;
+                        let _ = f.flush().await;
+                    }
+                    events_err.emit(Event::log(format!("[CORE] {}", line)));
+                }
+            });
+        }
+
+        // Держим `log` и `log_err` чтобы они не были GC-нуты, хотя после
+        // перехода на pipe они больше не нужны.
+        drop(log);
+        drop(log_err);
 
         Ok(Self { child })
     }

@@ -4,12 +4,15 @@
 //
 // Отличие от Desktop: имя бинарника фиксировано —
 // ~/.la-lune/csqtt-client-aarch64
+//
+// stdout/stderr читаются построчно, эмитятся с префиксом [CORE]
+// (чтобы UI видел их на вкладке Логи) и параллельно пишутся в logs.log.
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::events::{Event, EventBus};
@@ -22,8 +25,7 @@ pub const PROXY_URL: &str = "http://31.77.148.203:8855/?url=";
 pub const USER_AGENT_BROWSER: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 pub const USER_AGENT_CURL: &str = "curl/7.68.0";
 
-/// ВАЖНО: на OpenWRT имя ядра фиксировано — `csqtt-client-aarch64`.
-/// Только armsr/armv8 (aarch64) поддерживается.
+/// На OpenWRT имя ядра фиксировано — `csqtt-client-aarch64`.
 pub fn core_filename() -> &'static str {
     "csqtt-client-aarch64"
 }
@@ -175,11 +177,50 @@ impl CoreProcess {
         let mut cmd = Command::new(core_path);
         cmd.args(args);
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_err));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let child = cmd.spawn()?;
+        let mut child = cmd.spawn()?;
         events.emit(Event::log(format!("[CORE] spawned pid={:?}", child.id())));
+
+        if let Some(stdout) = child.stdout.take() {
+            let log_path = log_file.to_path_buf();
+            let events_out = events.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stdout).lines();
+                let mut file = tokio::fs::OpenOptions::new()
+                    .create(true).append(true).open(&log_path).await.ok();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if let Some(f) = file.as_mut() {
+                        let _ = f.write_all(line.as_bytes()).await;
+                        let _ = f.write_all(b"\n").await;
+                        let _ = f.flush().await;
+                    }
+                    events_out.emit(Event::log(format!("[CORE] {}", line)));
+                }
+            });
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let log_path = log_file.to_path_buf();
+            let events_err = events.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                let mut file = tokio::fs::OpenOptions::new()
+                    .create(true).append(true).open(&log_path).await.ok();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if let Some(f) = file.as_mut() {
+                        let _ = f.write_all(line.as_bytes()).await;
+                        let _ = f.write_all(b"\n").await;
+                        let _ = f.flush().await;
+                    }
+                    events_err.emit(Event::log(format!("[CORE] {}", line)));
+                }
+            });
+        }
+
+        drop(log);
+        drop(log_err);
 
         Ok(Self { child })
     }

@@ -42,6 +42,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   String _authMode = 'manual';
   bool _enableSmartTunnel = false;
+  bool _showCoreLogs = false;
 
   @override
   void initState() {
@@ -87,6 +88,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _deviceIdCtl.text = s.deviceId;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
     _enableSmartTunnel = s.enableSmartTunnel;
+    _showCoreLogs = s.showCoreLogs;
 
     setState(() => _loading = false);
   }
@@ -120,6 +122,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       clientIds: _clientIdsCtl.text.trim(),
       authMode: _authMode,
       enableSmartTunnel: _enableSmartTunnel,
+      showCoreLogs: _showCoreLogs,
     );
 
     final ok = await ref.read(settingsProvider.notifier).save(s);
@@ -350,6 +353,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     }),
                     _toggleRow('Validate VK hashes', _s.validateVkHashes, (v) {
                       setState(() => _s = _s.copyWith(validateVkHashes: v));
+                      _markDirty();
+                    }),
+                    _toggleRow('Показывать логи ядра', _showCoreLogs, (v) {
+                      setState(() => _showCoreLogs = v);
                       _markDirty();
                     }),
                   ],

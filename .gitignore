@@ -1,58 +1,93 @@
-# Python
+# ============================================================
+#  LaLune — .gitignore
+# ============================================================
+
+# ---------- Python ----------
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 venv/
 env/
 
-# Output (билд-артефакты)
-Output/
+# ---------- Rust ----------
+target/
+**/target/
+*.rs.bk
+Cargo.lock.bak
 
-# Rust
-Backend/Desktop/target/
-Installer/launcher/target/
-**/*.rs.bk
-
-# Flutter
+# ---------- Flutter / Dart ----------
 Frontend/.dart_tool/
 Frontend/.flutter-plugins
 Frontend/.flutter-plugins-dependencies
+Frontend/.packages
 Frontend/build/
-Frontend/pubspec.lock
-Frontend/**/generated_plugin_registrant.dart
-Frontend/assets/            # копия корневого Assets/, создаётся build.py
-
-# Android
-Frontend/android/.gradle/
-Frontend/android/app/build/
-**/*.apk
-**/*.aab
-local.properties
-
-# iOS
+Frontend/.pub-cache/
+Frontend/.pub/
 Frontend/ios/Pods/
 Frontend/ios/.symlinks/
-Frontend/ios/Flutter/Flutter.framework/
+Frontend/ios/Flutter/Flutter.framework
 Frontend/ios/Flutter/Flutter.podspec
-**/*.xcuserdatad
-**/DerivedData/
+Frontend/ios/Flutter/ephemeral/
+Frontend/ios/Runner.xcworkspace/xcuserdata/
+Frontend/ios/Runner.xcodeproj/xcuserdata/
+Frontend/ios/Runner.xcodeproj/project.xcworkspace/
+Frontend/macos/Pods/
+Frontend/macos/Flutter/ephemeral/
+Frontend/android/.gradle/
+Frontend/android/local.properties
+Frontend/android/key.properties
+Frontend/android/app/debug/
+Frontend/android/app/profile/
+Frontend/android/app/release/
+Frontend/android/.idea/
+Frontend/android/captures/
+Frontend/android/app/src/main/jniLibs/
+Frontend/windows/flutter/ephemeral/
+Frontend/linux/flutter/ephemeral/
 
-# IDE
-.idea/
+# Frontend/assets/ — временная копия корневого Assets/.
+# Её делает build.py и удаляет после сборки.
+Frontend/assets/
+
+# ---------- .NET / C# ----------
+Core/LaLuneTokenFetcher/**/bin/
+Core/LaLuneTokenFetcher/**/obj/
+Core/LaLuneTokenFetcher/output/
+Core/LaLuneTokenFetcher/**/publish/
+*.user
+*.suo
+
+# ---------- OpenWRT SDK ----------
+.cache/
+Backend/OpenWRT/output/
+Backend/OpenWRT/target/
+Backend/OpenWRT/.cargo/config.toml
+
+# ---------- Build output ----------
+Output/
+dist/
+*.zip
+
+# ---------- IDE / редакторы ----------
 .vscode/
-*.iml
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
-
-# OS
 Thumbs.db
+desktop.ini
 
-# Android generated
-Mobile/Android/app/src/main/assets/
+# ---------- Локальные данные LaLune ----------
+*.log
+la-lune/
+.la-lune/
+%APPDATA%/.la-lune/
 
-# DeployManager (Rust) build artifacts
-Core/DeployManager/target/
-Desktop/*/deploy-manager
-Desktop/*/deploy-manager.exe
-Mobile/Android/app/src/main/jniLibs/
-Frontend/Core/.dart_tool/
-Frontend/Core/build/
+# ---------- Секреты ----------
+*.keystore
+*.jks
+.env
+.env.*
+!.env.example

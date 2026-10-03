@@ -38,6 +38,9 @@ pub struct Settings {
     pub validate_vk_hashes: bool,
 
     pub enable_smart_tunnel: bool,
+
+    /// Показывать логи ядра (строки с префиксом `[CORE]`) на вкладке Логи.
+    pub show_core_logs: bool,
 }
 
 impl Default for Settings {
@@ -67,60 +70,35 @@ impl Default for Settings {
             validate_vk_hashes: false,
 
             enable_smart_tunnel: false,
+            show_core_logs: false,
         }
     }
 }
 
 impl Settings {
-    /// Приводит диапазоны к допустимым значениям и заполняет обязательные поля.
     pub fn normalize(&mut self) {
-        if self.workers < MIN_WORKERS {
-            self.workers = MIN_WORKERS;
-        }
-        if self.workers > MAX_WORKERS {
-            self.workers = MAX_WORKERS;
-        }
+        if self.workers < MIN_WORKERS { self.workers = MIN_WORKERS; }
+        if self.workers > MAX_WORKERS { self.workers = MAX_WORKERS; }
 
-        if self.auto_api_workers < MIN_AUTO_API_WORKERS {
-            self.auto_api_workers = MIN_AUTO_API_WORKERS;
-        }
-        if self.auto_api_workers > MAX_AUTO_API_WORKERS {
-            self.auto_api_workers = MAX_AUTO_API_WORKERS;
-        }
+        if self.auto_api_workers < MIN_AUTO_API_WORKERS { self.auto_api_workers = MIN_AUTO_API_WORKERS; }
+        if self.auto_api_workers > MAX_AUTO_API_WORKERS { self.auto_api_workers = MAX_AUTO_API_WORKERS; }
 
-        if self.auth_mode.is_empty() {
-            self.auth_mode = "manual".into();
-        }
-        if self.turn_transport.is_empty() {
-            self.turn_transport = "udp".into();
-        }
-        if self.obfs.is_empty() {
-            self.obfs = "video".into();
-        }
-        if self.fingerprint.is_empty() {
-            self.fingerprint = "firefox".into();
-        }
-        if self.captcha_mode.is_empty() {
-            self.captcha_mode = "auto".into();
-        }
-        if self.vk_auth_mode.is_empty() {
-            self.vk_auth_mode = "vkcalls".into();
-        }
-        if self.client_ids.is_empty() {
-            self.client_ids = "8202606,6287487".into();
-        }
+        if self.auth_mode.is_empty() { self.auth_mode = "manual".into(); }
+        if self.turn_transport.is_empty() { self.turn_transport = "udp".into(); }
+        if self.obfs.is_empty() { self.obfs = "video".into(); }
+        if self.fingerprint.is_empty() { self.fingerprint = "firefox".into(); }
+        if self.captcha_mode.is_empty() { self.captcha_mode = "auto".into(); }
+        if self.vk_auth_mode.is_empty() { self.vk_auth_mode = "vkcalls".into(); }
+        if self.client_ids.is_empty() { self.client_ids = "8202606,6287487".into(); }
 
         if self.device_id.is_empty() {
             self.device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
         }
     }
 
-    /// PATCH-семантика: применяет только те поля, что пришли в JSON.
     pub fn merge_from_json(&mut self, value: serde_json::Value) -> anyhow::Result<()> {
         let mut base = serde_json::to_value(&*self)?;
-        if let (Some(base_obj), Some(patch_obj)) =
-            (base.as_object_mut(), value.as_object())
-        {
+        if let (Some(base_obj), Some(patch_obj)) = (base.as_object_mut(), value.as_object()) {
             for (k, v) in patch_obj {
                 base_obj.insert(k.clone(), v.clone());
             }

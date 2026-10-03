@@ -23,11 +23,48 @@ dependencies:
 dev_dependencies:
   flutter_lints: ^4.0.0
 
+  # Генератор иконок для Android / iOS / macOS
+  flutter_launcher_icons: ^0.13.1
+
+# ============================================================
+#  Генерация иконок приложений.
+#
+#  Запуск:
+#    cd Frontend
+#    flutter pub get
+#    flutter pub run flutter_launcher_icons
+#
+#  Источник: Assets/icon.png (1024×1024, RGBA) в КОРНЕ репо.
+#  Путь указывается как "../Assets/icon.png" относительно Frontend/.
+#
+#  Что будет перезаписано:
+#    Frontend/android/app/src/main/res/mipmap-*/
+#    Frontend/ios/Runner/Assets.xcassets/AppIcon.appiconset/*
+#
+#  Windows .ico и Assets/icon_foreground.png генерирует
+#  make_icons.py (см. корень репо).
+# ============================================================
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "../Assets/icon.png"
+
+  # Адаптивная иконка Android 8+
+  adaptive_icon_background: "#0A0E2A"
+  adaptive_icon_foreground: "../Assets/icon_foreground.png"
+
+  # Убрать alpha у iOS (App Store не принимает прозрачность)
+  remove_alpha_ios: true
+
+  # macOS (если соберёшь)
+  macos:
+    generate: true
+    image_path: "../Assets/icon.png"
+
 flutter:
   uses-material-design: true
 
-  # Сюда prepare_assets.py копирует корневой Assets/.
-  # Пути резолвятся относительно pubspec.yaml (то есть Frontend/).
+  # Сюда build.py копирует корневой Assets/.
   assets:
     - assets/
 

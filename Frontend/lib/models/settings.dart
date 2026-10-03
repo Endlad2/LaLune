@@ -27,6 +27,7 @@ class Settings {
   final bool allowHashRedistribution;
   final bool validateVkHashes;
   final bool enableSmartTunnel;
+  final bool showCoreLogs;   // ← новое
 
   Settings({
     this.peer = '',
@@ -48,6 +49,7 @@ class Settings {
     this.allowHashRedistribution = false,
     this.validateVkHashes = false,
     this.enableSmartTunnel = false,
+    this.showCoreLogs = false,
   });
 
   factory Settings.fromJson(Map<String, dynamic> j) {
@@ -79,6 +81,7 @@ class Settings {
       allowHashRedistribution: (j['allowHashRedistribution'] ?? false) as bool,
       validateVkHashes: (j['validateVkHashes'] ?? false) as bool,
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
+      showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
     );
   }
 
@@ -102,6 +105,7 @@ class Settings {
         'allowHashRedistribution': allowHashRedistribution,
         'validateVkHashes': validateVkHashes,
         'enableSmartTunnel': enableSmartTunnel,
+        'showCoreLogs': showCoreLogs,
       };
 
   Settings copyWith({
@@ -124,6 +128,7 @@ class Settings {
     bool? allowHashRedistribution,
     bool? validateVkHashes,
     bool? enableSmartTunnel,
+    bool? showCoreLogs,
   }) =>
       Settings(
         peer: peer ?? this.peer,
@@ -146,5 +151,6 @@ class Settings {
             allowHashRedistribution ?? this.allowHashRedistribution,
         validateVkHashes: validateVkHashes ?? this.validateVkHashes,
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
+        showCoreLogs: showCoreLogs ?? this.showCoreLogs,
       );
 }
