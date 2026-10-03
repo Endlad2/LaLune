@@ -2,17 +2,22 @@
 //
 // VPN: TUN-интерфейс, UDP-мост к ядру CSQTT, маршруты, DNS, bypass.
 //
-// Логика полностью портирована из старой Go-версии:
-//   * Linux:  TUN через `tun` crate + маршруты/DNS через `ip`/resolv.conf.
-//             Bypass-маршруты НЕ используются (как в Go).
+// Логика портирована из старой Go-версии:
+//   * Linux:   TUN через `tun` crate + маршруты/DNS через `ip`/resolv.conf.
+//              Bypass-маршруты НЕ используются (как в Go).
 //   * Windows: TUN через `tun` crate + маршруты/DNS/MTU через `netsh`.
-//             Bypass-маршруты для IP, помеченных в логе ядра как TURN/Relay,
-//             добавляются через физический шлюз (метрика 1).
+//              Bypass-маршруты для TURN/Relay добавляются через физический
+//              шлюз (метрика 1).
 //
-// Важный порядок (как в Go):
+// Порядок (как в Go):
 //   1. Ядро запускается первым — оно устанавливает соединения к VK/TURN.
 //   2. Ждём в логе "Активных: N>0" два тика подряд.
 //   3. Только потом поднимаем TUN и ставим default route.
+//
+// ВАЖНО: platform_config()/platform() отсутствует в некоторых версиях
+// tun-crate. Поэтому мы НЕ используем его. Backend всегда запускается от
+// root (Linux: через pkexec/sudo, Windows: через UAC-манифест) — этого
+// достаточно для создания TUN и установки маршрутов.
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -86,9 +91,7 @@ pub struct VpnRuntime {
     pub started_at: Arc<Mutex<Option<Instant>>>,
     pub tun_conf: Arc<Mutex<Option<TunConf>>>,
     pub handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    /// IP-адреса, для которых добавлен bypass-маршрут (только Windows).
     pub bypass_routes: Arc<Mutex<Vec<String>>>,
-    /// Физический шлюз (только Windows).
     pub physical_gateway: Arc<Mutex<String>>,
 }
 
@@ -149,10 +152,9 @@ impl VpnRuntime {
 }
 
 // ============================================================
-//  Bypass-маршруты (только Windows, как в Go)
+//  Bypass-маршруты (только Windows)
 // ============================================================
 
-/// Возвращает физический шлюз (Windows): парсит `route print 0.0.0.0`.
 #[cfg(target_os = "windows")]
 fn get_physical_gateway() -> String {
     let out = match Command::new("cmd")
@@ -176,11 +178,8 @@ fn get_physical_gateway() -> String {
     String::new()
 }
 
-/// Добавляет bypass-маршрут для одного IP (только Windows).
-/// Дедуплицирует. Пишет напрямую через физический шлюз с метрикой 1.
 #[cfg(target_os = "windows")]
 pub fn add_bypass_route(runtime: &VpnRuntime, ip: &str) {
-    // Проверяем валидность IP
     if ip.parse::<Ipv4Addr>().is_err() {
         return;
     }
@@ -199,13 +198,7 @@ pub fn add_bypass_route(runtime: &VpnRuntime, ip: &str) {
 
     let _ = Command::new("route")
         .args([
-            "ADD",
-            ip,
-            "MASK",
-            "255.255.255.255",
-            &gateway,
-            "METRIC",
-            "1",
+            "ADD", ip, "MASK", "255.255.255.255", &gateway, "METRIC", "1",
         ])
         .output();
 
@@ -214,14 +207,13 @@ pub fn add_bypass_route(runtime: &VpnRuntime, ip: &str) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn add_bypass_route(_runtime: &VpnRuntime, _ip: &str) {
-    // На Linux bypass-маршруты не нужны (как в Go-версии).
+    // На Linux bypass-маршруты не нужны.
 }
 
 // ============================================================
-//  Установка маршрутов и DNS
+//  Маршруты и DNS
 // ============================================================
 
-/// Публичная обёртка: ставит маршруты + DNS.
 pub fn setup_routes(runtime: &VpnRuntime, tun_ip: &str, tun_dns: &str, events: &EventBus) {
     #[cfg(target_os = "linux")]
     setup_routes_linux(tun_ip, tun_dns, events);
@@ -230,7 +222,6 @@ pub fn setup_routes(runtime: &VpnRuntime, tun_ip: &str, tun_dns: &str, events: &
     setup_routes_windows(runtime, tun_ip, tun_dns, events);
 }
 
-/// Убирает всё, что поставили.
 pub fn cleanup_routes(runtime: &VpnRuntime, events: &EventBus) {
     #[cfg(target_os = "linux")]
     cleanup_routes_linux(events);
@@ -239,26 +230,22 @@ pub fn cleanup_routes(runtime: &VpnRuntime, events: &EventBus) {
     cleanup_routes_windows(runtime, events);
 }
 
-// ---------- Linux ----------
-
 #[cfg(target_os = "linux")]
 fn setup_routes_linux(tun_ip: &str, tun_dns: &str, events: &EventBus) {
-    // DNS — дописываем nameserver'ы в /etc/resolv.conf.
     for dns in tun_dns.split(',') {
         let dns = dns.trim();
         if dns.is_empty() {
             continue;
         }
-        let cmd = format!(
-            "echo 'nameserver {}' >> /etc/resolv.conf",
-            dns
+        run_sudo(
+            &format!("echo 'nameserver {}' >> /etc/resolv.conf", dns),
+            events,
         );
-        run_sudo(&cmd, events);
     }
-
-    // Default route через TUN (создаётся позже tun crate — ip link).
-    run_sudo(&format!("ip route add default dev {}", TUN_NAME), events);
-
+    run_sudo(
+        &format!("ip route add default dev {}", TUN_NAME),
+        events,
+    );
     let _ = tun_ip;
 }
 
@@ -272,8 +259,9 @@ fn cleanup_routes_linux(events: &EventBus) {
 
 #[cfg(target_os = "linux")]
 fn run_sudo(command: &str, events: &EventBus) {
-    // Пытаемся без пароля; если не получится — юзер запустит backend от root.
-    let result = Command::new("sh").args(["-c", &format!("sudo {}", command)]).output();
+    let result = Command::new("sh")
+        .args(["-c", &format!("sudo {}", command)])
+        .output();
 
     match result {
         Ok(out) if out.status.success() => {
@@ -296,8 +284,6 @@ fn run_sudo(command: &str, events: &EventBus) {
     }
 }
 
-// ---------- Windows ----------
-
 #[cfg(target_os = "windows")]
 fn setup_routes_windows(
     runtime: &VpnRuntime,
@@ -305,14 +291,12 @@ fn setup_routes_windows(
     tun_dns: &str,
     events: &EventBus,
 ) {
-    // 1. Запоминаем физический шлюз — понадобится для bypass.
     let gateway = get_physical_gateway();
     if !gateway.is_empty() {
         events.emit(Event::log(format!("[TUN] physical gateway: {}", gateway)));
     }
     *runtime.physical_gateway.lock() = gateway.clone();
 
-    // 2. Bypass-маршруты — через физический шлюз (метрика 1).
     let bypass_list = runtime.bypass_routes.lock().clone();
     for ip in &bypass_list {
         if gateway.is_empty() {
@@ -320,26 +304,15 @@ fn setup_routes_windows(
         }
         let _ = Command::new("route")
             .args([
-                "ADD",
-                ip,
-                "MASK",
-                "255.255.255.255",
-                &gateway,
-                "METRIC",
-                "1",
+                "ADD", ip, "MASK", "255.255.255.255", &gateway, "METRIC", "1",
             ])
             .output();
     }
 
-    // 3. IP + MTU на адаптере CSQTT.
     let _ = Command::new("netsh")
         .args([
-            "interface",
-            "ipv4",
-            "set",
-            "address",
-            "name=\"CSQTT\"",
-            "source=static",
+            "interface", "ipv4", "set", "address",
+            "name=\"CSQTT\"", "source=static",
             &format!("address={}", tun_ip),
             "mask=255.255.255.255",
         ])
@@ -347,17 +320,13 @@ fn setup_routes_windows(
 
     let _ = Command::new("netsh")
         .args([
-            "interface",
-            "ipv4",
-            "set",
-            "subinterface",
+            "interface", "ipv4", "set", "subinterface",
             "\"CSQTT\"",
             &format!("mtu={}", TUN_MTU),
             "store=active",
         ])
         .output();
 
-    // 4. DNS (максимум 2 сервера, как в Go).
     let mut dns_index = 1;
     for dns in tun_dns.split(',') {
         let dns = dns.trim();
@@ -366,10 +335,7 @@ fn setup_routes_windows(
         }
         let _ = Command::new("netsh")
             .args([
-                "interface",
-                "ipv4",
-                "add",
-                "dnsservers",
+                "interface", "ipv4", "add", "dnsservers",
                 "name=\"CSQTT\"",
                 &format!("address={}", dns),
                 &format!("index={}", dns_index),
@@ -379,13 +345,9 @@ fn setup_routes_windows(
         dns_index += 1;
     }
 
-    // 5. Default route через CSQTT.
     let _ = Command::new("netsh")
         .args([
-            "interface",
-            "ipv4",
-            "add",
-            "route",
+            "interface", "ipv4", "add", "route",
             "prefix=0.0.0.0/0",
             "interface=\"CSQTT\"",
             "nexthop=0.0.0.0",
@@ -399,20 +361,15 @@ fn setup_routes_windows(
 
 #[cfg(target_os = "windows")]
 fn cleanup_routes_windows(runtime: &VpnRuntime, events: &EventBus) {
-    // Удаляем default route.
     let _ = Command::new("netsh")
         .args([
-            "interface",
-            "ipv4",
-            "delete",
-            "route",
+            "interface", "ipv4", "delete", "route",
             "prefix=0.0.0.0/0",
             "interface=\"CSQTT\"",
             "store=active",
         ])
         .output();
 
-    // Удаляем bypass-маршруты.
     let bypass_list = runtime.bypass_routes.lock().clone();
     for ip in &bypass_list {
         let _ = Command::new("route").args(["DELETE", ip]).output();
@@ -424,7 +381,7 @@ fn cleanup_routes_windows(runtime: &VpnRuntime, events: &EventBus) {
 }
 
 // ============================================================
-//  Поднятие TUN + UDP-мост
+//  TUN + UDP-мост
 // ============================================================
 
 pub fn start_tun(
@@ -443,9 +400,8 @@ pub fn start_tun(
             .netmask("255.255.255.255")
             .mtu(TUN_MTU as i32)
             .up();
-        config.platform_config(|p| {
-            p.ensure_root_privileges(true);
-        });
+        // platform_config / platform НЕ вызываем — метод отсутствует
+        // в некоторых версиях tun-crate.
     }
 
     #[cfg(target_os = "windows")]
@@ -472,7 +428,6 @@ pub fn start_tun(
         mtu: TUN_MTU,
     });
 
-    // Открываем UDP-сокет к ядру.
     let sock = UdpSocket::bind("127.0.0.1:0")?;
     sock.connect(format!("127.0.0.1:{}", CORE_LISTEN_PORT))?;
     let sock = Arc::new(sock);
@@ -480,7 +435,6 @@ pub fn start_tun(
     runtime.running.store(true, Ordering::Relaxed);
     *runtime.started_at.lock() = Some(Instant::now());
 
-    // Маршруты + DNS.
     setup_routes(&runtime, &tun_ip, &tun_dns, &events);
 
     let running = runtime.running.clone();
@@ -547,7 +501,6 @@ pub fn start_tun(
     Ok(())
 }
 
-/// Парсит TUNCONF из строки лога ядра.
 pub fn parse_tunconf(line: &str) -> Option<(String, String)> {
     if let Some(rest) = line.strip_prefix("TUNCONF:") {
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
@@ -583,8 +536,6 @@ pub fn parse_tunconf(line: &str) -> Option<(String, String)> {
     None
 }
 
-/// Парсит строку статистики ядра: `[СТАТИСТИКА] Активных: N | Трафик: M`.
-/// Возвращает (active, traffic_mb) или None.
 pub fn parse_stats(line: &str) -> Option<(i32, f64)> {
     if !line.contains("Активных:") {
         return None;
@@ -603,7 +554,6 @@ pub fn parse_stats(line: &str) -> Option<(i32, f64)> {
 
     let traffic = line
         .find("Трафик:")
-        .or_else(|| line.find("Трафик:"))
         .and_then(|i| {
             let after = &line[i + "Трафик:".len()..];
             let t = after.trim_start();
@@ -617,7 +567,6 @@ pub fn parse_stats(line: &str) -> Option<(i32, f64)> {
     Some((active, traffic))
 }
 
-/// Ищет в строке IPv4-адреса. Простая реализация без regex-крейта.
 pub fn extract_ipv4_addrs(line: &str) -> Vec<String> {
     let mut result = Vec::new();
     let bytes = line.as_bytes();

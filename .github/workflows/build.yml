@@ -80,9 +80,35 @@ jobs:
           channel: stable
           cache: true
 
-      # Windows runner сразу имеет VS2022 + Windows SDK.
-      # Flutter сам найдёт нужный toolchain.
+      # ── Visual Studio 2022 + Native Desktop C++ ──────────────
+      # windows-latest НЕ содержит VS2022 Community по умолчанию.
+      # Без него flutter build windows падает с:
+      #   "could not find any instance of Visual Studio"
+      - name: Install VS2022 Community (Native Desktop workload)
+        shell: pwsh
+        run: |
+          choco install visualstudio2022community -y --no-progress `
+            --package-parameters "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
+
+      # ── Загружаем окружение MSVC (cl.exe, mt.exe и т.д.) ─────
+      # ilammy/msvc-dev-cmd сам находит VsDevCmd.bat и вызывает его.
+      # После этого cl.exe, mt.exe, link.exe доступны в PATH.
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Show MSVC paths
+        shell: pwsh
+        run: |
+          Write-Host "VCToolsInstallDir: $env:VCToolsInstallDir"
+          Write-Host "WindowsSdkDir: $env:WindowsSdkDir"
+          where.exe cl.exe
+          where.exe mt.exe
+          where.exe link.exe
+
       - name: Build (CI mode)
+        shell: cmd
         run: python build.py --ci --target windows
 
       - name: Upload artifacts
@@ -93,7 +119,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  Android APK (universal)
+  #  Android APK
   # ============================================================
   build-android:
     name: Android APK (universal)
@@ -128,8 +154,13 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
 
-      # ── Копируем Backend/Android в Frontend/android ─────────────
-      # Backend.kt и ко. должны лежать в com.lalune.backend.
+      # ── Установка NDK 27.0.12077973 (требование shared_preferences_android) ─
+      - name: Install Android NDK 27
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
+          ls -la "$ANDROID_HOME/ndk/" || true
+
+      # ── Копируем Kotlin-бэкенд в нужный package ───────────────
       - name: Copy Android backend
         run: |
           DST="Frontend/android/app/src/main/kotlin/com/lalune/backend"
@@ -137,15 +168,13 @@ jobs:
           cp Backend/Android/*.kt "$DST/"
           ls -la "$DST"
 
-      # ── Копируем Assets → Frontend/assets ───────────────────────
-      # build.py это делает сам, но здесь мы его не вызываем —
-      # сборка APK идёт через gradle, поэтому копируем вручную.
+      # ── Assets → Frontend/assets ──────────────────────────────
       - name: Copy assets
         run: |
           rm -rf Frontend/assets
           cp -r Assets Frontend/assets
 
-      # ── Ядро CSQTT в jniLibs ────────────────────────────────────
+      # ── Ядро CSQTT в jniLibs ──────────────────────────────────
       - name: Download core binaries (jniLibs)
         run: |
           mkdir -p Frontend/android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
@@ -156,23 +185,20 @@ jobs:
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
 
-      # ── SmartTunnel.lua в assets ────────────────────────────────
+      # ── SmartTunnel.lua в assets ──────────────────────────────
       - name: Copy SmartTunnel.lua
         run: |
           mkdir -p Frontend/android/app/src/main/assets
           cp Core/SmartTunnel.lua Frontend/android/app/src/main/assets/SmartTunnel.lua
 
-      # ── Flutter pub get ─────────────────────────────────────────
       - name: Flutter pub get
         working-directory: Frontend
         run: flutter pub get
 
-      # ── Сборка APK ──────────────────────────────────────────────
       - name: Build Android APK (debug)
         working-directory: Frontend
         run: flutter build apk --debug
 
-      # ── Переименовываем APK ─────────────────────────────────────
       - name: Locate & rename APK
         id: find_apk
         run: |
@@ -190,8 +216,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  LaLuneTokenFetcher (Windows + Linux)
-  #  БЕЗ ИЗМЕНЕНИЙ — только build_token_grabber.py.
+  #  LaLuneTokenFetcher (без изменений)
   # ============================================================
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
@@ -305,30 +330,19 @@ jobs:
           set -e
           cd release
 
-          # Десктопные zip'ы уже собраны build.py → просто копируем.
           find . -name 'LaLune-Windows.zip' -exec cp {} ./ \;
           find . -name 'Backend-Windows.zip' -exec cp {} ./ \;
           find . -name 'Installer-Windows.zip' -exec cp {} ./ \;
           find . -name 'LaLune-Linux.zip'   -exec cp {} ./ \;
           find . -name 'Backend-Linux.zip'  -exec cp {} ./ \;
 
-          # Android APK
           find . -name 'LaLune-Android.apk' -exec cp {} ./ \;
 
-          # Token fetcher
           find . -name 'LaLuneTokenFetcher_Windows.zip' -exec cp {} ./ \;
           find . -name 'LaLuneTokenFetcher_Linux.zip'   -exec cp {} ./ \;
 
           echo "=== release/ contents ==="
           ls -la
-
-      - name: Show final release content
-        run: |
-          cd release
-          echo "Files to be published:"
-          for f in *.zip *.apk; do
-            [ -f "$f" ] && echo "  $f ($(du -h "$f" | cut -f1))"
-          done
 
       - id: date
         run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT

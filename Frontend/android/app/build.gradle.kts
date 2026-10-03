@@ -1,14 +1,20 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Android-конфиг Flutter-проекта.
+//
+// ВАЖНО: ndkVersion = "27.0.12077973" — требование shared_preferences_android.
+// Без него сборка падает с "plugin(s) depend on a different Android NDK version".
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
     namespace = "com.lalune.lalune"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -20,21 +26,35 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.lalune.lalune"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    // Подключаем Kotlin-файлы бэкенда из com.lalune.backend.
+    // Gradle по умолчанию компилирует всё из src/main/kotlin, так что
+    // дополнительных sourceSets не требуется.
+    sourceSets {
+        getByName("main") {
+            java.srcDirs("src/main/kotlin")
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Debug-подпись — чтобы APK можно было ставить без keystore.
+            // Для релиза в маркет нужен свой signingConfig.
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    packaging {
+        // Не сжимать .so — они и так упакованы, а распаковка при установке
+        // занимает время и требует extractNativeLibs=true.
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }
