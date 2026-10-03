@@ -1,15 +1,6 @@
 # .github/workflows/build-ios.yml
 #
 # Сборка LaLune под iOS (Flutter native + Swift backend).
-#
-# Порядок шагов:
-#   1. Xcode и инструменты
-#   2. Backend/iOS/*.swift  →  Frontend/ios/Runner/
-#   3. libcsqtt_ios_core.a  →  Mobile/IOS/Core/  (через build.py? нет — вручную)
-#   4. xcodegen generate
-#   5. xcodebuild archive (unsigned)
-#   6. упаковка Payload/ → LaLune.ipa
-#   7. артефакт
 
 name: Build iOS
 
@@ -40,7 +31,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Инструменты ─────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -73,21 +63,17 @@ jobs:
           brew install xcodegen
           xcodegen --version
 
-      # ── Копируем Swift-бэкенд в iOS runner ──────────────────
-      # В новой архитектуре бэкенд — Backend/iOS/*.swift.
-      # Кладём их в Frontend/ios/Runner/ (основной target),
-      # а PacketTunnelProvider — в отдельный target (создаём в Xcode).
       - name: Copy iOS backend sources
         run: |
           set -e
           mkdir -p Frontend/ios/Runner
-          cp Backend/iOS/Backend.swift        Frontend/ios/Runner/
-          cp Backend/iOS/HttpServer.swift     Frontend/ios/Runner/
-          cp Backend/iOS/CoreManager.swift    Frontend/ios/Runner/
+          mkdir -p Frontend/ios/Tunnel
+
+          cp Backend/iOS/Backend.swift           Frontend/ios/Runner/
+          cp Backend/iOS/HttpServer.swift        Frontend/ios/Runner/
+          cp Backend/iOS/CoreManager.swift       Frontend/ios/Runner/
           cp Backend/iOS/VkWebViewController.swift Frontend/ios/Runner/
 
-          # PacketTunnelProvider — в отдельный target (создаётся ниже).
-          mkdir -p Frontend/ios/Tunnel
           cp Backend/iOS/PacketTunnelProvider.swift Frontend/ios/Tunnel/
 
           echo "Runner sources:"
@@ -95,43 +81,36 @@ jobs:
           echo "Tunnel sources:"
           ls -la Frontend/ios/Tunnel/
 
-      # ── Копируем Assets → Frontend/assets ───────────────────
       - name: Copy assets
         run: |
           set -e
           rm -rf Frontend/assets
           cp -r Assets Frontend/assets
 
-      # ── Flutter pub get ─────────────────────────────────────
       - name: Flutter pub get
         working-directory: Frontend
         run: flutter pub get
 
-      # ── Нативное ядро CSQTT ─────────────────────────────────
       - name: Download CSQTT iOS core
-        working-directory: Frontend/ios/Core
         run: |
           set -e
-          mkdir -p .
+          mkdir -p Frontend/ios/Core
+          cd Frontend/ios/Core
+
           echo "Downloading: $CSQTT_IOS_CORE_URL"
           curl -fL --retry 3 --retry-delay 2 \
             -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
+
           ls -la libcsqtt_ios_core.a
           file libcsqtt_ios_core.a || true
           lipo -info libcsqtt_ios_core.a || true
 
-      # ── Генерация Xcode-проекта ─────────────────────────────
-      # project.yml в Frontend/ios/ должен быть — его создаёт
-      # flutter create, но там по умолчанию нет Tunnel extension.
-      # Наш Frontend/ios/project.yml (или xcodeproj/project.pbxproj)
-      # должен включать оба target'а.
       - name: Generate Xcode project
         working-directory: Frontend/ios
         run: |
           set -e
           if [ ! -f project.yml ]; then
             echo "::error::Frontend/ios/project.yml not found"
-            echo "Add project.yml with Runner + Tunnel targets."
             exit 1
           fi
 
@@ -147,8 +126,6 @@ jobs:
           echo "objectVersion after xcodegen:"
           grep -m1 'objectVersion' "$PBX" || true
 
-          # XcodeGen может записать 77 (формат Xcode 16), который Xcode 15.4
-          # не читает. Патчим на 56 (формат Xcode 14).
           if grep -q 'objectVersion = 77;' "$PBX"; then
             echo "note: downgrading objectVersion 77 -> 56"
             sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' "$PBX"
@@ -159,7 +136,6 @@ jobs:
           echo "$FINAL" | grep -q '56' \
             || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open"; exit 1; }
 
-      # ── Архив (unsigned) ────────────────────────────────────
       - name: Archive (unsigned)
         working-directory: Frontend/ios
         run: |
@@ -177,19 +153,14 @@ jobs:
             DEVELOPMENT_TEAM="" \
             ONLY_ACTIVE_ARCH=NO
 
-      # ── Упаковка IPA ────────────────────────────────────────
       - name: Package unsigned IPA
         working-directory: Frontend/ios
         run: |
           set -e
-          APP="build/LaLune.xcarchive/Products/Applications/Runner.app"
-          if [ ! -d "$APP" ]; then
-            # Имя бандла — из PRODUCT_NAME. Может быть LaLune.app.
-            APP="build/LaLune.xcarchive/Products/Applications/LaLune.app"
-          fi
+          APP="build/LaLune.xcarchive/Products/Applications/LaLune.app"
 
           if [ ! -d "$APP" ]; then
-            echo "::error::app bundle not found"
+            echo "::error::app bundle not found: $APP"
             find build -maxdepth 6 -type d || true
             exit 1
           fi
@@ -202,7 +173,6 @@ jobs:
 
           ls -la build/LaLune.ipa
 
-      # ── Артефакты ───────────────────────────────────────────
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
