@@ -41,13 +41,15 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Runner/Runner-Bridging-Header.h
 
         # Flutter framework'и лежат внутри .xcframework/ios-arm64/.
-        # Xcode НЕ заходит автоматически в .xcframework — надо указать
-        # конкретную архитектуру в FRAMEWORK_SEARCH_PATHS.
+        #
+        # ВАЖНО: FlutterPluginRegistrant.xcframework НЕ создаётся через
+        # `flutter build ios-framework` в новых версиях. Вместо него
+        # используется GeneratedPluginRegistrant.m/.h в Runner/ —
+        # он уже есть в проекте и компилируется автоматически.
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/Flutter/Release/Flutter.xcframework/ios-arm64"
           - "$(PROJECT_DIR)/Flutter/Release/App.xcframework/ios-arm64"
-          - "$(PROJECT_DIR)/Flutter/Release/FlutterPluginRegistrant.xcframework/ios-arm64"
           - "$(PROJECT_DIR)/Flutter/Release/shared_preferences_foundation.xcframework/ios-arm64"
 
         OTHER_LDFLAGS:
@@ -56,8 +58,6 @@ targets:
           - "Flutter"
           - "-framework"
           - "App"
-          - "-framework"
-          - "FlutterPluginRegistrant"
           - "-framework"
           - "shared_preferences_foundation"
           - "-framework"
@@ -72,6 +72,7 @@ targets:
           - "@executable_path/Frameworks"
 
     # Embed Flutter.framework и plugin-фреймворки в .app/Frameworks/
+    # (БЕЗ FlutterPluginRegistrant — его нет как .xcframework).
     postCompileScripts:
       - name: "Embed Flutter Frameworks"
         basedOnDependencyAnalysis: false
@@ -81,7 +82,7 @@ targets:
           FW_DST="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
           mkdir -p "$FW_DST"
 
-          for fw in Flutter App FlutterPluginRegistrant shared_preferences_foundation; do
+          for fw in Flutter App shared_preferences_foundation; do
             SRC="${SRCROOT}/Flutter/Release/${fw}.xcframework/ios-arm64/${fw}.framework"
             if [ -d "$SRC" ]; then
               rm -rf "$FW_DST/${fw}.framework"
