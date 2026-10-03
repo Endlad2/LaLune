@@ -3,16 +3,13 @@
 // Windows runner: запускает LaLuneManager.exe (Rust backend) от админа
 // перед стартом UI, ловит закрытие окна и останавливает бэкенд.
 //
-// Что делает:
-//   1. Манифест runas (см. runner.exe.manifest) требует админ-права
-//      на само приложение — при запуске Windows покажет UAC.
-//   2. Читает %APPDATA%\.la-lune\LaLuneManager.exe.
-//   3. Запускает его в фоне (CREATE_NO_WINDOW, без наследования консоли).
-//   4. При закрытии окна (WM_CLOSE) шлёт POST /shutdown и при необходимости
-//      убивает процесс бэкенда.
+// Админ-права запрашиваются через ShellExecuteEx "runas" в runtime,
+// а НЕ через манифест. Это позволяет обойти LNK1327 на CI (mt.exe из
+// Windows SDK 26100 падает с "-outputresource:file;#").
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <shellapi.h>
 #include <windows.h>
 #include <winhttp.h>
 
@@ -23,8 +20,72 @@
 #include "utils.h"
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "shell32.lib")
 
-// ==== Пути ====
+// ============================================================
+//  Проверка админ-прав + ре-лонч с UAC
+// ============================================================
+
+static bool IsRunningAsAdmin() {
+  BOOL isAdmin = FALSE;
+  PSID adminGroup = nullptr;
+  SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+
+  if (AllocateAndInitializeSid(
+          &ntAuth, 2,
+          SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+          0, 0, 0, 0, 0, 0, &adminGroup)) {
+    CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+    FreeSid(adminGroup);
+  }
+  return isAdmin == TRUE;
+}
+
+static bool RelaunchAsAdmin() {
+  wchar_t exePath[MAX_PATH];
+  if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+    return false;
+  }
+
+  std::wstring params = GetCommandLineW();
+  size_t firstSpace = params.find(L' ');
+  if (firstSpace != std::wstring::npos) {
+    params = params.substr(firstSpace + 1);
+  } else {
+    params.clear();
+  }
+
+  SHELLEXECUTEINFOW sei = { sizeof(sei) };
+  sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+  sei.lpVerb = L"runas";
+  sei.lpFile = exePath;
+  sei.lpParameters = params.empty() ? nullptr : params.c_str();
+  sei.lpDirectory = nullptr;
+  sei.nShow = SW_SHOWNORMAL;
+
+  if (!ShellExecuteExW(&sei)) {
+    DWORD err = GetLastError();
+    if (err == ERROR_CANCELLED) {
+      MessageBoxW(nullptr,
+                  L"LaLune требует прав администратора для работы VPN.",
+                  L"LaLune",
+                  MB_OK | MB_ICONERROR);
+    } else {
+      MessageBoxW(nullptr,
+                  L"Не удалось перезапустить LaLune с правами администратора.",
+                  L"LaLune",
+                  MB_OK | MB_ICONERROR);
+    }
+    return false;
+  }
+
+  if (sei.hProcess) CloseHandle(sei.hProcess);
+  return true;
+}
+
+// ============================================================
+//  Пути
+// ============================================================
 
 static std::wstring appdata_dir() {
   wchar_t buf[MAX_PATH];
@@ -54,7 +115,9 @@ static bool file_exists(const std::wstring& path) {
   return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-// ==== Утилиты ====
+// ============================================================
+//  Backend: старт / стоп
+// ============================================================
 
 static bool backend_alive() {
   if (!file_exists(manager_pid_file())) return false;
@@ -91,7 +154,6 @@ static void start_backend() {
     return;
   }
 
-  // Открываем лог-файл, чтобы перенаправить stdout/stderr.
   SECURITY_ATTRIBUTES sa = {};
   sa.nLength = sizeof(sa);
   sa.bInheritHandle = TRUE;
@@ -129,7 +191,6 @@ static void start_backend() {
     return;
   }
 
-  // Сохраняем PID в файл.
   HANDLE h = CreateFileW(manager_pid_file().c_str(), GENERIC_WRITE,
                          FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -144,8 +205,6 @@ static void start_backend() {
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 }
-
-// ==== Остановка через HTTP /shutdown (WinHTTP) ====
 
 static void http_post_shutdown() {
   HINTERNET hSession = WinHttpOpen(L"LaLune/0.6",
@@ -177,7 +236,6 @@ static void stop_backend() {
   http_post_shutdown();
   Sleep(500);
 
-  // На случай если процесс жив — прибиваем.
   if (!file_exists(manager_pid_file())) return;
   HANDLE h = CreateFileW(manager_pid_file().c_str(), GENERIC_READ,
                          FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -199,7 +257,9 @@ static void stop_backend() {
   }
 }
 
-// ==== WndProc-хук: перехватываем WM_CLOSE ====
+// ============================================================
+//  WndProc hook: ловим WM_CLOSE
+// ============================================================
 
 namespace {
   FlutterWindow* g_window = nullptr;
@@ -215,23 +275,31 @@ namespace {
   }
 }
 
-// ==== wWinMain ====
+// ============================================================
+//  wWinMain
+// ============================================================
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t* command_line, _In_ int show_command) {
-  // Attach to console when present (e.g. 'flutter run') or create a new console
-  // when running with a debugger.
+  // 1. Проверяем админ-права. Если нет — перезапускаемся с UAC и выходим.
+  if (!IsRunningAsAdmin()) {
+    if (RelaunchAsAdmin()) {
+      return EXIT_SUCCESS;
+    }
+    return EXIT_FAILURE;
+  }
+
+  // 2. Attach to console (для flutter run) или создаём при отладке.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
     CreateAndAttachConsole();
   }
 
-  // 1. Запускаем бэкенд (мы уже админ — UAC сработал до main()).
+  // 3. Запускаем бэкенд.
   start_backend();
 
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
-
   std::vector<std::string> command_line_arguments = GetCommandLineArguments();
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
@@ -243,7 +311,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
   window.SetQuitOnClose(true);
 
-  // 2. Подвешиваем hook на WM_CLOSE к HWND окна Flutter.
+  // 4. Хук на WM_CLOSE.
   g_window = &window;
   g_main_hwnd = window.GetHandle();
   if (g_main_hwnd) {

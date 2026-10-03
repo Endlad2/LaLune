@@ -59,21 +59,13 @@ jobs:
   # ============================================================
   #  Desktop Windows
   #
-  #  ПРОБЛЕМА: LNK1327 при mt.exe из Windows SDK 10.0.26100.
-  #  Flutter 3.24 зовёт mt.exe с "-outputresource:file;#" (без
-  #  номера ресурса), а mt.exe из 26100 требует явный номер.
+  #  ОБХОД LNK1327:
+  #  CMake больше не добавляет "runner.exe.manifest" в add_executable
+  #  (см. Frontend/windows/runner/CMakeLists.txt). Значит, mt.exe
+  #  не вызывается — LNK1327 не появляется.
   #
-  #  VS2022, cl.exe, link.exe, rc.exe — работают (иначе Flutter
-  #  упал бы раньше). Падает ТОЛЬКО mt.exe.
-  #
-  #  РЕШЕНИЕ: подменяем mt.exe/rc.exe/rcdll.dll в папке 26100 на
-  #  версии из ДРУГОГО SDK, который уже есть в образе. В
-  #  windows-latest есть:
-  #    10.0.17134.0   (Windows 10 1803)
-  #    10.0.20348.0   (Windows Server 2022) ← используем этот
-  #    10.0.26100.0   (наш проблемный)
-  #
-  #  Если 20348 вдруг нет — берём 17134.
+  #  Админ-права запрашиваются в runtime через ShellExecuteExW("runas")
+  #  в main.cpp → IsRunningAsAdmin() / RelaunchAsAdmin().
   # ============================================================
   build-desktop-windows:
     name: Desktop Windows
@@ -95,77 +87,12 @@ jobs:
           channel: stable
           cache: true
 
-      # ── VS2022 Community (Native Desktop C++) ───────────────
       - name: Install VS2022 Community (Native Desktop C++)
         shell: pwsh
         run: |
           choco install visualstudio2022community -y --no-progress `
             --package-parameters "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
 
-      # ── Подменяем mt.exe / rc.exe в SDK 26100 на версии из
-      #    другого установленного SDK (20348 → fallback 17134).
-      - name: Replace mt.exe/rc.exe in SDK 26100
-        shell: pwsh
-        run: |
-          $sdkBinRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
-          $target = Join-Path $sdkBinRoot "10.0.26100.0\x64"
-
-          if (-not (Test-Path $target)) {
-            Write-Error "Target SDK bin not found: $target"
-            Get-ChildItem $sdkBinRoot -Directory | Select-Object -ExpandProperty Name
-            exit 1
-          }
-
-          # Ищем "старый" SDK — 20348, потом 17134.
-          $candidates = @("10.0.20348.0", "10.0.17134.0")
-          $source = $null
-          foreach ($ver in $candidates) {
-            $p = Join-Path $sdkBinRoot "$ver\x64"
-            if (Test-Path (Join-Path $p "mt.exe")) {
-              $source = $p
-              Write-Host "Using source SDK: $ver"
-              break
-            }
-          }
-
-          if (-not $source) {
-            Write-Error "No usable older SDK found in $sdkBinRoot"
-            Get-ChildItem $sdkBinRoot -Directory | Select-Object -ExpandProperty Name
-            exit 1
-          }
-
-          Write-Host "Source: $source"
-          Write-Host "Target: $target"
-
-          foreach ($f in @("mt.exe", "rc.exe", "rcdll.dll")) {
-            $src = Join-Path $source $f
-            $dst = Join-Path $target $f
-            if (Test-Path $src) {
-              Write-Host "Copying $f : $src → $dst"
-              Copy-Item -Path $src -Destination $dst -Force
-            } else {
-              Write-Warning "$f not found in $source"
-            }
-          }
-
-          Write-Host "=== After replacement ==="
-          Get-Item "$target\mt.exe" | Select-Object Name, Length, LastWriteTime
-          Get-Item "$target\rc.exe" | Select-Object Name, Length, LastWriteTime
-
-      # ── Проверка: mt.exe работает ────────────────────────────
-      - name: Verify mt.exe works
-        shell: pwsh
-        run: |
-          $mt = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe"
-          Write-Host "Path: $mt"
-          $out = & $mt 2>&1 | Out-String
-          if ($out -notmatch "Manifest Tool") {
-            Write-Error "mt.exe did not print usage: $out"
-            exit 1
-          }
-          Write-Host "OK: mt.exe responds"
-
-      # ── Скрываем VS2026 (необязательно) ──────────────────────
       - name: Hide VS2026 from vswhere (optional)
         shell: pwsh
         continue-on-error: true
@@ -186,7 +113,6 @@ jobs:
           Write-Host "--- latest ---"
           & $vswhere -latest -products * -property installationPath
 
-      # ── Активация MSVC ───────────────────────────────────────
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -199,13 +125,11 @@ jobs:
           Write-Host "WindowsSdkDir: $env:WindowsSdkDir"
           Write-Host "WindowsSDKVersion: $env:WindowsSDKVersion"
           where.exe cl.exe
-          where.exe mt.exe
           where.exe link.exe
 
       - name: Flutter doctor (diagnostics)
         run: flutter doctor -v
 
-      # ── Сборка ────────────────────────────────────────────────
       - name: Build (CI mode)
         shell: cmd
         run: python build.py --ci --target windows

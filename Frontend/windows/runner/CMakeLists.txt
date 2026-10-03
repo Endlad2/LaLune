@@ -5,7 +5,12 @@ project(runner LANGUAGES CXX)
 # top-level CMakeLists.txt, not the value here, or `flutter run` will no longer
 # work.
 #
-# Any new source files that you add to the application should be added here.
+# ВАЖНО: "runner.exe.manifest" НЕ включён в add_executable.
+# Это обходит LNK1327 при сборке на CI, где mt.exe из Windows SDK 26100
+# падает с "-outputresource:file;#" (без номера ресурса).
+#
+# Админ-права запрашиваются в runtime через ShellExecuteEx "runas"
+# (см. main.cpp → EnsureAdmin()).
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
@@ -13,7 +18,6 @@ add_executable(${BINARY_NAME} WIN32
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
-  "runner.exe.manifest"
 )
 
 # Apply the standard set of build settings. This can be removed for applications
