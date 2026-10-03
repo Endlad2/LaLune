@@ -1,0 +1,40 @@
+name: lalune
+description: LaLune — native Flutter client for CSQTT VPN
+version: 0.6.0
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP
+  http: ^1.2.2
+
+  # State
+  flutter_riverpod: ^2.5.1
+
+  # Utils
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Сюда prepare_assets.py копирует корневой Assets/.
+  # Пути резолвятся относительно pubspec.yaml (то есть Frontend/).
+  assets:
+    - assets/
+
+  fonts:
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Nunito-Bold.ttf
+          weight: 700

@@ -1,25 +1,25 @@
 # .github/workflows/build-ios.yml
 #
-# Сборка LaLune под iOS.
+# Сборка LaLune под iOS (Flutter native + Swift backend).
 #
-# Порядок шагов важен:
+# Порядок шагов:
 #   1. Xcode и инструменты
-#   2. Flutter web-фронтенд (build_frontend.py --platform IOS)
-#   3. libcsqtt_ios_core.a  →  Mobile/IOS/Core/
-#   4. xcodegen generate (+ патч objectVersion)
+#   2. Backend/iOS/*.swift  →  Frontend/ios/Runner/
+#   3. libcsqtt_ios_core.a  →  Mobile/IOS/Core/  (через build.py? нет — вручную)
+#   4. xcodegen generate
 #   5. xcodebuild archive (unsigned)
 #   6. упаковка Payload/ → LaLune.ipa
-#   7. артефакт (+ релиз на теге v*)
+#   7. артефакт
 
 name: Build iOS
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
+    branches: [main, master]
+    tags: ['v*']
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -27,7 +27,6 @@ concurrency:
 
 env:
   FLUTTER_CHANNEL: stable
-  # Фиксируем Xcode. macos-14 несёт Xcode 15.4 и (в свежих образах) 16.x.
   XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
 
@@ -41,11 +40,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Инструменты ──────────────────────────────────────────
+      # ── Инструменты ─────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Select Xcode
         run: |
@@ -74,28 +73,46 @@ jobs:
           brew install xcodegen
           xcodegen --version
 
-      # ── Фронтенд ─────────────────────────────────────────────
-      - name: Build Flutter web frontend (iOS)
-        run: python build_frontend.py --platform IOS
-
-      - name: Verify frontend artifacts
+      # ── Копируем Swift-бэкенд в iOS runner ──────────────────
+      # В новой архитектуре бэкенд — Backend/iOS/*.swift.
+      # Кладём их в Frontend/ios/Runner/ (основной target),
+      # а PacketTunnelProvider — в отдельный target (создаём в Xcode).
+      - name: Copy iOS backend sources
         run: |
           set -e
-          for f in index.html app.html api.js flutter_bootstrap.js; do
-            if [ ! -f "Frontend/output/$f" ]; then
-              echo "::error::missing Frontend/output/$f"
-              ls -la Frontend/output/ || true
-              exit 1
-            fi
-          done
-          echo "Frontend/output contents:"
-          ls -la Frontend/output/
+          mkdir -p Frontend/ios/Runner
+          cp Backend/iOS/Backend.swift        Frontend/ios/Runner/
+          cp Backend/iOS/HttpServer.swift     Frontend/ios/Runner/
+          cp Backend/iOS/CoreManager.swift    Frontend/ios/Runner/
+          cp Backend/iOS/VkWebViewController.swift Frontend/ios/Runner/
 
-      # ── Нативное ядро ────────────────────────────────────────
+          # PacketTunnelProvider — в отдельный target (создаётся ниже).
+          mkdir -p Frontend/ios/Tunnel
+          cp Backend/iOS/PacketTunnelProvider.swift Frontend/ios/Tunnel/
+
+          echo "Runner sources:"
+          ls -la Frontend/ios/Runner/
+          echo "Tunnel sources:"
+          ls -la Frontend/ios/Tunnel/
+
+      # ── Копируем Assets → Frontend/assets ───────────────────
+      - name: Copy assets
+        run: |
+          set -e
+          rm -rf Frontend/assets
+          cp -r Assets Frontend/assets
+
+      # ── Flutter pub get ─────────────────────────────────────
+      - name: Flutter pub get
+        working-directory: Frontend
+        run: flutter pub get
+
+      # ── Нативное ядро CSQTT ─────────────────────────────────
       - name: Download CSQTT iOS core
-        working-directory: Mobile/IOS/Core
+        working-directory: Frontend/ios/Core
         run: |
           set -e
+          mkdir -p .
           echo "Downloading: $CSQTT_IOS_CORE_URL"
           curl -fL --retry 3 --retry-delay 2 \
             -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
@@ -103,14 +120,24 @@ jobs:
           file libcsqtt_ios_core.a || true
           lipo -info libcsqtt_ios_core.a || true
 
-      # ── Xcode-проект ─────────────────────────────────────────
+      # ── Генерация Xcode-проекта ─────────────────────────────
+      # project.yml в Frontend/ios/ должен быть — его создаёт
+      # flutter create, но там по умолчанию нет Tunnel extension.
+      # Наш Frontend/ios/project.yml (или xcodeproj/project.pbxproj)
+      # должен включать оба target'а.
       - name: Generate Xcode project
-        working-directory: Mobile/IOS
+        working-directory: Frontend/ios
         run: |
           set -e
+          if [ ! -f project.yml ]; then
+            echo "::error::Frontend/ios/project.yml not found"
+            echo "Add project.yml with Runner + Tunnel targets."
+            exit 1
+          fi
+
           xcodegen generate
 
-          PBX=LaLune.xcodeproj/project.pbxproj
+          PBX=Runner.xcodeproj/project.pbxproj
           if [ ! -f "$PBX" ]; then
             echo "::error::$PBX not found after xcodegen"
             find . -name project.pbxproj || true
@@ -120,28 +147,26 @@ jobs:
           echo "objectVersion after xcodegen:"
           grep -m1 'objectVersion' "$PBX" || true
 
-          # XcodeGen из Homebrew может проигнорировать options.objectVersion
-          # и записать 77 (формат Xcode 16), который Xcode 15.4 не читает.
-          # Патчим принудительно на 56 (формат Xcode 14).
+          # XcodeGen может записать 77 (формат Xcode 16), который Xcode 15.4
+          # не читает. Патчим на 56 (формат Xcode 14).
           if grep -q 'objectVersion = 77;' "$PBX"; then
             echo "note: downgrading objectVersion 77 -> 56"
             sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' "$PBX"
           fi
 
-          # Финальная проверка: Xcode 15.4 должен суметь открыть проект.
           FINAL=$(grep -m1 'objectVersion' "$PBX" || true)
           echo "objectVersion final: $FINAL"
           echo "$FINAL" | grep -q '56' \
-            || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open the project"; exit 1; }
+            || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open"; exit 1; }
 
-      # ── Архив ────────────────────────────────────────────────
+      # ── Архив (unsigned) ────────────────────────────────────
       - name: Archive (unsigned)
-        working-directory: Mobile/IOS
+        working-directory: Frontend/ios
         run: |
           set -e
           xcodebuild archive \
-            -project LaLune.xcodeproj \
-            -scheme LaLune \
+            -project Runner.xcodeproj \
+            -scheme Runner \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/LaLune.xcarchive \
@@ -152,28 +177,22 @@ jobs:
             DEVELOPMENT_TEAM="" \
             ONLY_ACTIVE_ARCH=NO
 
-      # ── Упаковка IPA ─────────────────────────────────────────
+      # ── Упаковка IPA ────────────────────────────────────────
       - name: Package unsigned IPA
-        working-directory: Mobile/IOS
+        working-directory: Frontend/ios
         run: |
           set -e
-          APP="build/LaLune.xcarchive/Products/Applications/LaLune.app"
+          APP="build/LaLune.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP" ]; then
+            # Имя бандла — из PRODUCT_NAME. Может быть LaLune.app.
+            APP="build/LaLune.xcarchive/Products/Applications/LaLune.app"
+          fi
 
           if [ ! -d "$APP" ]; then
-            echo "::error::app bundle not found: $APP"
+            echo "::error::app bundle not found"
             find build -maxdepth 6 -type d || true
             exit 1
           fi
-
-          # Страховка: postBuildScripts из project.yml должен был
-          # положить фронтенд в корень бандла.
-          for f in app.html api.js flutter_bootstrap.js; do
-            if [ ! -f "$APP/$f" ]; then
-              echo "::error::$f not embedded into the app bundle"
-              ls -la "$APP" || true
-              exit 1
-            fi
-          done
 
           rm -rf build/Payload build/LaLune.ipa
           mkdir -p build/Payload
@@ -183,12 +202,12 @@ jobs:
 
           ls -la build/LaLune.ipa
 
-      # ── Артефакты ────────────────────────────────────────────
+      # ── Артефакты ───────────────────────────────────────────
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: LaLune-iOS-unsigned
-          path: Mobile/IOS/build/LaLune.ipa
+          path: Frontend/ios/build/LaLune.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -196,5 +215,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: Mobile/IOS/build/LaLune.ipa
+          files: Frontend/ios/build/LaLune.ipa
           fail_on_unmatched_files: true
