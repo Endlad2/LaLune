@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // LaLune backend daemon (Windows/Linux).
-// HTTP API на 127.0.0.1:1062, TUN через crate `tun`, ядро CSQTT.
+// HTTP API на 127.0.0.1:1062.
+//
+// Windows: Wintun FFI (wintun.dll из %APPDATA%\.la-lune\)
+// Linux:   крейт tun
 
 mod api;
 mod config;
@@ -11,6 +14,9 @@ mod settings;
 mod state;
 mod vk;
 mod vpn;
+
+#[cfg(target_os = "windows")]
+mod wintun;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -32,7 +38,6 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(AppState::new().await?);
 
-    // Запускаем SmartTunnel, если он включён в настройках.
     state.maybe_autostart_smarttunnel().await;
 
     let app = api::router(state.clone());

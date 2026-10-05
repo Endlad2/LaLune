@@ -2,7 +2,7 @@
 name = "lalune-backend"
 version = "0.6.0"
 edition = "2021"
-description = "LaLune backend daemon for Windows/Linux (axum + tun)"
+description = "LaLune backend daemon for Windows/Linux (axum + tun/wintun)"
 license = "PolyForm-Noncommercial-1.0.0"
 authors = ["Endlad7373 <vladut7373@gmail.com>"]
 
@@ -43,14 +43,19 @@ parking_lot = "0.12"
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
-# TUN
-tun = "0.6"
-
 # SQLite
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 # Regex
 regex = "1"
+
+# ---------- Windows: FFI к wintun.dll ----------
+[target.'cfg(target_os = "windows")'.dependencies]
+libloading = "0.8"
+
+# ---------- Linux: крейт tun ----------
+[target.'cfg(target_os = "linux")'.dependencies]
+tun = "0.6"
 
 [profile.release]
 opt-level = "z"
