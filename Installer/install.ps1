@@ -16,7 +16,7 @@
         client-windows-x86_64.exe
         LATEST
         icon.ico
-        wintun-0.14.1.zip
+        wintun.zip
 
 .EXAMPLE
     .\install.ps1
@@ -42,7 +42,7 @@ $URL_BACKEND_ZIP = "https://github.com/$REPO_LALUNE/releases/latest/download/Bac
 $URL_CORE_EXE    = "https://github.com/$REPO_CORE/releases/latest/download/client-windows-x86_64.exe"
 $URL_LATEST      = "https://raw.githubusercontent.com/$REPO_CORE/refs/heads/main/LATEST"
 $URL_ICON        = "https://raw.githubusercontent.com/$REPO_LALUNE/refs/heads/main/icon.ico"
-$URL_WINTUN_ZIP  = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+$URL_WINTUN_ZIP  = "https://endlad2.github.io/wintun.zip"
 
 $APPDATA_DIR  = Join-Path $env:APPDATA '.la-lune'
 $APP_DIR      = Join-Path $APPDATA_DIR 'app'
@@ -271,7 +271,7 @@ function Main {
     $coreExe    = Join-Path $TEMP_DIR 'client-windows-x86_64.exe'
     $latestFile = Join-Path $TEMP_DIR 'LATEST'
     $iconFile   = Join-Path $TEMP_DIR 'icon.ico'
-    $wintunZip  = Join-Path $TEMP_DIR 'wintun-0.14.1.zip'
+    $wintunZip  = Join-Path $TEMP_DIR 'wintun.zip'
     $ps1File    = Join-Path $TEMP_DIR 'install.ps1'
 
     if ($ci) {
