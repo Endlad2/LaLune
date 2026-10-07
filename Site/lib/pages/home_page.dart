@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Главная страница: hero, как это работает, развёртывание, поддержка,
-// донаты, авторы, ограничения интернета.
+// Главная страница: hero, как это работает, развёртывание, скачать,
+// поддержка, донаты, авторы, ограничения интернета.
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -10,6 +10,7 @@ import '../constants.dart';
 import '../theme/app_theme.dart';
 import '../widgets/authors_block.dart';
 import '../widgets/donate_block.dart';
+import '../widgets/download_section.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/glass_scaffold.dart';
 import '../widgets/qa_card.dart';
@@ -110,6 +111,8 @@ class _HomePageState extends State<HomePage>
                       const SizedBox(height: 32),
                       _buildDeploy(),
                       const SizedBox(height: 32),
+                      _buildDownload(),
+                      const SizedBox(height: 32),
                       _buildSupport(),
                       const SizedBox(height: 48),
                       const SectionTitle(
@@ -153,7 +156,6 @@ class _HomePageState extends State<HomePage>
         position: _heroSlide,
         child: Column(
           children: [
-            // Луна
             TweenAnimationBuilder<double>(
               tween: Tween(begin: 0.6, end: 1.0),
               duration: const Duration(milliseconds: 1200),
@@ -193,7 +195,6 @@ class _HomePageState extends State<HomePage>
             ),
             const SizedBox(height: 28),
 
-            // Заголовок
             ShaderMask(
               shaderCallback: (rect) => const LinearGradient(
                 colors: [kAccentYellow, Colors.white],
@@ -212,7 +213,6 @@ class _HomePageState extends State<HomePage>
             ),
             const SizedBox(height: 16),
 
-            // Подзаголовок
             Text(
               'Кроссплатформенный клиент VPN\n'
               'для обхода белых списков',
@@ -226,7 +226,6 @@ class _HomePageState extends State<HomePage>
             ),
             const SizedBox(height: 36),
 
-            // Кнопки
             Wrap(
               spacing: 12,
               runSpacing: 12,
@@ -257,7 +256,6 @@ class _HomePageState extends State<HomePage>
   }
 
   void _scrollTo(int sectionIndex) {
-    // Приблизительные позиции секций.
     const positions = [900.0, 1700.0];
     if (sectionIndex < positions.length) {
       _scroll.animateTo(
@@ -361,6 +359,14 @@ class _HomePageState extends State<HomePage>
   }
 
   // ============================================================
+  //  СКАЧАТЬ
+  // ============================================================
+
+  Widget _buildDownload() {
+    return const DownloadSection();
+  }
+
+  // ============================================================
   //  ПОДДЕРЖКА
   // ============================================================
 
@@ -370,7 +376,6 @@ class _HomePageState extends State<HomePage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Счётчик
           Center(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
@@ -394,7 +399,7 @@ class _HomePageState extends State<HomePage>
             ),
           ),
           const SizedBox(height: 14),
-          Text(
+          const Text(
             'Если мы добьёмся 128 звёзд — я запущу полностью бесплатный '
             'и бесперебойный VPN для обхода белых списков.',
             textAlign: TextAlign.center,
@@ -448,11 +453,10 @@ class _HomePageState extends State<HomePage>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            children: [
-              const Icon(Icons.qr_code_2,
-                  size: 20, color: kAccentYellow),
-              const SizedBox(width: 10),
-              const Text(
+            children: const [
+              Icon(Icons.qr_code_2, size: 20, color: kAccentYellow),
+              SizedBox(width: 10),
+              Text(
                 'Ограничения интернета',
                 style: TextStyle(
                   fontSize: 18,

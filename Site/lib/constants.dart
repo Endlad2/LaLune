@@ -25,6 +25,12 @@ class Links {
   static const String amurcanovGh = 'https://github.com/amurcanov';
   static const String csqttCore  = 'https://github.com/Endlad2/csqtt-core';
 
+  // ---------- GitHub avatars ----------
+  static const String endladAvatar =
+      'https://avatars.githubusercontent.com/u/185694518?s=70&v=4';
+  static const String amurcanovAvatar =
+      'https://avatars.githubusercontent.com/u/222097921?s=70&v=4';
+
   // ---------- Telegram ----------
   static const String communityTg = 'https://t.me/wdttcommunity';
   static const String endladTg    = 'https://t.me/Endlad7373';
@@ -33,6 +39,10 @@ class Links {
   // ---------- Донаты ----------
   static const String yoomoney =
       'https://yoomoney.ru/to/4100119505530465/100';
+
+  // ---------- Скачать ----------
+  static const String latestVersion    = '0.6.0';
+  static const String yandexDisk       = 'https://disk.yandex.ru/d/e3_zJQfHn7xI_Q';
 
   // ---------- Счётчик ----------
   static const String counter =

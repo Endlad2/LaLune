@@ -13,19 +13,21 @@ class AuthorsBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+      children: const [
         _AuthorCard(
           name: 'Endlad7373',
           role: 'разработчик LaLune',
+          avatarUrl: Links.endladAvatar,
           github: Links.endladGh,
           githubLabel: 'github.com/Endlad2',
           telegram: Links.endladTg,
           telegramLabel: '@Endlad7373',
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: 14),
         _AuthorCard(
           name: 'amurcanov',
           role: 'разработчик CSQTT',
+          avatarUrl: Links.amurcanovAvatar,
           github: Links.amurcanovGh,
           githubLabel: 'github.com/amurcanov',
           telegram: Links.amurcanovTg,
@@ -39,6 +41,7 @@ class AuthorsBlock extends StatelessWidget {
 class _AuthorCard extends StatelessWidget {
   final String name;
   final String role;
+  final String avatarUrl;
   final String github;
   final String githubLabel;
   final String telegram;
@@ -47,6 +50,7 @@ class _AuthorCard extends StatelessWidget {
   const _AuthorCard({
     required this.name,
     required this.role,
+    required this.avatarUrl,
     required this.github,
     required this.githubLabel,
     required this.telegram,
@@ -59,13 +63,15 @@ class _AuthorCard extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       child: Row(
         children: [
+          // Аватар с GitHub
           Container(
-            width: 48,
-            height: 48,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                colors: [Color(0xFF4A6CF7), Color(0xFFF7E84E)],
+              border: Border.all(
+                color: const Color(0xFF4A6CF7).withOpacity(0.55),
+                width: 2,
               ),
               boxShadow: [
                 BoxShadow(
@@ -75,14 +81,41 @@ class _AuthorCard extends StatelessWidget {
                 ),
               ],
             ),
-            child: Center(
-              child: Text(
-                name.substring(0, 1).toUpperCase(),
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white,
+            child: ClipOval(
+              child: Image.network(
+                avatarUrl,
+                width: 56,
+                height: 56,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: const Color(0xFF4A6CF7).withOpacity(0.2),
+                  child: Center(
+                    child: Text(
+                      name.substring(0, 1).toUpperCase(),
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
                 ),
+                loadingBuilder: (_, child, progress) {
+                  if (progress == null) return child;
+                  return Container(
+                    color: const Color(0xFF4A6CF7).withOpacity(0.15),
+                    child: const Center(
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white54,
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ),
