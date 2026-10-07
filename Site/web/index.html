@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <meta name="description" content="LaLune — кроссплатформенный клиент VPN для обхода белых списков.">
+  <meta name="theme-color" content="#0A0E2A">
+
+  <meta property="og:title" content="LaLune — кроссплатформенный VPN-клиент">
+  <meta property="og:description" content="Обход белых списков через VK Calls, Яндекс Документы и другие посредники.">
+  <meta property="og:type" content="website">
+
+  <title>LaLune</title>
+  <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/Endlad2/LaLune/refs/heads/main/Assets/icon.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: #0A0E2A;
+      color: #fff;
+      font-family: 'Nunito', -apple-system, BlinkMacSystemFont, sans-serif;
+      overflow-x: hidden;
+    }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0A0E2A;
+      z-index: 1000;
+      transition: opacity 0.4s ease;
+    }
+
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .loader-moon {
+      font-size: 64px;
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+
+    .loader-text {
+      margin-top: 20px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.1); opacity: 0.7; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="loader-moon">🌙</div>
+    <div class="loader-text">LaLune</div>
+  </div>
+
+  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    // Скрываем лоадер после первого кадра Flutter.
+    window.addEventListener('flutter-first-frame', function() {
+      document.getElementById('loading').classList.add('hidden');
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+name: lalune_web
+description: LaLune — кроссплатформенный VPN-клиент (веб-версия)
+version: 0.6.0
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Открытие внешних ссылок (GitHub, Telegram, кошельки, ЮMoney)
+  url_launcher: ^6.3.0
+
+  # Копирование в буфер обмена — встроено в services, отдельный пакет не нужен.
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Шрифт Nunito подключается через <link> в web/index.html.
+  # Ассеты не нужны: все картинки грузятся по raw-ссылкам из GitHub.

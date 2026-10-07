@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+#
+# Публикация LaLune Web (Flutter) на GitHub Pages.
+#
+# Триггеры:
+#   * push в main — если изменилась папка Site/ или сам workflow
+#   * ручной запуск через Actions → Run workflow
+#
+# Что делает:
+#   1. Ставит Flutter (stable).
+#   2. flutter pub get в Site/.
+#   3. flutter build web --release --base-href "/LaLune/".
+#   4. Публикует Site/build/web/ на GitHub Pages.
+#
+# ВАЖНО (один раз): в настройках репозитория включить
+#   Settings → Pages → Source → GitHub Actions.
+
+name: Deploy Site to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+# Права, необходимые для деплоя на Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Разрешаем только один одновременный деплой; новый отменяет старый.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Flutter Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable web
+        run: flutter config --enable-web
+
+      - name: Get dependencies
+        working-directory: Site
+        run: flutter pub get
+
+      - name: Build web
+        working-directory: Site
+        run: flutter build web --release --base-href "/LaLune/"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: Site/build/web
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

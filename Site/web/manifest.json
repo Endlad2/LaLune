@@ -1,0 +1,23 @@
+{
+  "name": "LaLune",
+  "short_name": "LaLune",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0A0E2A",
+  "theme_color": "#0A0E2A",
+  "description": "LaLune — кроссплатформенный клиент VPN для обхода белых списков",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/Endlad2/LaLune/refs/heads/main/Assets/icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/Endlad2/LaLune/refs/heads/main/Assets/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
