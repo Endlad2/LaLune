@@ -12,7 +12,7 @@ name = "LaLune-Installer"
 path = "src/main.rs"
 
 [dependencies]
-# GUI (лёгкий)
+# GUI (лёгкий, без C++ toolchain — только WinAPI)
 native-windows-gui = "1.0"
 
 # Распаковка встроенных zip
@@ -20,10 +20,18 @@ zip = { version = "2.1", default-features = false, features = ["deflate"] }
 
 # Прочее
 anyhow = "1"
-tempfile = "3"
+dirs = "5"
+
+# Windows-specific: shell API для ярлыков (COM-обёртка)
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_System_Registry",
+] }
 
 [build-dependencies]
-# Скачивание во время сборки
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 zip = { version = "2.1", default-features = false, features = ["deflate"] }
 anyhow = "1"

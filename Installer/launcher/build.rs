@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // build.rs — во время сборки скачивает все нужные файлы и кладёт их
-// в OUT_DIR. Затем main.rs включает их через include_bytes! / include_str!.
+// в OUT_DIR. Затем main.rs/installer.rs включают их через include_bytes!.
 //
-// Если файл уже есть в OUT_DIR — не перекачивает.
+// install.ps1 больше НЕ копируется: лаунчер всё делает сам.
 
 use anyhow::{anyhow, Context, Result};
 use std::fs;
@@ -61,8 +61,7 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
     Ok(())
 }
 
-/// Скачивает wintun.zip и вытаскивает из него wintun\bin\amd64\wintun.dll
-/// рядом с остальными файлами.
+/// Скачивает wintun.zip и извлекает wintun\bin\amd64\wintun.dll.
 fn fetch_wintun_dll(client: &reqwest::blocking::Client, out: &Path) -> Result<()> {
     let dll_dest = out.join("wintun.dll");
     if dll_dest.exists() {
@@ -76,7 +75,6 @@ fn fetch_wintun_dll(client: &reqwest::blocking::Client, out: &Path) -> Result<()
     let file = fs::File::open(&zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
-    // Ищем 'amd64/wintun.dll' (в некоторых версиях — с обратными слэшами).
     let mut found_idx: Option<usize> = None;
     for i in 0..archive.len() {
         let name = archive.by_index(i)?.name().replace('\\', "/");
@@ -105,32 +103,6 @@ fn fetch_wintun_dll(client: &reqwest::blocking::Client, out: &Path) -> Result<()
     Ok(())
 }
 
-/// Копирует install.ps1 из родительского Installer/ в OUT_DIR.
-fn copy_install_ps1(out: &Path) -> Result<()> {
-    let dest = out.join("install.ps1");
-    if dest.exists() {
-        return Ok(());
-    }
-
-    // build.rs лежит в Installer/launcher/build.rs.
-    // install.ps1 — в Installer/install.ps1.
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let src = manifest_dir
-        .parent()
-        .ok_or_else(|| anyhow!("no parent of manifest dir"))?
-        .join("install.ps1");
-
-    if !src.exists() {
-        return Err(anyhow!("install.ps1 not found at {}", src.display()));
-    }
-
-    fs::copy(&src, &dest)
-        .with_context(|| format!("copy {} → {}", src.display(), dest.display()))?;
-
-    println!("cargo:warning=copied: {}", dest.display());
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let out = out_dir();
     fs::create_dir_all(&out).ok();
@@ -142,18 +114,13 @@ fn main() -> Result<()> {
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    // Основные файлы
     download(&client, URL_LALUNE_ZIP, &out.join("LaLune-Windows.zip"))?;
     download(&client, URL_BACKEND_ZIP, &out.join("Backend-Windows.zip"))?;
     download(&client, URL_CORE_EXE, &out.join("client-windows-x86_64.exe"))?;
     download(&client, URL_LATEST, &out.join("LATEST"))?;
     download(&client, URL_ICON, &out.join("icon.ico"))?;
 
-    // wintun.dll
     fetch_wintun_dll(&client, &out)?;
-
-    // install.ps1
-    copy_install_ps1(&out)?;
 
     println!("cargo:warning=LaLune installer: all resources ready in {}", out.display());
     Ok(())
