@@ -3,6 +3,12 @@
 # Сборка LaLune под iOS (Flutter native + Swift backend).
 #
 # Фиксируем Flutter version (3.29.0).
+#
+# ВАЖНО: этот workflow копирует Swift-исходники из Backend/iOS/ в
+# Frontend/ios/Runner/ перед xcodegen generate. Xcode видит ТОЛЬКО
+# файлы в Frontend/ios/Runner/ и Frontend/ios/Tunnel/. Если добавил
+# новый .swift в Backend/iOS/ — обязательно добавь его в шаг
+# "Copy iOS backend sources" ниже, иначе Xcode не найдёт тип.
 
 name: Build iOS
 
@@ -66,23 +72,38 @@ jobs:
           brew install xcodegen
           xcodegen --version
 
+      # ── Копируем Swift-исходники из Backend/iOS/ в Frontend/ios/ ──
+      #
+      # Xcode видит только то, что лежит в Frontend/ios/Runner/ и
+      # Frontend/ios/Tunnel/. Всё остальное — справочное.
+      #
+      # Если добавляешь новый .swift — допиши его в cp ниже.
       - name: Copy iOS backend sources
         run: |
           set -e
           mkdir -p Frontend/ios/Runner
           mkdir -p Frontend/ios/Tunnel
 
-          cp Backend/iOS/Backend.swift           Frontend/ios/Runner/
-          cp Backend/iOS/HttpServer.swift        Frontend/ios/Runner/
-          cp Backend/iOS/CoreManager.swift       Frontend/ios/Runner/
-          cp Backend/iOS/VkWebViewController.swift Frontend/ios/Runner/
+          # Основной target (Runner)
+          cp Backend/iOS/Backend.swift              Frontend/ios/Runner/
+          cp Backend/iOS/HttpServer.swift           Frontend/ios/Runner/
+          cp Backend/iOS/CoreManager.swift          Frontend/ios/Runner/
+          cp Backend/iOS/VkWebViewController.swift  Frontend/ios/Runner/
+          cp Backend/iOS/Socks5Server.swift         Frontend/ios/Runner/
 
+          # Extension target (LaLuneTunnel)
           cp Backend/iOS/PacketTunnelProvider.swift Frontend/ios/Tunnel/
 
-          echo "Runner sources:"
+          echo "=== Runner sources ==="
           ls -la Frontend/ios/Runner/
-          echo "Tunnel sources:"
+          echo "=== Tunnel sources ==="
           ls -la Frontend/ios/Tunnel/
+
+          # Жёсткая проверка: Socks5Server.swift должен лежать в Runner/
+          if [ ! -f Frontend/ios/Runner/Socks5Server.swift ]; then
+            echo "::error::Frontend/ios/Runner/Socks5Server.swift missing after copy"
+            exit 1
+          fi
 
       - name: Copy assets
         run: |
@@ -158,6 +179,20 @@ jobs:
           echo "objectVersion final: $FINAL"
           echo "$FINAL" | grep -q '56' \
             || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open"; exit 1; }
+
+          # ── Проверяем, что Socks5Server.swift попал в проект ────
+          if grep -q 'Socks5Server.swift' "$PBX"; then
+            echo "OK: Socks5Server.swift is part of Runner.xcodeproj"
+          else
+            echo "::error::Socks5Server.swift NOT in Runner.xcodeproj"
+            echo "Check that:"
+            echo "  1. Frontend/ios/Runner/Socks5Server.swift exists"
+            echo "  2. Frontend/ios/project.yml has:"
+            echo "       sources:"
+            echo "         - path: Runner"
+            find . -name 'Socks5Server.swift' || true
+            exit 1
+          fi
 
       - name: Archive (unsigned)
         working-directory: Frontend/ios

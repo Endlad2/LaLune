@@ -546,8 +546,7 @@ public final class Backend {
         guard let data = try? Data(contentsOf: configsURL),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return [] }
-        return arr
-    }
+        return arr    }
 
     private func loadConfigsJson() -> String {
         jsonString(from: loadConfigs()) ?? "[]"

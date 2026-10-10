@@ -2,6 +2,10 @@
 //
 // SOCKS5-сервер для раздачи VPN на iOS.
 //
+// ВАЖНО: этот файл — ИСТОЧНИК для CI. Workflow build-ios.yml копирует
+// его из Backend/iOS/ в Frontend/ios/Runner/ перед xcodegen generate.
+// Xcode видит только то, что лежит в Frontend/ios/Runner/.
+//
 // Слушает 0.0.0.0:1080. Все CONNECT-запросы идут через TUN
 // (default route уже указывает на VPN-туннель).
 //
