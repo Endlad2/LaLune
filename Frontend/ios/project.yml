@@ -26,6 +26,10 @@ targets:
     type: application
     platform: iOS
     sources:
+      # ВАЖНО: sources: Runner целиком — xcodegen рекурсивно подхватит
+      # все .swift / .h / .m / .plist / .storyboard / .xcassets внутри.
+      # Файлы, лежащие в Backend/iOS/, НЕ попадают в сборку — они там
+      # только для справки/чтения.
       - path: Runner
         excludes:
           - "Info.plist"
@@ -40,12 +44,6 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Entitlements/Runner.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Runner/Runner-Bridging-Header.h
 
-        # Flutter framework'и лежат внутри .xcframework/ios-arm64/.
-        #
-        # ВАЖНО: FlutterPluginRegistrant.xcframework НЕ создаётся через
-        # `flutter build ios-framework` в новых версиях. Вместо него
-        # используется GeneratedPluginRegistrant.m/.h в Runner/ —
-        # он уже есть в проекте и компилируется автоматически.
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/Flutter/Release/Flutter.xcframework/ios-arm64"
@@ -71,8 +69,6 @@ targets:
           - "$(inherited)"
           - "@executable_path/Frameworks"
 
-    # Embed Flutter.framework и plugin-фреймворки в .app/Frameworks/
-    # (БЕЗ FlutterPluginRegistrant — его нет как .xcframework).
     postCompileScripts:
       - name: "Embed Flutter Frameworks"
         basedOnDependencyAnalysis: false

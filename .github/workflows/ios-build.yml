@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+#
+# Сборка iOS .ipa (без подписи).
+#
+# ВАЖНО: перед xcodebuild обязательно прогоняем `xcodegen generate`,
+# иначе новые .swift-файлы в Frontend/ios/Runner/ не попадут в
+# Runner.xcodeproj, и компилятор их не увидит (это причина ошибки
+# "cannot find type 'Socks5Server' in scope").
+
+name: Build iOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Frontend/ios/**'
+      - 'Frontend/lib/**'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Flutter ─────────────────────────────────────────────
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        working-directory: Frontend
+        run: flutter pub get
+
+      # ── Собираем Flutter.framework / App.framework / плагины ─
+      - name: Build Flutter iOS framework
+        working-directory: Frontend
+        run: |
+          flutter build ios-framework --release \
+            --output=ios/Flutter/Release \
+            --no-codesign
+
+      # ── xcodegen: пересобираем .xcodeproj из project.yml ────
+      # Это ключевой шаг — без него новые .swift-файлы не попадают
+      # в проект, и Xcode выдаёт "cannot find type in scope".
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: Frontend/ios
+        run: xcodegen generate
+
+      # ── Проверяем, что Socks5Server.swift попал в проект ────
+      - name: Verify Socks5Server is in project
+        working-directory: Frontend/ios
+        run: |
+          set -e
+          if grep -q "Socks5Server.swift" Runner.xcodeproj/project.pbxproj; then
+            echo "OK: Socks5Server.swift is part of Runner.xcodeproj"
+          else
+            echo "ERROR: Socks5Server.swift NOT in Runner.xcodeproj"
+            echo "Check that the file is in Frontend/ios/Runner/ and project.yml has:"
+            echo "  sources:"
+            echo "    - path: Runner"
+            exit 1
+          fi
+
+      # ── Archive ─────────────────────────────────────────────
+      - name: Xcode archive
+        working-directory: Frontend/ios
+        run: |
+          set -e
+          xcodebuild archive \
+            -project Runner.xcodeproj \
+            -scheme Runner \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/LaLune.xcarchive \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO
+
+      # ── .ipa из .xcarchive ──────────────────────────────────
+      - name: Package .ipa
+        working-directory: Frontend/ios
+        run: |
+          set -e
+          cd build/LaLune.xcarchive/Products/Applications
+          mkdir -p Payload
+          mv LaLune.app Payload/
+          zip -qr "$GITHUB_WORKSPACE/LaLune.ipa" Payload
+          ls -la "$GITHUB_WORKSPACE/LaLune.ipa"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaLune-iOS-ipa
+          path: LaLune.ipa
+          retention-days: 14
