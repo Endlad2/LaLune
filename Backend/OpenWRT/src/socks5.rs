@@ -141,7 +141,8 @@ async fn handle_client(mut client: TcpStream) -> Result<()> {
         }
     };
 
-    let remote = match TcpStream::connect(target).await {
+    // ВАЖНО: remote объявлен mut — TcpStream::split() требует &mut self.
+    let mut remote = match TcpStream::connect(target).await {
         Ok(s) => s,
         Err(e) => {
             client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;

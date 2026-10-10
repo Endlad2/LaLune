@@ -169,7 +169,8 @@ async fn handle_client(mut client: TcpStream) -> Result<()> {
     };
 
     // --- 3. Подключаемся к цели (через TUN, так как default route — csqtt0) ---
-    let remote = match TcpStream::connect(target).await {
+    // ВАЖНО: remote объявлен mut — TcpStream::split() требует &mut self.
+    let mut remote = match TcpStream::connect(target).await {
         Ok(s) => s,
         Err(e) => {
             // Отвечаем "connection refused"
