@@ -5,14 +5,13 @@
 // Отличия от Desktop:
 //   * Bind на 0.0.0.0:1062 (LAN-доступ).
 //   * Ядро: ~/.la-lune/csqtt-client-aarch64 (фиксированное имя).
-//
-// Всё остальное — как в Desktop (см. Backend/Desktop/src/).
 
 mod api;
 mod config;
 mod core_manager;
 mod events;
 mod settings;
+mod socks5;
 mod state;
 mod vk;
 mod vpn;
@@ -41,8 +40,6 @@ async fn main() -> Result<()> {
 
     let app = api::router(state.clone());
 
-    // ВАЖНО: bind на 0.0.0.0, чтобы UI по LAN мог достучаться.
-    // Порт 1062 — как у Desktop, чтобы API был идентичным.
     let addr = SocketAddr::from(([0, 0, 0, 0], 1062));
     let listener = TcpListener::bind(addr).await?;
     log::info!("API listening on http://{}", addr);

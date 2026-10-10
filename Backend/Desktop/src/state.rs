@@ -36,6 +36,9 @@ pub struct AppState {
     pub deploy_log: Mutex<String>,
     pub smarttunnel_running: Mutex<bool>,
 
+    /// SOCKS5-сервер для раздачи VPN (если share_vpn = true).
+    pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
     shutdown: Notify,
 }
 
@@ -106,6 +109,7 @@ impl AppState {
             deploy_busy: Mutex::new(false),
             deploy_log: Mutex::new(String::new()),
             smarttunnel_running: Mutex::new(false),
+            socks5: Mutex::new(None),
             shutdown: Notify::new(),
         })
     }
@@ -150,6 +154,9 @@ impl AppState {
     }
 
     pub async fn cleanup(&self) {
+        // Останавливаем SOCKS5, если запущен.
+        crate::socks5::stop(&Arc::new(self.clone_for_cleanup()));
+
         // Останавливаем VPN runtime (синхронно)
         self.vpn.stop();
 
@@ -166,5 +173,34 @@ impl AppState {
 
     pub fn uptime(&self) -> u64 {
         0
+    }
+
+    // Хак для cleanup: socks5::stop принимает &Arc<AppState>, а мы внутри
+    // &self. Проще всего создать временный Arc и не париться.
+    fn clone_for_cleanup(&self) -> AppState {
+        // Нам нужен только доступ к self.socks5 и self.log — создаём
+        // фиктивную структуру через mem::forget нельзя, поэтому просто
+        // вынесем stop сюда явно.
+        AppState {
+            app_dir: self.app_dir.clone(),
+            configs_path: self.configs_path.clone(),
+            settings_path: self.settings_path.clone(),
+            logs_path: self.logs_path.clone(),
+            token_path: self.token_path.clone(),
+            core_path: self.core_path.clone(),
+            events: self.events.clone(),
+            settings: RwLock::new(self.settings.read().clone()),
+            selected_config: RwLock::new(self.selected_config.read().clone()),
+            configs: self.configs.clone(),
+            vpn: self.vpn.clone(),
+            core: Mutex::new(None),
+            logs: Mutex::new(Vec::new()),
+            core_downloading: Mutex::new(false),
+            deploy_busy: Mutex::new(false),
+            deploy_log: Mutex::new(String::new()),
+            smarttunnel_running: Mutex::new(false),
+            socks5: Mutex::new(self.socks5.lock().take()),
+            shutdown: Notify::new(),
+        }
     }
 }

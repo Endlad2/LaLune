@@ -34,6 +34,7 @@ pub struct Settings {
     pub validate_vk_hashes: bool,
     pub enable_smart_tunnel: bool,
     pub show_core_logs: bool,
+    pub share_vpn: bool,
 }
 
 impl Default for Settings {
@@ -59,6 +60,7 @@ impl Default for Settings {
             validate_vk_hashes: false,
             enable_smart_tunnel: false,
             show_core_logs: false,
+            share_vpn: false,
         }
     }
 }

@@ -464,6 +464,13 @@ async fn vpn_connect(
     };
     *state.core.lock() = Some(core);
 
+    // Если включена раздача — запускаем SOCKS5-прокси
+    if settings.share_vpn {
+        if let Err(e) = crate::socks5::start(state.clone()) {
+            state.log(format!("[PROXY] failed to start: {}", e));
+        }
+    }
+
     // Watchdog: читает logs.log, ждёт TUNCONF + Активных>0 два тика подряд,
     // добавляет bypass-маршруты, поднимает TUN.
     let state2 = state.clone();
@@ -546,6 +553,9 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
     state.log("[VPN] disconnecting...");
     state.vpn.stop();
     vpn::cleanup_routes(&state.vpn, &state.events);
+
+    // Останавливаем SOCKS5, если был запущен.
+    crate::socks5::stop(&state);
 
     let maybe_proc = { let mut core = state.core.lock(); core.take() };
     if let Some(mut p) = maybe_proc { let _ = p.kill().await; }

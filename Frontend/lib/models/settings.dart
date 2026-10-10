@@ -27,7 +27,8 @@ class Settings {
   final bool allowHashRedistribution;
   final bool validateVkHashes;
   final bool enableSmartTunnel;
-  final bool showCoreLogs;   // ← новое
+  final bool showCoreLogs;
+  final bool shareVpn;   // ← новое
 
   Settings({
     this.peer = '',
@@ -50,6 +51,7 @@ class Settings {
     this.validateVkHashes = false,
     this.enableSmartTunnel = false,
     this.showCoreLogs = false,
+    this.shareVpn = false,
   });
 
   factory Settings.fromJson(Map<String, dynamic> j) {
@@ -82,6 +84,7 @@ class Settings {
       validateVkHashes: (j['validateVkHashes'] ?? false) as bool,
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
+      shareVpn: (j['shareVpn'] ?? false) as bool,
     );
   }
 
@@ -106,6 +109,7 @@ class Settings {
         'validateVkHashes': validateVkHashes,
         'enableSmartTunnel': enableSmartTunnel,
         'showCoreLogs': showCoreLogs,
+        'shareVpn': shareVpn,
       };
 
   Settings copyWith({
@@ -129,6 +133,7 @@ class Settings {
     bool? validateVkHashes,
     bool? enableSmartTunnel,
     bool? showCoreLogs,
+    bool? shareVpn,
   }) =>
       Settings(
         peer: peer ?? this.peer,
@@ -152,5 +157,6 @@ class Settings {
         validateVkHashes: validateVkHashes ?? this.validateVkHashes,
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
+        shareVpn: shareVpn ?? this.shareVpn,
       );
 }

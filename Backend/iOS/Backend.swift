@@ -68,6 +68,8 @@ public final class Backend {
     private var vkLoginInProgress = false
     private var vkLoginMessage = ""
 
+    private var socks5Server: Socks5Server?
+
     // ============================================================
     //  Public API
     // ============================================================
@@ -107,6 +109,7 @@ public final class Backend {
 
     public func stop() {
         running = false
+        stopSocks5()
         httpServer?.stop()
         httpServer = nil
     }
@@ -402,7 +405,8 @@ public final class Backend {
             "turnHost": "", "turnPort": "",
             "captchaMode": "auto", "vkAuthMode": "vkcalls",
             "allowHashRedistribution": false, "validateVkHashes": false,
-            "enableSmartTunnel": false
+            "enableSmartTunnel": false, "showCoreLogs": false,
+            "shareVpn": false
         ]
     }
 
@@ -669,6 +673,11 @@ public final class Backend {
             }
         }
 
+        // Если включена раздача — запускаем SOCKS5.
+        if settings["shareVpn"] as? Bool == true {
+            startSocks5()
+        }
+
         log("[VPN] starting NETunnelProviderManager")
 
         let manager = NETunnelProviderManager()
@@ -712,11 +721,37 @@ public final class Backend {
         NETunnelProviderManager.loadAllFromPreferences { managers, _ in
             managers?.forEach { $0.connection.stopVPNTunnel() }
         }
+        stopSocks5()
         vpnConnected = false
         emitEvent(json(["type": "status", "connected": false,
                         "ts": Int(Date().timeIntervalSince1970)]))
         log("[VPN] disconnect")
         return (200, json(["ok": true]))
+    }
+
+    // ============================================================
+    //  SOCKS5 (раздача VPN)
+    // ============================================================
+
+    private func startSocks5() {
+        if socks5Server != nil {
+            log("[PROXY] already running")
+            return
+        }
+        let server = Socks5Server(port: 1080) { [weak self] line in
+            self?.log(line)
+        }
+        do {
+            try server.start()
+            socks5Server = server
+        } catch {
+            log("[PROXY] failed to start: \(error.localizedDescription)")
+        }
+    }
+
+    private func stopSocks5() {
+        socks5Server?.stop()
+        socks5Server = nil
     }
 
     // ============================================================

@@ -43,6 +43,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   String _authMode = 'manual';
   bool _enableSmartTunnel = false;
   bool _showCoreLogs = false;
+  bool _shareVpn = false;
 
   @override
   void initState() {
@@ -89,6 +90,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
     _enableSmartTunnel = s.enableSmartTunnel;
     _showCoreLogs = s.showCoreLogs;
+    _shareVpn = s.shareVpn;
 
     setState(() => _loading = false);
   }
@@ -123,6 +125,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       authMode: _authMode,
       enableSmartTunnel: _enableSmartTunnel,
       showCoreLogs: _showCoreLogs,
+      shareVpn: _shareVpn,
     );
 
     final ok = await ref.read(settingsProvider.notifier).save(s);
@@ -399,6 +402,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    _toggleRow('Раздавать VPN', _shareVpn, (v) {
+                      setState(() => _shareVpn = v);
+                      _markDirty();
+                    }),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
+                      child: Text(
+                        'Открывает SOCKS5-прокси на 0.0.0.0:1080. '
+                        'Всё, что через него идёт, будет использовать VPN.',
+                        style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.5,
+                            color: Colors.white.withOpacity(0.55)),
+                      ),
+                    ),
                     _toggleRow('Enable SmartTunnel', _enableSmartTunnel, (v) {
                       setState(() => _enableSmartTunnel = v);
                       _markDirty();

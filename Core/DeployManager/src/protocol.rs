@@ -11,30 +11,16 @@ use anyhow::{bail, Result};
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Protocol {
     Csqtt,
-    FreeTurn,
-    OlcRtc,
-    OpenFlux,
-    Tots,
 }
 
 impl Protocol {
-    pub fn all() -> [Protocol; 5] {
-        [
-            Protocol::Csqtt,
-            Protocol::FreeTurn,
-            Protocol::OlcRtc,
-            Protocol::OpenFlux,
-            Protocol::Tots,
-        ]
+    pub fn all() -> [Protocol; 1] {
+        [Protocol::Csqtt]
     }
 
     pub fn parse(s: &str) -> Result<Protocol> {
         match s.trim().to_ascii_lowercase().as_str() {
             "csqtt" | "lalune" => Ok(Protocol::Csqtt),
-            "freeturn" | "free-turn" | "free_turn" | "ftp" => Ok(Protocol::FreeTurn),
-            "olcrtc" | "olc" => Ok(Protocol::OlcRtc),
-            "openflux" | "open-flux" | "of" => Ok(Protocol::OpenFlux),
-            "tots" => Ok(Protocol::Tots),
             other => bail!("unknown protocol: {other}"),
         }
     }
@@ -42,10 +28,6 @@ impl Protocol {
     pub fn as_str(&self) -> &'static str {
         match self {
             Protocol::Csqtt => "csqtt",
-            Protocol::FreeTurn => "freeturn",
-            Protocol::OlcRtc => "olcrtc",
-            Protocol::OpenFlux => "openflux",
-            Protocol::Tots => "tots",
         }
     }
 
@@ -53,10 +35,6 @@ impl Protocol {
     pub fn core_binary(&self) -> &'static str {
         match self {
             Protocol::Csqtt => "csqtt-core",
-            Protocol::FreeTurn => "free-turn-proxy",
-            Protocol::OlcRtc => "olcrtc",
-            Protocol::OpenFlux => "openflux",
-            Protocol::Tots => "tots-cli",
         }
     }
 
@@ -64,10 +42,6 @@ impl Protocol {
     pub fn release_repo(&self) -> &'static str {
         match self {
             Protocol::Csqtt => "Endlad2/csqtt-core",
-            Protocol::FreeTurn => "Endlad2/free-turn-proxy-core",
-            Protocol::OlcRtc => "Endlad2/olcrtc-core",
-            Protocol::OpenFlux => "Endlad2/OpenFlux-core",
-            Protocol::Tots => "Endlad2/ToTS",
         }
     }
 }
@@ -85,10 +59,6 @@ impl Ports {
     pub fn automatic(proto: Protocol) -> Ports {
         let (core, warp, listen) = match proto {
             Protocol::Csqtt => (443, 0, 1080),
-            Protocol::FreeTurn => (50000, 50001, 1080),
-            Protocol::OlcRtc => (45000, 0, 1080),
-            Protocol::OpenFlux => (8080, 0, 1080),
-            Protocol::Tots => (9000, 9001, 1080),
         };
         Ports {
             core: Some(core),

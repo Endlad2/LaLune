@@ -41,6 +41,9 @@ pub struct Settings {
 
     /// Показывать логи ядра (строки с префиксом `[CORE]`) на вкладке Логи.
     pub show_core_logs: bool,
+
+    /// Раздавать VPN через SOCKS5 на 0.0.0.0:1080.
+    pub share_vpn: bool,
 }
 
 impl Default for Settings {
@@ -71,6 +74,7 @@ impl Default for Settings {
 
             enable_smart_tunnel: false,
             show_core_logs: false,
+            share_vpn: false,
         }
     }
 }

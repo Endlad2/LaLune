@@ -91,6 +91,7 @@ class Backend(private val context: Context) {
     private var activity: Activity? = null
     private var currentVkFetcher: VkWebViewFetcher? = null
     private var coreManager: CoreManager? = null
+    private var socks5Server: Socks5Server? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -128,6 +129,7 @@ class Backend(private val context: Context) {
 
     fun stop() {
         running = false
+        stopSocks5()
         try { httpServer?.close() } catch (_: Exception) {}
         httpServer = null
         try { unregisterVpnReceiver() } catch (_: Exception) {}
@@ -612,6 +614,7 @@ class Backend(private val context: Context) {
         put("validateVkHashes", false)
         put("enableSmartTunnel", false)
         put("showCoreLogs", false)
+        put("shareVpn", false)
     }
 
     private fun loadSettings(): JSONObject = try {
@@ -824,6 +827,11 @@ class Backend(private val context: Context) {
         val started = cm.startCore(peer, password, hashes) { line -> addCoreLog(line) }
         if (!started) return 500 to jsonErr("core start failed")
 
+        // Если включена раздача — запускаем SOCKS5.
+        if (settings.optBoolean("shareVpn", false)) {
+            startSocks5()
+        }
+
         val act = activity
         if (act == null) {
             addLog("[VPN] no activity attached, starting service directly")
@@ -869,10 +877,36 @@ class Backend(private val context: Context) {
         val i = Intent(context, LaLuneVpnService::class.java).apply { action = "STOP" }
         try { context.startService(i) } catch (_: Exception) {}
         coreManager?.stopCore()
+        stopSocks5()
         vpnConnected = false
         emit("status", JSONObject().put("connected", false))
         addLog("[VPN] disconnect")
         return 200 to jsonOk("ok" to true)
+    }
+
+    // ============================================================
+    //  SOCKS5 (раздача VPN)
+    // ============================================================
+
+    private fun startSocks5() {
+        if (socks5Server != null) {
+            addLog("[PROXY] already running")
+            return
+        }
+        try {
+            val server = Socks5Server(1080) { line -> addLog(line) }
+            server.start()
+            socks5Server = server
+        } catch (e: Exception) {
+            addLog("[PROXY] failed to start: ${e.message}")
+        }
+    }
+
+    private fun stopSocks5() {
+        try {
+            socks5Server?.stop()
+        } catch (_: Exception) {}
+        socks5Server = null
     }
 
     // ============================================================

@@ -11,6 +11,7 @@ mod config;
 mod core_manager;
 mod events;
 mod settings;
+mod socks5;
 mod state;
 mod vk;
 mod vpn;

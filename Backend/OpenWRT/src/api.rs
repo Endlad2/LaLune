@@ -368,6 +368,13 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     };
     *state.core.lock() = Some(core);
 
+    // Если включена раздача — запускаем SOCKS5.
+    if settings.share_vpn {
+        if let Err(e) = crate::socks5::start(state.clone()) {
+            state.log(format!("[PROXY] failed to start: {}", e));
+        }
+    }
+
     let state2 = state.clone();
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -429,6 +436,9 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
     state.log("[VPN] disconnecting...");
     state.vpn.stop();
     vpn::cleanup_routes(&state.events);
+
+    // Останавливаем SOCKS5.
+    crate::socks5::stop(&state);
 
     let maybe_proc = { let mut core = state.core.lock(); core.take() };
     if let Some(mut p) = maybe_proc { let _ = p.kill().await; }

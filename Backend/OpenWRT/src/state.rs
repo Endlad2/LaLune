@@ -36,6 +36,9 @@ pub struct AppState {
     pub deploy_log: Mutex<String>,
     pub smarttunnel_running: Mutex<bool>,
 
+    /// SOCKS5-сервер для раздачи VPN.
+    pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
     shutdown: Notify,
 }
 
@@ -82,6 +85,7 @@ impl AppState {
             deploy_busy: Mutex::new(false),
             deploy_log: Mutex::new(String::new()),
             smarttunnel_running: Mutex::new(false),
+            socks5: Mutex::new(None),
             shutdown: Notify::new(),
         })
     }
@@ -116,6 +120,11 @@ impl AppState {
     pub async fn shutdown_notified(&self) { self.shutdown.notified().await; }
 
     pub async fn cleanup(&self) {
+        // Останавливаем SOCKS5.
+        {
+            let handle = { self.socks5.lock().take() };
+            if let Some(h) = handle { h.abort(); }
+        }
         self.vpn.stop();
         let maybe_proc = { let mut core = self.core.lock(); core.take() };
         if let Some(mut p) = maybe_proc { let _ = p.kill().await; }
