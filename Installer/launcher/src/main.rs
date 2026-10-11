@@ -5,14 +5,26 @@
 // Вся работа — в installer.rs (чистый Rust, без .ps1).
 // Этот файл — только GUI и оркестрация.
 //
-// Обновление статуса из фонового потока идёт через nwg::Notice /
-// nwg::NoticeReceiver. NoticeSender НЕ имеет from_handle — эту
-// строку убрали (см. ошибку E0599).
+// Как обновлять UI из фонового потока в native-windows-gui 1.0:
+//   1. nwg::Notice::create(&window)     — создаёт Notice (родитель: окно)
+//   2. notice.sender()                  — NoticeSender для фонового потока
+//   3. notice.sender().notice()         — «дёрнуть» главный поток
+//   4. E::OnNotice в биндингах          — обработать в главном потоке
+//
+// ВАЖНО: Notice надо держать живым. Мы перемещаем его в замыкание
+// (вместе с mpsc-каналом), чтобы он не был удалён сборщиком.
+//
+// Обновление Label/Button из главного потока: в nwg 1.0 у Label и
+// Button есть публичное поле `handle: ControlHandle`, поэтому можно
+// собрать их обратно: nwg::Label { handle: h }. Это дешевле, чем
+// таскать сами объекты через Arc<Mutex<>>.
 
 #![windows_subsystem = "windows"]
 
 mod installer;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 
@@ -97,11 +109,7 @@ fn build_gui() -> Result<Gui, nwg::NwgError> {
 }
 
 // ============================================================
-//  Асинхронная установка
-//
-//  installer::run_install вызывается в отдельном потоке, чтобы
-//  GUI не подвисал. Прогресс идёт через mpsc-канал, который
-//  опрашивается из главного потока через nwg Notice/NoticeReceiver.
+//  Сообщения от фонового потока
 // ============================================================
 
 enum InstallMsg {
@@ -109,19 +117,19 @@ enum InstallMsg {
     Done(Result<installer::InstallReport, String>),
 }
 
-fn spawn_install(tx: mpsc::Sender<InstallMsg>) {
-    thread::spawn(move || {
-        let tx_log = tx.clone();
-        let result = installer::run_install(|line| {
-            let _ = tx_log.send(InstallMsg::Log(line.to_string()));
-        });
+// ============================================================
+//  Хелперы для обновления UI из главного потока
+//
+//  Собираем Button/Label обратно из ControlHandle. Поля handle —
+//  публичные, поэтому это валидно.
+// ============================================================
 
-        let msg = match result {
-            Ok(report) => InstallMsg::Done(Ok(report)),
-            Err(e) => InstallMsg::Done(Err(format!("{e:#}"))),
-        };
-        let _ = tx.send(msg);
-    });
+fn button_from(handle: nwg::ControlHandle) -> nwg::Button {
+    nwg::Button { handle }
+}
+
+fn label_from(handle: nwg::ControlHandle) -> nwg::Label {
+    nwg::Label { handle }
 }
 
 // ============================================================
@@ -140,89 +148,95 @@ fn main() {
         }
     };
 
-    // ── Notice: позволяет фоновому потоку попросить главный поток
-    //    обновить UI. Нам нужны NoticeSender для фонового потока и
-    //    NoticeReceiver для главного.
-    let (notice_sender, notice_receiver) = nwg::Notice::new();
+    // ── Notice: нужен для того, чтобы фоновый поток мог «дёрнуть»
+    //    главный и заставить его обработать E::OnNotice.
+    //
+    //    В nwg 1.0 Notice::create(parent) возвращает Result<Notice, _>,
+    //    а sender() возвращает NoticeSender для передачи в фон.
+    let notice = nwg::Notice::create(&gui.window).expect("Notice::create");
+    let notice_sender = notice.sender();
 
-    // Канал, через который фоновый поток шлёт сообщения.
-    // Живёт в главном потоке (Arc<Mutex<Receiver>>), чтобы
-    // NoticeReceiver-обработчик мог забрать из него Log/Done.
+    // Канал для сообщений из фона.
     let (tx, rx) = mpsc::channel::<InstallMsg>();
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
 
-    // ── Биндинги событий ─────────────────────────────────────
-    let gui_handle = gui.window.handle;
-    let btn_install_handle = gui.btn_install.handle;
-    let btn_exit_handle = gui.btn_exit.handle;
+    // rx должен быть виден внутри Fn-замыкания → Rc<RefCell<Option<...>>>.
+    // RefCell::borrow_mut() даёт &mut на Option, из которого мы временно
+    // «вынимаем» Receiver через take() при каждом OnNotice.
+    let rx_cell: Rc<RefCell<Option<mpsc::Receiver<InstallMsg>>>> =
+        Rc::new(RefCell::new(Some(rx)));
 
-    let status_label_handle = gui.label_status.handle;
-    let btn_install_handle_for_ui = gui.btn_install.handle;
+    // Handle'ы — копируем их (ControlHandle — Copy), чтобы не тащить
+    // объекты Gui в замыкание.
+    let window_handle       = gui.window.handle;
+    let btn_install_handle  = gui.btn_install.handle;
+    let btn_exit_handle     = gui.btn_exit.handle;
+    let label_status_handle = gui.label_status.handle;
 
-    // Клонируем то, что понадобится внутри обработчиков.
-    let tx_for_install = tx.clone();
-    let notice_sender_for_install = notice_sender.clone();
-    let rx_for_notice = rx.clone();
+    let tx_for_install        = tx.clone();
+    let notice_sender_for_bg  = notice_sender.clone();
+
+    // Notice надо держать живым — перемещаем в замыкание.
+    // Receiver — тоже в замыкании (через Rc<RefCell>).
+    let _notice_keepalive = notice;
 
     let gui_events = nwg::full_bind_event_handler(
         &gui.window.handle,
         move |evt, _evt_data, handle| {
             use nwg::Event as E;
+
             match evt {
                 E::OnButtonClick => {
                     if handle == btn_exit_handle {
                         nwg::stop_thread_dispatch();
 
                     } else if handle == btn_install_handle {
-                        // Отключаем кнопку, меняем статус.
-                        {
-                            let mut btn = nwg::Button::from(btn_install_handle_for_ui);
-                            btn.set_enabled(false);
-                        }
-                        {
-                            let mut lbl = nwg::Label::from(status_label_handle);
-                            lbl.set_text("Установка...");
-                        }
+                        // Отключаем кнопку, ставим статус.
+                        button_from(btn_install_handle).set_enabled(false);
+                        label_from(label_status_handle).set_text("Установка...");
 
                         // Запускаем установку в фоне.
-                        // on_progress = Log/Done + Notify главного потока.
                         let tx_install = tx_for_install.clone();
-                        let notice = notice_sender_for_install.clone();
+                        let notice_bg  = notice_sender_for_bg.clone();
 
                         thread::spawn(move || {
                             let tx_log = tx_install.clone();
                             let result = installer::run_install(|line| {
                                 let _ = tx_log.send(InstallMsg::Log(line.to_string()));
-                                // Просим главный поток обработать сообщение.
-                                notice.notice();
+                                notice_bg.notice();
                             });
 
                             let msg = match result {
                                 Ok(report) => InstallMsg::Done(Ok(report)),
-                                Err(e) => InstallMsg::Done(Err(format!("{e:#}"))),
+                                Err(e)     => InstallMsg::Done(Err(format!("{e:#}"))),
                             };
                             let _ = tx_install.send(msg);
-                            notice.notice();
+                            notice_bg.notice();
                         });
                     }
                 }
 
-                // ── Сообщения от фонового потока ────────────────
                 E::OnNotice => {
-                    // Забираем всё из канала и обновляем UI в главном потоке.
-                    let rx = rx_for_notice.lock().unwrap();
+                    // Забираем ВСЁ, что накопилось, и обрабатываем в главном потоке.
+                    //
+                    // RefCell::borrow_mut даёт &mut Option<Receiver>.
+                    // take() временно «вынимает» receiver; после обработки
+                    // возвращаем его обратно.
+                    let mut rx_opt = rx_cell.borrow_mut();
+                    let rx = match rx_opt.take() {
+                        Some(r) => r,
+                        None    => return,
+                    };
+
                     while let Ok(msg) = rx.try_recv() {
                         match msg {
                             InstallMsg::Log(line) => {
-                                // В UI пишем последнюю строку статуса.
-                                let mut lbl = nwg::Label::from(status_label_handle);
-                                let short = if line.len() > 60 {
-                                    format!("{}...", &line[..57])
+                                let short = if line.chars().count() > 60 {
+                                    let s: String = line.chars().take(57).collect();
+                                    format!("{s}...")
                                 } else {
                                     line.clone()
                                 };
-                                lbl.set_text(&short);
-                                // И в stderr — видно при отладке.
+                                label_from(label_status_handle).set_text(&short);
                                 eprintln!("[install] {line}");
                             }
                             InstallMsg::Done(Ok(report)) => {
@@ -233,29 +247,31 @@ fn main() {
                                     report.launcher_exe.display()
                                 );
                                 let _ = nwg::simple_message("LaLune Installer", &msg);
+
+                                *rx_opt = Some(rx); // вернуть receiver перед выходом
                                 nwg::stop_thread_dispatch();
-                                break;
+                                return;
                             }
                             InstallMsg::Done(Err(e)) => {
                                 let msg = format!("Ошибка установки:\n\n{e}");
                                 let _ = nwg::simple_message("LaLune Installer", &msg);
-                                // Разрешаем повторную попытку.
-                                {
-                                    let mut btn = nwg::Button::from(btn_install_handle_for_ui);
-                                    btn.set_enabled(true);
-                                }
-                                {
-                                    let mut lbl = nwg::Label::from(status_label_handle);
-                                    lbl.set_text("Ошибка. См. детали выше.");
-                                }
+
+                                // Разблокируем кнопку для повторной попытки.
+                                button_from(btn_install_handle).set_enabled(true);
+                                label_from(label_status_handle)
+                                    .set_text("Ошибка. Нажмите «Установить» ещё раз.");
                                 break;
                             }
                         }
                     }
+
+                    // Вернуть receiver обратно в RefCell — иначе следующий
+                    // OnNotice его не найдёт.
+                    *rx_opt = Some(rx);
                 }
 
                 E::OnWindowClose => {
-                    if handle == gui_handle {
+                    if handle == window_handle {
                         nwg::stop_thread_dispatch();
                     }
                 }
@@ -264,10 +280,6 @@ fn main() {
             }
         },
     );
-
-    // Держим NoticeReceiver живым: nwg дёрнет наш обработчик OnNotice,
-    // когда из фонового потока придёт notice_sender.notice().
-    let _keep_alive = notice_receiver;
 
     nwg::dispatch_thread_events();
     nwg::unbind_event_handler(&gui_events);
