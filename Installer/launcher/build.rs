@@ -3,13 +3,14 @@
 // build.rs — во время сборки готовит все нужные ресурсы в OUT_DIR.
 // main.rs/installer.rs включают их через include_bytes!.
 //
-// wintun.dll берётся ТОЛЬКО из vendor/wintun.zip — без сети.
-// Если файла нет или он не zip — сборка падает с понятной
-// инструкцией (см. ошибку ниже).
+// wintun.zip скачивается по ТРЁМ источникам (f allback'и):
 //
-// Остальные ресурсы (LaLune-Windows.zip, Backend-Windows.zip,
-// client-windows-x86_64.exe, LATEST, icon.ico) качаются как раньше
-// с GitHub Releases / raw.githubusercontent.
+//   1. raw.githubusercontent.com/Endlad2/Endlad2.github.io/refs/heads/main/wintun.zip
+//   2. endlad2.github.io/wintun.zip
+//   3. www.wintun.net/builds/wintun-0.14.1.zip
+//
+// На каждом шаге проверяется сигнатура PK\x03\x04. Если источник
+// вернул HTML/404 — идём к следующему. Никакого vendor/.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
@@ -27,17 +28,22 @@ const URL_LATEST: &str =
 const URL_ICON: &str =
     "https://raw.githubusercontent.com/Endlad2/LaLune/refs/heads/main/icon.ico";
 
-/// Единственный источник wintun.zip — локальный vendor.
-/// Никаких сетевых fallback'ов: либо файл лежит, либо сборка падает
-/// с инструкцией.
-const VENDOR_WINTUN: &str = "vendor/wintun.zip";
+/// Три источника wintun.zip в порядке приоритета.
+const WINTUN_SOURCES: &[&str] = &[
+    // 1. raw.githubusercontent — отдаёт файл как есть, без Pages-магии.
+    "https://raw.githubusercontent.com/Endlad2/Endlad2.github.io/refs/heads/main/wintun.zip",
+    // 2. GitHub Pages.
+    "https://endlad2.github.io/wintun.zip",
+    // 3. Официальный сайт wintun.
+    "https://www.wintun.net/builds/wintun-0.14.1.zip",
+];
+
+/// Минимальный разумный размер zip с wintun.dll (~370 KB).
+/// Всё, что меньше — почти наверняка HTML (8192 байта).
+const MIN_PLAUSIBLE_ZIP_BYTES: u64 = 32 * 1024;
 
 fn out_dir() -> PathBuf {
     PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"))
-}
-
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"))
 }
 
 /// Настоящий zip начинается с сигнатуры PK\x03\x04 (0x50 0x4B 0x03 0x04).
@@ -49,7 +55,7 @@ fn looks_like_zip(bytes: &[u8]) -> bool {
         && bytes[3] == 0x04
 }
 
-/// Человекопонятное описание того, что лежит в файле (HTML / zip / прочее).
+/// Короткое описание содержимого для логов и ошибок.
 fn describe_bytes(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return "пустой файл (0 байт)".to_string();
@@ -69,17 +75,45 @@ fn describe_bytes(bytes: &[u8]) -> String {
         .collect();
 
     if head_ascii.starts_with("<!DOCTYPE") || head_ascii.starts_with("<html") {
-        format!(
-            "HTML, а НЕ zip (head={}). Это 404-страница, а не архив.",
-            head_hex
-        )
+        format!("HTML, а НЕ zip (head={})", head_hex)
     } else {
         format!("не zip (head={}, ascii={:?})", head_hex, head_ascii)
     }
 }
 
-/// Скачивание обычного ресурса (LaLune-Windows.zip и т.п.).
-/// Без проверки на zip — просто raw-байты.
+/// Перечисляет записи zip-архива (до `limit`) — для сообщений об ошибках.
+fn list_zip_entries(zip_bytes: &[u8], limit: usize) -> String {
+    use std::io::Cursor;
+
+    let reader = Cursor::new(zip_bytes);
+    let mut archive = match zip::ZipArchive::new(reader) {
+        Ok(a) => a,
+        Err(e) => return format!("  <не удалось открыть архив: {}>\n", e),
+    };
+
+    let total = archive.len();
+    let mut out = String::new();
+    for i in 0..total.min(limit) {
+        match archive.by_index(i) {
+            Ok(entry) => {
+                let name = entry.name().replace('\\', "/");
+                out.push_str(&format!("  [{}] {} ({} bytes)\n", i, name, entry.size()));
+            }
+            Err(e) => {
+                out.push_str(&format!("  [{}] <ошибка чтения: {}>\n", i, e));
+            }
+        }
+    }
+    if total > limit {
+        out.push_str(&format!("  ... и ещё {} записей\n", total - limit));
+    }
+    if total == 0 {
+        out.push_str("  <архив пустой>\n");
+    }
+    out
+}
+
+/// Обычное скачивание обычного ресурса (LaLune-Windows.zip и т.п.).
 fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Result<()> {
     if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         println!("cargo:warning=already present: {}", dest.display());
@@ -127,104 +161,117 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
     Ok(())
 }
 
-/// Читает vendor/wintun.zip. Никаких сетевых fallback'ов.
-/// Если файла нет или это не zip — падает с подробной инструкцией.
-fn load_vendored_wintun() -> Result<Vec<u8>> {
-    let vendor_path = manifest_dir().join(VENDOR_WINTUN);
+/// Скачивает wintun.zip по одному URL в память и возвращает байты,
+/// ЕСЛИ это валидный zip. Иначе — печатает причину и возвращает None.
+fn try_fetch_wintun_zip(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Option<Vec<u8>> {
+    println!("cargo:warning=wintun: trying {}", url);
 
-    println!(
-        "cargo:warning=wintun: looking for {}",
-        vendor_path.display()
-    );
-    println!("cargo:rerun-if-changed={}", VENDOR_WINTUN);
+    let resp = match client.get(url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            println!("cargo:warning=wintun: {} → request error: {}", url, e);
+            return None;
+        }
+    };
 
-    if !vendor_path.exists() {
-        bail!(
-            "===============================\n\
-             wintun.zip не найден\n\
-             ===============================\n\
-             \n\
-             Ожидался файл:\n\
-             \n\
-                 {vendor}\n\
-             \n\
-             Его там нет. Сборка installer'а без него невозможна —\n\
-             в wintun.dll лежит драйвер TUN, который использует backend.\n\
-             \n\
-             ЧТО СДЕЛАТЬ:\n\
-             \n\
-             1. Найди wintun.zip у себя на диске\n\
-                (например: wintun (2).zip).\n\
-             \n\
-             2. Создай папку vendor/ рядом с Cargo.toml:\n\
-             \n\
-                 {manifest}\\vendor\\\n\
-             \n\
-             3. Положи туда архив и назови его ровно wintun.zip:\n\
-             \n\
-                 {vendor}\n\
-             \n\
-             4. Убедись, что внутри архива есть путь:\n\
-             \n\
-                 wintun/bin/amd64/wintun.dll\n\
-             \n\
-             5. Пересобери:\n\
-             \n\
-                 cd Installer\\launcher\n\
-                 cargo clean\n\
-                 cargo build --release\n",
-            vendor = vendor_path.display(),
-            manifest = manifest_dir().display(),
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    if !status.is_success() {
+        println!(
+            "cargo:warning=wintun: {} → HTTP {} (content-type: {})",
+            url, status, content_type
         );
+        return None;
     }
 
-    let bytes = fs::read(&vendor_path)
-        .with_context(|| format!("не могу прочитать {}", vendor_path.display()))?;
+    let bytes = match resp.bytes() {
+        Ok(b) => b.to_vec(),
+        Err(e) => {
+            println!("cargo:warning=wintun: {} → read error: {}", url, e);
+            return None;
+        }
+    };
+
+    // Проверка размера ДО сигнатуры — быстрее и понятнее.
+    if (bytes.len() as u64) < MIN_PLAUSIBLE_ZIP_BYTES {
+        println!(
+            "cargo:warning=wintun: {} → too small ({} bytes) — {}",
+            url,
+            bytes.len(),
+            describe_bytes(&bytes)
+        );
+        return None;
+    }
 
     if !looks_like_zip(&bytes) {
-        bail!(
-            "===============================\n\
-             vendor/wintun.zip — не zip-архив\n\
-             ===============================\n\
-             \n\
-             Файл: {vendor}\n\
-             Размер: {size} байт\n\
-             Содержимое: {desc}\n\
-             \n\
-             Что-то пошло не так при копировании. Скорее всего ты\n\
-             скачал HTML-страницу вместо архива, или файл побился.\n\
-             \n\
-             ЧТО СДЕЛАТЬ:\n\
-             \n\
-             1. Заново скачай wintun с официального сайта:\n\
-             \n\
-                    https://www.wintun.net/\n\
-             \n\
-             2. Либо найди настоящий архив у себя на диске\n\
-                (wintun (2).zip). Проверь, что он начинается с PK:\n\
-             \n\
-                    Format-Hex .\\wintun.zip | Select-Object -First 1\n\
-             \n\
-                Первые 4 байта должны быть 50 4B 03 04.\n\
-             \n\
-             3. Положи его как {vendor}\n\
-             \n\
-             4. Пересобери:\n\
-             \n\
-                    cargo clean\n\
-                    cargo build --release\n",
-            vendor = vendor_path.display(),
-            size = bytes.len(),
-            desc = describe_bytes(&bytes),
+        println!(
+            "cargo:warning=wintun: {} → not a zip ({} bytes) — {}",
+            url,
+            bytes.len(),
+            describe_bytes(&bytes)
         );
+        return None;
     }
 
     println!(
-        "cargo:warning=wintun: using vendored {} ({} bytes, OK)",
-        vendor_path.display(),
-        bytes.len()
+        "cargo:warning=wintun: {} → OK ({} bytes, content-type: {})",
+        url,
+        bytes.len(),
+        content_type
     );
-    Ok(bytes)
+    Some(bytes)
+}
+
+/// Пробует все WINTUN_SOURCES по порядку. Первый валидный zip — победа.
+fn load_wintun_zip(client: &reqwest::blocking::Client) -> Result<Vec<u8>> {
+    for url in WINTUN_SOURCES {
+        if let Some(bytes) = try_fetch_wintun_zip(client, url) {
+            return Ok(bytes);
+        }
+    }
+
+    let sources_list: String = WINTUN_SOURCES
+        .iter()
+        .enumerate()
+        .map(|(i, u)| format!("   {}. {}\n", i + 1, u))
+        .collect();
+
+    bail!(
+        "===============================\n\
+         Не удалось скачать wintun.zip\n\
+         ===============================\n\
+         \n\
+         Проверенные источники:\n\
+         {sources}\
+         \n\
+         Ни один из них не отдал валидный zip-архив (сигнатуру PK\\x03\\x04).\n\
+         Обычно это значит, что везде отдаётся HTML-страница 404\n\
+         с Content-Type: application/zip и размером 8192 байта.\n\
+         \n\
+         ЧТО СДЕЛАТЬ:\n\
+         \n\
+         1. Скачай wintun-0.14.1.zip вручную:\n\
+         \n\
+                https://www.wintun.net/builds/wintun-0.14.1.zip\n\
+         \n\
+         2. Проверь, что это настоящий zip (первые байты PK):\n\
+         \n\
+                Format-Hex .\\wintun-0.14.1.zip -Count 4\n\
+                # должно быть 50 4B 03 04\n\
+         \n\
+         3. Скажи мне — я подскажу, как закешировать файл, чтобы\n\
+            build.rs его подхватил без сети.\n",
+        sources = sources_list,
+    )
 }
 
 /// Извлекает wintun\bin\amd64\wintun.dll (или любую wintun.dll)
@@ -236,9 +283,9 @@ fn extract_wintun_dll(zip_bytes: Vec<u8>, out: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let reader = std::io::Cursor::new(zip_bytes);
+    let reader = std::io::Cursor::new(zip_bytes.clone());
     let mut archive = zip::ZipArchive::new(reader)
-        .context("open vendor/wintun.zip as archive")?;
+        .context("open wintun.zip as archive")?;
 
     // Ищем amd64-вариант; при неудаче — любую wintun.dll.
     let mut found_idx: Option<usize> = None;
@@ -260,32 +307,42 @@ fn extract_wintun_dll(zip_bytes: Vec<u8>, out: &Path) -> Result<()> {
     }
 
     let idx = found_idx.ok_or_else(|| {
-        // Перечислим первые записи архива — это поможет отладке.
-        let mut names = Vec::new();
-        let vendor_path = manifest_dir().join(VENDOR_WINTUN);
-        if let Ok(bytes) = fs::read(&vendor_path) {
-            if let Ok(mut a) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
-                for i in 0..a.len().min(20) {
-                    if let Ok(e) = a.by_index(i) {
-                        names.push(e.name().to_string());
-                    }
-                }
-            }
-        }
         anyhow!(
-            "wintun.dll не найден внутри {}.\n\
-             Ожидался путь wintun/bin/amd64/wintun.dll.\n\
-             Первые записи архива: {:?}",
-            vendor_path.display(),
-            names
+            "wintun.dll не найден внутри скачанного архива.\n\
+             Искал: amd64/wintun.dll, затем любую wintun.dll.\n\
+             \n\
+             Содержимое архива (первые 50 записей):\n\
+             {}",
+            list_zip_entries(&zip_bytes, 50)
         )
     })?;
 
     let mut entry = archive.by_index(idx)?;
-    let mut out_file = fs::File::create(&dll_dest)?;
-    std::io::copy(&mut entry, &mut out_file)?;
+    let name = entry.name().replace('\\', "/");
+    let expected_size = entry.size();
 
-    println!("cargo:warning=extracted: {}", dll_dest.display());
+    let mut out_file = fs::File::create(&dll_dest)?;
+    let copied = std::io::copy(&mut entry, &mut out_file)?;
+
+    println!(
+        "cargo:warning=extracted: {} ({} bytes, was {})",
+        dll_dest.display(),
+        copied,
+        expected_size
+    );
+
+    if copied < 100_000 {
+        bail!(
+            "Извлечённый {} весит всего {} байт — это не настоящая wintun.dll.\n\
+             Настоящая amd64-DLL весит ~1 MB несжатой.\n\
+             Содержимое архива (первые 50 записей):\n\
+             {}",
+            name,
+            copied,
+            list_zip_entries(&zip_bytes, 50)
+        );
+    }
+
     Ok(())
 }
 
@@ -300,15 +357,15 @@ fn main() -> Result<()> {
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    // ── 1. Стандартные ресурсы LaLune (качаются с GitHub) ──────
+    // ── 1. Стандартные ресурсы LaLune ───────────────────────────
     download(&client, URL_LALUNE_ZIP, &out.join("LaLune-Windows.zip"))?;
     download(&client, URL_BACKEND_ZIP, &out.join("Backend-Windows.zip"))?;
     download(&client, URL_CORE_EXE, &out.join("client-windows-x86_64.exe"))?;
     download(&client, URL_LATEST, &out.join("LATEST"))?;
     download(&client, URL_ICON, &out.join("icon.ico"))?;
 
-    // ── 2. wintun.dll из vendor/wintun.zip ──────────────────────
-    let zip_bytes = load_vendored_wintun()?;
+    // ── 2. wintun.dll — три источника, по порядку ───────────────
+    let zip_bytes = load_wintun_zip(&client)?;
     extract_wintun_dll(zip_bytes, &out)?;
 
     println!(
