@@ -15,7 +15,7 @@
 //   4. Создаёт ярлыки:
 //        %USERPROFILE%\Desktop\LaLune.lnk
 //        %APPDATA%\Microsoft\Windows\Start Menu\Programs\LaLune.lnk
-//      (через COM IShellLink / IPersistFile)
+//      (через COM IShellLinkW / IPersistFile)
 //   5. Возвращает путь к установленному LaLune.exe.
 
 use std::fs;
@@ -51,9 +51,6 @@ pub fn app_dir() -> Result<PathBuf> {
 }
 
 pub fn desktop_dir() -> Result<PathBuf> {
-    // %USERPROFILE%\Desktop — самый совместимый вариант.
-    // (SHGetKnownFolderPath тоже работает, но требует windows-крейт,
-    //  который у нас уже есть для ярлыков.)
     let profile = std::env::var("USERPROFILE")
         .map(PathBuf::from)
         .map_err(|_| anyhow!("USERPROFILE не задан"))?;
@@ -125,7 +122,11 @@ fn unzip_overwrite(zip_bytes: &[u8], dest: &Path) -> Result<()> {
 }
 
 // ============================================================
-//  Ярлыки (COM: IShellLink + IPersistFile)
+//  Ярлыки (COM: IShellLinkW + IPersistFile)
+//
+//  ВАЖНО: в windows 0.58 IPersistFile лежит в Win32::System::Com,
+//  а НЕ в Win32::UI::Shell (там только IShellLinkW/ShellLink).
+//  Это и была причина ошибки E0432.
 // ============================================================
 
 #[cfg(target_os = "windows")]
@@ -137,12 +138,10 @@ mod shortcuts {
 
     use windows::core::{Interface, PCWSTR};
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile,
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::UI::Shell::{
-        IShellLinkW, ShellLink, IPersistFile,
-    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 
     fn wide(s: &OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
@@ -259,7 +258,6 @@ where
     unzip_overwrite(LALUNE_ZIP, &app)
         .context("не удалось распаковать LaLune-Windows.zip")?;
 
-    // Ищем LaLune.exe (может лежать как в корне app\, так и в подпапке).
     let launcher_exe = find_launcher_exe(&app)?
         .ok_or_else(|| anyhow!(
             "LaLune.exe не найден в {} после распаковки", app.display()
