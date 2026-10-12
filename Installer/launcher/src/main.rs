@@ -11,13 +11,13 @@
 //   3. notice.sender().notice()         — «дёрнуть» главный поток
 //   4. E::OnNotice в биндингах          — обработать в главном потоке
 //
-// ВАЖНО: Notice надо держать живым. Мы перемещаем его в замыкание
-// (вместе с mpsc-каналом), чтобы он не был удалён сборщиком.
+// ВАЖНО: в nwg 1.0 у Label/Button есть ПРИВАТНЫЕ поля
+// (background_brush, handler0, handler1, ...). Поэтому собрать
+// `nwg::Label { handle }` из одного handle НЕЛЬЗЯ.
 //
-// Обновление Label/Button из главного потока: в nwg 1.0 у Label и
-// Button есть публичное поле `handle: ControlHandle`, поэтому можно
-// собрать их обратно: nwg::Label { handle: h }. Это дешевле, чем
-// таскать сами объекты через Arc<Mutex<>>.
+// Решение: храним сами объекты Label/Button в Rc<RefCell<Option<...>>>
+// и обновляем их из замыкания через .borrow().as_ref().unwrap().
+// Так мы никогда не покидаем главный поток и не нарушаем !Sync.
 
 #![windows_subsystem = "windows"]
 
@@ -118,21 +118,6 @@ enum InstallMsg {
 }
 
 // ============================================================
-//  Хелперы для обновления UI из главного потока
-//
-//  Собираем Button/Label обратно из ControlHandle. Поля handle —
-//  публичные, поэтому это валидно.
-// ============================================================
-
-fn button_from(handle: nwg::ControlHandle) -> nwg::Button {
-    nwg::Button { handle }
-}
-
-fn label_from(handle: nwg::ControlHandle) -> nwg::Label {
-    nwg::Label { handle }
-}
-
-// ============================================================
 //  main
 // ============================================================
 
@@ -150,34 +135,49 @@ fn main() {
 
     // ── Notice: нужен для того, чтобы фоновый поток мог «дёрнуть»
     //    главный и заставить его обработать E::OnNotice.
-    //
-    //    В nwg 1.0 Notice::create(parent) возвращает Result<Notice, _>,
-    //    а sender() возвращает NoticeSender для передачи в фон.
     let notice = nwg::Notice::create(&gui.window).expect("Notice::create");
     let notice_sender = notice.sender();
 
     // Канал для сообщений из фона.
     let (tx, rx) = mpsc::channel::<InstallMsg>();
 
-    // rx должен быть виден внутри Fn-замыкания → Rc<RefCell<Option<...>>>.
-    // RefCell::borrow_mut() даёт &mut на Option, из которого мы временно
-    // «вынимаем» Receiver через take() при каждом OnNotice.
-    let rx_cell: Rc<RefCell<Option<mpsc::Receiver<InstallMsg>>>> =
-        Rc::new(RefCell::new(Some(rx)));
+    // ── Ключевой момент ────────────────────────────────────────
+    //
+    // Сохраняем САМИ объекты Button/Label (не только handle) в
+    // Rc<RefCell<Option<...>>>. Так мы можем вызывать их методы
+    // (set_text, set_enabled) прямо из замыкания OnNotice.
+    //
+    // Почему Option: чтобы можно было временно «вынуть» значение
+    // через .take() и не держать borrow на время вызова методов —
+    // это защищает от повторного borrow_mut паники.
+    //
+    // Rc — потому что замыкание должно быть Fn (FnMut запрещён
+    // full_bind_event_handler), а значит нельзя move-ить владение.
+    //
+    // RefCell — потому что нам нужно мутировать из &self.
 
-    // Handle'ы — копируем их (ControlHandle — Copy), чтобы не тащить
-    // объекты Gui в замыкание.
-    let window_handle       = gui.window.handle;
-    let btn_install_handle  = gui.btn_install.handle;
-    let btn_exit_handle     = gui.btn_exit.handle;
-    let label_status_handle = gui.label_status.handle;
+    let btn_install_cell: Rc<RefCell<Option<nwg::Button>>> =
+        Rc::new(RefCell::new(Some(gui.btn_install)));
+    let label_status_cell: Rc<RefCell<Option<nwg::Label>>> =
+        Rc::new(RefCell::new(Some(gui.label_status)));
 
-    let tx_for_install        = tx.clone();
-    let notice_sender_for_bg  = notice_sender.clone();
+    // Handle'ы для сравнения в OnButtonClick (Copy).
+    let window_handle      = gui.window.handle;
+    let btn_install_handle = btn_install_cell.borrow().as_ref().unwrap().handle;
+    let btn_exit_handle    = gui.btn_exit.handle;
+
+    let tx_for_install       = tx.clone();
+    let notice_sender_for_bg = notice_sender.clone();
+
+    let btn_install_for_closure  = btn_install_cell.clone();
+    let label_status_for_closure = label_status_cell.clone();
 
     // Notice надо держать живым — перемещаем в замыкание.
-    // Receiver — тоже в замыкании (через Rc<RefCell>).
     let _notice_keepalive = notice;
+
+    // Receiver — тоже в Rc<RefCell>, чтобы был доступен из Fn-замыкания.
+    let rx_cell: Rc<RefCell<Option<mpsc::Receiver<InstallMsg>>>> =
+        Rc::new(RefCell::new(Some(rx)));
 
     let gui_events = nwg::full_bind_event_handler(
         &gui.window.handle,
@@ -190,9 +190,14 @@ fn main() {
                         nwg::stop_thread_dispatch();
 
                     } else if handle == btn_install_handle {
-                        // Отключаем кнопку, ставим статус.
-                        button_from(btn_install_handle).set_enabled(false);
-                        label_from(label_status_handle).set_text("Установка...");
+                        // Отключаем кнопку и ставим статус —
+                        // через сохранённые объекты, не через struct literal.
+                        if let Some(btn) = btn_install_for_closure.borrow().as_ref() {
+                            btn.set_enabled(false);
+                        }
+                        if let Some(lbl) = label_status_for_closure.borrow().as_ref() {
+                            lbl.set_text("Установка...");
+                        }
 
                         // Запускаем установку в фоне.
                         let tx_install = tx_for_install.clone();
@@ -216,16 +221,15 @@ fn main() {
                 }
 
                 E::OnNotice => {
-                    // Забираем ВСЁ, что накопилось, и обрабатываем в главном потоке.
-                    //
-                    // RefCell::borrow_mut даёт &mut Option<Receiver>.
-                    // take() временно «вынимает» receiver; после обработки
-                    // возвращаем его обратно.
-                    let mut rx_opt = rx_cell.borrow_mut();
-                    let rx = match rx_opt.take() {
+                    // Забираем receiver, чтобы не держать borrow на всё время.
+                    let rx = match rx_cell.borrow_mut().take() {
                         Some(r) => r,
                         None    => return,
                     };
+
+                    let mut exit_after = false;
+                    let mut reenable_after = false;
+                    let mut status_after: Option<String> = None;
 
                     while let Ok(msg) = rx.try_recv() {
                         match msg {
@@ -236,7 +240,7 @@ fn main() {
                                 } else {
                                     line.clone()
                                 };
-                                label_from(label_status_handle).set_text(&short);
+                                status_after = Some(short);
                                 eprintln!("[install] {line}");
                             }
                             InstallMsg::Done(Ok(report)) => {
@@ -247,27 +251,39 @@ fn main() {
                                     report.launcher_exe.display()
                                 );
                                 let _ = nwg::simple_message("LaLune Installer", &msg);
-
-                                *rx_opt = Some(rx); // вернуть receiver перед выходом
-                                nwg::stop_thread_dispatch();
-                                return;
+                                exit_after = true;
+                                break;
                             }
                             InstallMsg::Done(Err(e)) => {
                                 let msg = format!("Ошибка установки:\n\n{e}");
                                 let _ = nwg::simple_message("LaLune Installer", &msg);
-
-                                // Разблокируем кнопку для повторной попытки.
-                                button_from(btn_install_handle).set_enabled(true);
-                                label_from(label_status_handle)
-                                    .set_text("Ошибка. Нажмите «Установить» ещё раз.");
+                                reenable_after = true;
+                                status_after = Some(
+                                    "Ошибка. Нажмите «Установить» ещё раз.".into(),
+                                );
                                 break;
                             }
                         }
                     }
 
-                    // Вернуть receiver обратно в RefCell — иначе следующий
-                    // OnNotice его не найдёт.
-                    *rx_opt = Some(rx);
+                    // Применяем изменения в UI (через сохранённые объекты).
+                    if let Some(text) = status_after {
+                        if let Some(lbl) = label_status_for_closure.borrow().as_ref() {
+                            lbl.set_text(&text);
+                        }
+                    }
+                    if reenable_after {
+                        if let Some(btn) = btn_install_for_closure.borrow().as_ref() {
+                            btn.set_enabled(true);
+                        }
+                    }
+
+                    // Вернуть receiver обратно.
+                    *rx_cell.borrow_mut() = Some(rx);
+
+                    if exit_after {
+                        nwg::stop_thread_dispatch();
+                    }
                 }
 
                 E::OnWindowClose => {
