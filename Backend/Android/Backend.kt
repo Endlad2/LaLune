@@ -30,6 +30,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -63,15 +64,6 @@ class Backend(private val context: Context) {
 
         const val PROTO_CSQTT = "CSQTT"
         const val PROTO_PAPERFLUX = "PaperFlux"
-
-        // Ассет PaperFlux для текущей ABI.
-        fun paperfluxAssetFor(abi: String): String = when {
-            abi.contains("arm64") -> "libopenflux.so"    // см. build pipeline
-            abi.contains("armeabi-v7a") -> "libopenflux.so"
-            abi.contains("x86_64") -> "libopenflux.so"
-            abi.contains("x86") -> "libopenflux.so"
-            else -> "libopenflux.so"
-        }
     }
 
     private val appDir = File(context.filesDir, "la-lune").apply { mkdirs() }
@@ -350,28 +342,11 @@ class Backend(private val context: Context) {
                 path == "/logs/export" && method == "GET" ->
                     200 to filterLogs(logs.toList(), queryParam(query, "source")).joinToString("\n")
 
-                // ---- Core: список протоколов ----
                 path == "/core/protocols" && method == "GET" -> 200 to protocolsJson().toString()
 
-                // ---- Core per-protocol ----
-                path.startsWith("/core/") && method == "GET" || path.startsWith("/core/") && method == "POST" || path.startsWith("/core/") && method == "DELETE" -> {
-                    val rest = path.removePrefix("/core/")
-                    routeCore(method, rest)
-                }
-
-                // ---- Core aliases (CSQTT) ----
-                path == "/core/version" && method == "GET" ->
-                    200 to jsonOk("version" to (coreManager?.readLatest(PROTO_CSQTT) ?: ""))
-                path == "/core/latest" && method == "GET" ->
-                    200 to jsonOk("version" to (coreManager?.fetchLatestVersion(PROTO_CSQTT) ?: ""))
-                path == "/core/check" && method == "GET" -> {
-                    val local = coreManager?.readLatest(PROTO_CSQTT) ?: ""
-                    val remote = coreManager?.fetchLatestVersion(PROTO_CSQTT) ?: ""
-                    200 to jsonOk("hasUpdate" to (remote.isNotEmpty() && remote != local),
-                        "local" to local, "remote" to remote)
-                }
-                path == "/core/path" && method == "GET" ->
-                    200 to jsonOk("path" to (coreManager?.getCorePath(PROTO_CSQTT) ?: ""))
+                path.startsWith("/core/") && method == "GET" -> routeCore(method, path.removePrefix("/core/"))
+                path.startsWith("/core/") && method == "POST" -> routeCore(method, path.removePrefix("/core/"))
+                path.startsWith("/core/") && method == "DELETE" -> routeCore(method, path.removePrefix("/core/"))
 
                 path == "/update/check" && method == "GET" -> 200 to jsonOk(
                     "hasUpdate" to false, "remoteTag" to "", "localVersion" to VERSION
@@ -499,7 +474,6 @@ class Backend(private val context: Context) {
     }
 
     private fun routeCore(method: String, rest: String): Pair<Int, String> {
-        // rest = "CSQTT/version" | "CSQTT/download/sync" | ...
         val slash = rest.indexOf('/')
         val proto = if (slash > 0) rest.substring(0, slash) else rest
         val tail = if (slash > 0) rest.substring(slash + 1) else ""
@@ -536,6 +510,33 @@ class Backend(private val context: Context) {
             tail == "" && method == "DELETE" -> {
                 cm.getCorePath(proto)?.let { File(it).delete() }
                 200 to jsonOk("ok" to true)
+            }
+            // Алиасы (обратная совместимость)
+            proto == "version" && tail == "" && method == "GET" ->
+                200 to jsonOk("version" to cm.readLatest(PROTO_CSQTT))
+            proto == "latest" && tail == "" && method == "GET" ->
+                200 to jsonOk("version" to (cm.fetchLatestVersion(PROTO_CSQTT) ?: ""))
+            proto == "check" && tail == "" && method == "GET" -> {
+                val local = cm.readLatest(PROTO_CSQTT)
+                val remote = cm.fetchLatestVersion(PROTO_CSQTT) ?: ""
+                200 to jsonOk(
+                    "hasUpdate" to (remote.isNotEmpty() && remote != local),
+                    "local" to local, "remote" to remote
+                )
+            }
+            proto == "path" && tail == "" && method == "GET" ->
+                200 to jsonOk("path" to (cm.getCorePath(PROTO_CSQTT) ?: ""))
+            proto == "download" && tail == "" && method == "POST" -> {
+                if (coreDownloading) 409 to jsonErr("already downloading")
+                else {
+                    coreDownloading = true
+                    thread { try { cm.downloadCore(PROTO_CSQTT) } finally { coreDownloading = false } }
+                    200 to jsonOk("ok" to true, "async" to true)
+                }
+            }
+            proto == "download/sync" && tail == "" && method == "POST" -> {
+                val ok = cm.downloadCore(PROTO_CSQTT)
+                if (ok) 200 to jsonOk("ok" to true) else 500 to jsonErr("download failed")
             }
             else -> 404 to jsonErr("core route not found: $method /core/$rest")
         }
@@ -923,11 +924,9 @@ class Backend(private val context: Context) {
             put("maxToken", ""); put("maxUid", "")
             put("server", ""); put("peer", ""); put("name", "")
         }
-        // Отрезаем схему.
         val idx = link.indexOf("://")
         if (idx < 0) return out
         var rest = link.substring(idx + 3)
-        // Ожидаем "config?..." или "config&..."
         if (rest.startsWith("config?")) rest = rest.removePrefix("config?")
         else if (rest.startsWith("config&")) rest = rest.removePrefix("config&")
         else if (rest.startsWith("config")) rest = rest.removePrefix("config")
@@ -977,7 +976,6 @@ class Backend(private val context: Context) {
         val protocol = sel?.optString("protocol", PROTO_CSQTT) ?: PROTO_CSQTT
         val cm = coreManager ?: return 500 to jsonErr("coreManager not ready")
 
-        // Для обоих протоколов проверяем, что ядро есть.
         if (cm.getCorePath(protocol) == null) {
             addLog("[VPN] $protocol core not installed, downloading...")
             if (!cm.downloadCore(protocol)) return 500 to jsonErr("core download failed")
@@ -997,8 +995,6 @@ class Backend(private val context: Context) {
             )
             if (!started) return 500 to jsonErr("paperflux core start failed")
 
-            // PaperFlux всегда proxy: оборачиваем SOCKS TUN'ом.
-            // shareVpn не нужен — SOCKS5 уже поднят ядром.
             mainHandler.post {
                 val act = activity
                 if (act == null) { startVpnService(); return@post }
@@ -1052,7 +1048,6 @@ class Backend(private val context: Context) {
             return if (fromSettings.isNotEmpty()) fromSettings else fallback
         }
 
-        // Идентичность
         val profileId = fromCfgOrSettings("profileId", "pfProfileId")
         if (profileId.isNotEmpty()) { args += "--profile-id"; args += profileId }
 
@@ -1062,7 +1057,6 @@ class Backend(private val context: Context) {
         val clientIp = fromCfgOrSettings("clientIp", "pfClientIp", "10.10.10.2")
         args += "--client-ip"; args += clientIp
 
-        // Транспорт
         val transport = fromCfgOrSettings("transport", "pfTransport", "yandex")
         args += "--transport"; args += transport
 
@@ -1070,7 +1064,6 @@ class Backend(private val context: Context) {
         val tcpRecovery = settings.optString("pfTcpRecovery", "")
         if (tcpRecovery.isNotEmpty()) { args += "--tcp-recovery"; args += tcpRecovery }
 
-        // Документы
         val url = fromCfgOrSettings("url", "pfUrl")
         if (url.isNotEmpty()) { args += "--url"; args += url }
         val urls = fromCfgOrSettings("urls", "pfUrls")
@@ -1078,11 +1071,9 @@ class Backend(private val context: Context) {
         val volga = fromCfgOrSettings("volgaUrl", "pfVolgaUrl")
         if (volga.isNotEmpty()) { args += "--volga-url"; args += volga }
 
-        // Всегда proxy + socks5
         args += "--mode"; args += "proxy"
         args += "--socks5"; args += "127.0.0.1:1080"
 
-        // Relay V2
         val relayUrl = fromCfgOrSettings("relayUrl", "pfRelayUrl")
         if (relayUrl.isNotEmpty()) { args += "--relay-url"; args += relayUrl }
         val relayToken = fromCfgOrSettings("relayToken", "pfRelayToken")
@@ -1092,7 +1083,6 @@ class Backend(private val context: Context) {
         val relaySession = settings.optString("pfRelaySession", "")
         if (relaySession.isNotEmpty()) { args += "--relay-session"; args += relaySession }
 
-        // MAX / OneMe
         val maxToken = fromCfgOrSettings("maxToken", "pfMaxToken")
         if (maxToken.isNotEmpty()) { args += "--maxToken"; args += maxToken }
         val maxUid = fromCfgOrSettings("maxUid", "pfMaxUid")
@@ -1264,7 +1254,7 @@ class Backend(private val context: Context) {
         for (kv in query.split("&")) {
             val idx = kv.indexOf('=')
             if (idx > 0 && kv.substring(0, idx) == key) {
-                return URLEncoder.encode(kv.substring(idx + 1), "UTF-8")
+                return URLDecoder.decode(kv.substring(idx + 1), "UTF-8")
             }
         }
         return null
