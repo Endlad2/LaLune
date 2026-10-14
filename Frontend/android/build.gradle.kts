@@ -1,7 +1,24 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Root build.gradle.kts.
+//
+// Репозитории заданы здесь для всех проектов.
+// Порядок: mavenLocal → google → mavenCentral → gradlePluginPortal.
+// Это спасает от падений с "github.com: No address associated with hostname",
+// которые возникают, когда gradlePluginPortal делает redirect на GitHub Releases.
+
 allprojects {
     repositories {
+        mavenLocal()
         google()
         mavenCentral()
+        // Fallback, но с явным ограничением: не пытаться тянуть
+        // kotlin-compiler-embeddable отсюда (это как раз вызывает redirect).
+        gradlePluginPortal {
+            content {
+                excludeGroup("org.jetbrains.kotlin")
+            }
+        }
     }
 }
 
