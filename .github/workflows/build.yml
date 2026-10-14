@@ -25,9 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: ${{ env.RUST_VERSION }} }
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -59,9 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: ${{ env.RUST_VERSION }} }
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -74,7 +78,8 @@ jobs:
             --package-parameters "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
-        with: { arch: x64 }
+        with:
+          arch: x64
       - name: Install Pillow
         run: python -m pip install --upgrade pip Pillow
       - name: Generate icons
@@ -124,7 +129,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -221,9 +227,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
       - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: "8.0.x" }
+        with:
+          dotnet-version: "8.0.x"
       - name: Build fetcher
         run: python build_token_grabber.py --platform ${{ matrix.platform }}
       - name: Package into zip
@@ -269,7 +277,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: release }
+        with:
+          path: release
       - name: Flatten
         run: |
           set -e
