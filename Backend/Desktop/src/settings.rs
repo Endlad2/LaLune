@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки: чтение/запись settings.json, дефолты, валидация диапазонов.
+// Настройки: CSQTT + PaperFlux. Все pf* поля относятся к PaperFlux.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,35 +14,56 @@ pub const MAX_AUTO_API_WORKERS: i32 = 27;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    // -------- CSQTT --------
     pub peer: String,
     pub vk_hashes: String,
     pub vk_js_token: String,
-
-    pub workers: i32,
-    pub auto_api_workers: i32,
-
     pub password: String,
     pub obfs: String,
     pub fingerprint: String,
     pub client_ids: String,
-    pub device_id: String,
-
     pub auth_mode: String,
     pub turn_transport: String,
     pub turn_host: String,
     pub turn_port: String,
     pub captcha_mode: String,
     pub vk_auth_mode: String,
-
     pub allow_hash_redistribution: bool,
     pub validate_vk_hashes: bool,
 
+    // -------- Общие --------
+    pub workers: i32,
+    pub auto_api_workers: i32,
+    pub device_id: String,
+
+    // -------- PaperFlux --------
+    /// yandex | vyandex | boards | mtslink | cupsonline | mailru | oneme | relayv2 | direct
+    pub pf_transport: String,
+    pub pf_url: String,
+    pub pf_urls: String,
+    pub pf_volga_url: String,
+    pub pf_mode: String,          // proxy | raw
+    pub pf_socks5: String,        // "127.0.0.1:1080"
+    pub pf_tcp_recovery: String,  // auto | classic | rack
+    pub pf_session: bool,
+    pub pf_client_ip: String,
+    pub pf_auth_service: String,
+    pub pf_ipc_socket: String,
+    pub pf_tun_fd_sock: String,
+    pub pf_packet_sock: String,
+    pub pf_exit_profiles: String,
+    pub pf_exit_stats: String,
+    pub pf_exit_cookies: String,
+    pub pf_relay_url: String,
+    pub pf_relay_token: String,
+    pub pf_relay_user: i64,
+    pub pf_relay_session: String,
+    pub pf_max_token: String,
+    pub pf_max_uid: String,
+
+    // -------- Экспериментальное --------
     pub enable_smart_tunnel: bool,
-
-    /// Показывать логи ядра (строки с префиксом `[CORE]`) на вкладке Логи.
     pub show_core_logs: bool,
-
-    /// Раздавать VPN через SOCKS5 на 0.0.0.0:1080.
     pub share_vpn: bool,
 }
 
@@ -52,25 +73,45 @@ impl Default for Settings {
             peer: String::new(),
             vk_hashes: String::new(),
             vk_js_token: String::new(),
-
-            workers: DEFAULT_WORKERS,
-            auto_api_workers: DEFAULT_AUTO_API_WORKERS,
-
             password: String::new(),
             obfs: "video".into(),
             fingerprint: "firefox".into(),
             client_ids: "8202606,6287487".into(),
-            device_id: String::new(),
-
             auth_mode: "manual".into(),
             turn_transport: "udp".into(),
             turn_host: String::new(),
             turn_port: String::new(),
             captcha_mode: "auto".into(),
             vk_auth_mode: "vkcalls".into(),
-
             allow_hash_redistribution: false,
             validate_vk_hashes: false,
+
+            workers: DEFAULT_WORKERS,
+            auto_api_workers: DEFAULT_AUTO_API_WORKERS,
+            device_id: String::new(),
+
+            pf_transport: "yandex".into(),
+            pf_url: String::new(),
+            pf_urls: String::new(),
+            pf_volga_url: String::new(),
+            pf_mode: "proxy".into(),
+            pf_socks5: "127.0.0.1:1080".into(),
+            pf_tcp_recovery: "auto".into(),
+            pf_session: false,
+            pf_client_ip: "10.10.10.2".into(),
+            pf_auth_service: String::new(),
+            pf_ipc_socket: String::new(),
+            pf_tun_fd_sock: String::new(),
+            pf_packet_sock: String::new(),
+            pf_exit_profiles: String::new(),
+            pf_exit_stats: String::new(),
+            pf_exit_cookies: String::new(),
+            pf_relay_url: String::new(),
+            pf_relay_token: String::new(),
+            pf_relay_user: 0,
+            pf_relay_session: String::new(),
+            pf_max_token: String::new(),
+            pf_max_uid: String::new(),
 
             enable_smart_tunnel: false,
             show_core_logs: false,
@@ -87,6 +128,7 @@ impl Settings {
         if self.auto_api_workers < MIN_AUTO_API_WORKERS { self.auto_api_workers = MIN_AUTO_API_WORKERS; }
         if self.auto_api_workers > MAX_AUTO_API_WORKERS { self.auto_api_workers = MAX_AUTO_API_WORKERS; }
 
+        // CSQTT
         if self.auth_mode.is_empty() { self.auth_mode = "manual".into(); }
         if self.turn_transport.is_empty() { self.turn_transport = "udp".into(); }
         if self.obfs.is_empty() { self.obfs = "video".into(); }
@@ -94,6 +136,13 @@ impl Settings {
         if self.captcha_mode.is_empty() { self.captcha_mode = "auto".into(); }
         if self.vk_auth_mode.is_empty() { self.vk_auth_mode = "vkcalls".into(); }
         if self.client_ids.is_empty() { self.client_ids = "8202606,6287487".into(); }
+
+        // PaperFlux
+        if self.pf_transport.is_empty() { self.pf_transport = "yandex".into(); }
+        if self.pf_mode.is_empty() { self.pf_mode = "proxy".into(); }
+        if self.pf_socks5.is_empty() { self.pf_socks5 = "127.0.0.1:1080".into(); }
+        if self.pf_tcp_recovery.is_empty() { self.pf_tcp_recovery = "auto".into(); }
+        if self.pf_client_ip.is_empty() { self.pf_client_ip = "10.10.10.2".into(); }
 
         if self.device_id.is_empty() {
             self.device_id = uuid::Uuid::new_v4().to_string().replace('-', "");

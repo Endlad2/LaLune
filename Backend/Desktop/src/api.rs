@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// HTTP API: все роуты, обработчики, SSE.
-//
-// Логи: строки ядра маркируются префиксом `[CORE] `. Параметр
-// `?source=backend|core|all` фильтрует /logs* (default: all).
+// HTTP API. Поддерживает ?source=backend|core|all в /logs*.
+// Core-эндпоинты теперь per-protocol: GET /core/{proto}/check, POST /core/{proto}/download.
+// Старые /core/* оставлены как алиасы на CSQTT для обратной совместимости.
 
 use axum::{
     extract::{Path, Query, State},
@@ -26,11 +25,11 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::config::{parse_link, ConfigItem};
 use crate::core_manager::{self, CoreProcess};
 use crate::events::Event;
-use crate::state::AppState;
+use crate::protocol::{self, ProtocolKind};
+use crate::state::{self, AppState};
 use crate::vk;
 use crate::vpn;
 
-/// Префикс строк ядра CSQTT в общем потоке логов.
 pub const CORE_PREFIX: &str = "[CORE] ";
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -51,6 +50,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/settings", get(settings_get).put(settings_put).patch(settings_patch))
         .route("/settings/reset", post(settings_reset))
         .route("/settings/:key", get(settings_get_key).put(settings_put_key))
+        .route("/settings-for/:proto", get(settings_for_proto))
         .route("/device/id", get(device_id))
         .route("/device/id/regenerate", post(device_id_regen))
         .route("/device/info", get(device_info))
@@ -64,14 +64,23 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/logs/tail", get(logs_tail))
         .route("/logs/stream", get(sse_logs))
         .route("/logs/export", get(logs_export))
-        .route("/core/version", get(core_version))
-        .route("/core/latest", get(core_latest))
-        .route("/core/check", get(core_check))
-        .route("/core/download", post(core_download_async))
-        .route("/core/download/sync", post(core_download_sync))
-        .route("/core/path", get(core_path))
+        // --- Core: per-protocol ---
         .route("/core/protocols", get(core_protocols))
-        .route("/core", delete(core_delete))
+        .route("/core/:proto/version", get(core_version_p))
+        .route("/core/:proto/latest", get(core_latest_p))
+        .route("/core/:proto/check", get(core_check_p))
+        .route("/core/:proto/download", post(core_download_async_p))
+        .route("/core/:proto/download/sync", post(core_download_sync_p))
+        .route("/core/:proto/path", get(core_path_p))
+        .route("/core/:proto", delete(core_delete_p))
+        // --- Алиасы CSQTT (обратная совместимость) ---
+        .route("/core/version", get(core_version_alias))
+        .route("/core/latest", get(core_latest_alias))
+        .route("/core/check", get(core_check_alias))
+        .route("/core/download", post(core_download_async_alias))
+        .route("/core/download/sync", post(core_download_sync_alias))
+        .route("/core/path", get(core_path_alias))
+        .route("/core", delete(core_delete_alias))
         .route("/update/check", get(update_check))
         .route("/update/url", get(update_url))
         .route("/vk/token/state", get(vk_state))
@@ -79,6 +88,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vk/token/submit", post(vk_submit))
         .route("/vk/token/validate", get(vk_validate))
         .route("/vk/token/fetch/cancel", post(vk_cancel))
+        .route("/vk/token/raw", get(vk_token_raw))
         .route("/vk/token", delete(vk_delete))
         .route("/vk/calls/start", post(vk_calls_start))
         .route("/vk/calls/stop", post(vk_calls_stop))
@@ -118,6 +128,8 @@ async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
         "version": "0.6.0",
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
+        "hostname": hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_default(),
+        "platform": "desktop",
         "uptime": state.uptime(),
     }))
 }
@@ -205,31 +217,57 @@ struct ConfigCreateBody {
     password: Option<String>,
     hashes: Option<String>,
     name: Option<String>,
+    // PaperFlux
+    #[serde(rename = "profileId")] profile_id: Option<String>,
+    #[serde(rename = "profileToken")] profile_token: Option<String>,
+    #[serde(rename = "clientIp")] client_ip: Option<String>,
+    transport: Option<String>,
+    url: Option<String>,
+    urls: Option<String>,
+    #[serde(rename = "volgaUrl")] volga_url: Option<String>,
+    #[serde(rename = "relayUrl")] relay_url: Option<String>,
+    #[serde(rename = "relayToken")] relay_token: Option<String>,
+    #[serde(rename = "maxToken")] max_token: Option<String>,
+    #[serde(rename = "maxUid")] max_uid: Option<String>,
+    server: Option<String>,
+}
+
+fn body_to_item(body: ConfigCreateBody) -> Result<ConfigItem, String> {
+    if let Some(link) = body.link.as_ref().filter(|l| !l.trim().is_empty()) {
+        return parse_link(link).map_err(|e| e.to_string());
+    }
+    let mut c = ConfigItem::default();
+    c.protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
+    c.peer = body.peer.unwrap_or_default();
+    c.password = body.password.unwrap_or_default();
+    c.hashes = body.hashes.unwrap_or_default();
+    c.name = body.name.unwrap_or_default();
+    c.profile_id = body.profile_id.unwrap_or_default();
+    c.profile_token = body.profile_token.unwrap_or_default();
+    c.client_ip = body.client_ip.unwrap_or_default();
+    c.transport = body.transport.unwrap_or_default();
+    c.url = body.url.unwrap_or_default();
+    c.urls = body.urls.unwrap_or_default();
+    c.volga_url = body.volga_url.unwrap_or_default();
+    c.relay_url = body.relay_url.unwrap_or_default();
+    c.relay_token = body.relay_token.unwrap_or_default();
+    c.max_token = body.max_token.unwrap_or_default();
+    c.max_uid = body.max_uid.unwrap_or_default();
+    c.server = body.server.unwrap_or_default();
+    if c.name.is_empty() {
+        c.name = if c.peer.is_empty() { c.server.clone() } else { c.peer.clone() };
+    }
+    Ok(c)
 }
 
 async fn configs_create(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ConfigCreateBody>,
 ) -> impl IntoResponse {
-    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".to_string());
-    let mut config = if let Some(link) = body.link {
-        match parse_link(&link) {
-            Ok(c) => c,
-            Err(e) => return err(400, e.to_string()),
-        }
-    } else {
-        ConfigItem {
-            id: 0,
-            protocol,
-            peer: body.peer.unwrap_or_default(),
-            password: body.password.unwrap_or_default(),
-            hashes: body.hashes.unwrap_or_default(),
-            name: body.name.unwrap_or_default(),
-            raw_link: String::new(),
-        }
+    let config = match body_to_item(body) {
+        Ok(c) => c,
+        Err(e) => return err(400, e),
     };
-    if config.name.is_empty() { config.name = config.peer.clone(); }
-
     match state.configs.insert(&config) {
         Ok(id) => Json(json!({"id": id})).into_response(),
         Err(e) => err(500, e.to_string()),
@@ -241,23 +279,10 @@ async fn configs_update(
     Path(id): Path<i64>,
     Json(body): Json<ConfigCreateBody>,
 ) -> impl IntoResponse {
-    let mut config = if let Some(link) = body.link {
-        match parse_link(&link) {
-            Ok(c) => c,
-            Err(e) => return err(400, e.to_string()),
-        }
-    } else {
-        ConfigItem {
-            id: 0,
-            protocol: body.protocol.unwrap_or_else(|| "CSQTT".to_string()),
-            peer: body.peer.unwrap_or_default(),
-            password: body.password.unwrap_or_default(),
-            hashes: body.hashes.unwrap_or_default(),
-            name: body.name.unwrap_or_default(),
-            raw_link: String::new(),
-        }
+    let config = match body_to_item(body) {
+        Ok(c) => c,
+        Err(e) => return err(400, e),
     };
-    if config.name.is_empty() { config.name = config.peer.clone(); }
     match state.configs.update(id, &config) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, e.to_string()),
@@ -321,6 +346,20 @@ async fn selected_set(
 async fn settings_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let s = state.settings.read().clone();
     Json(json!(s))
+}
+
+/// Возвращает список ключей настроек, релевантных протоколу,
+/// плюс placeholder для ссылки. UI использует это, чтобы понять,
+/// какие поля показывать в разделе "Настройки".
+async fn settings_for_proto(
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    Json(json!({
+        "protocol": kind.id(),
+        "keys": protocol::settings_keys_for(kind),
+        "linkPlaceholder": protocol::link_placeholder(kind),
+    }))
 }
 
 async fn settings_put(
@@ -437,20 +476,34 @@ async fn vpn_connect(
         None => return err(400, "no config selected"),
     };
 
-    state.log(format!("[VPN] connecting to {}", config.name));
+    let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
+    state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
-    if !state.core_path.exists() {
-        state.log("[VPN] core not found, downloading...");
+    // Определяем путь ядра под этот протокол.
+    let core_path = state::core_path_for(&state.app_dir, kind.id());
+
+    if !core_path.exists() {
+        state.log(format!("[VPN] {} core not found, downloading...", kind.id()));
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap();
-        let version = match core_manager::fetch_latest(&client, &state.events).await {
-            Some(v) => v,
-            None => return err(500, "cannot fetch LATEST"),
-        };
-        if let Err(e) = core_manager::download_core(&client, &version, &state.core_path, &state.events).await {
-            return err(500, format!("download failed: {}", e));
+
+        match kind {
+            ProtocolKind::Csqtt => {
+                let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                    Some(v) => v,
+                    None => return err(500, "cannot fetch CSQTT LATEST"),
+                };
+                if let Err(e) = core_manager::download_csqtt(&client, &version, &core_path, &state.events).await {
+                    return err(500, format!("download CSQTT failed: {}", e));
+                }
+            }
+            ProtocolKind::PaperFlux => {
+                if let Err(e) = core_manager::download_paperflux(&client, &core_path, &state.events).await {
+                    return err(500, format!("download PaperFlux failed: {}", e));
+                }
+            }
         }
     }
 
@@ -458,22 +511,25 @@ async fn vpn_connect(
     let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
     state.log(format!("[VPN] core args: {}", args.join(" ")));
 
-    let core = match CoreProcess::spawn(&state.core_path, &args, &state.logs_path, state.events.clone()).await {
+    let core = match CoreProcess::spawn(&core_path, &args, &state.logs_path, state.events.clone()).await {
         Ok(c) => c,
         Err(e) => return err(500, format!("spawn failed: {}", e)),
     };
     *state.core.lock() = Some(core);
 
-    // Если включена раздача — запускаем SOCKS5-прокси
-    if settings.share_vpn {
+    // Для PaperFlux в режиме proxy ядро само поднимает SOCKS5 на 127.0.0.1:PORT.
+    // Для CSQTT SOCKS5 — это наша раздача (share_vpn).
+    if kind == ProtocolKind::Csqtt && settings.share_vpn {
         if let Err(e) = crate::socks5::start(state.clone()) {
             state.log(format!("[PROXY] failed to start: {}", e));
         }
     }
 
-    // Watchdog: читает logs.log, ждёт TUNCONF + Активных>0 два тика подряд,
-    // добавляет bypass-маршруты, поднимает TUN.
+    // Watchdog: ждёт TUNCONF + Активных>0 два тика подряд, поднимает TUN.
+    // Для PaperFlux в режиме proxy TUN оборачивает SOCKS5 → сами ставим
+    // маршруты после появления SOCKS-порта в логах ядра.
     let state2 = state.clone();
+    let kind_for_watchdog = kind;
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last_size = 0u64;
@@ -481,8 +537,6 @@ async fn vpn_connect(
         let mut tun_dns: Option<String> = None;
         let mut consecutive_active_ticks: i32 = 0;
         let mut tun_started = false;
-        let mut bypass_ips_seen: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
 
         while tokio::time::Instant::now() < deadline && !tun_started {
             if let Ok(meta) = tokio::fs::metadata(&state2.logs_path).await {
@@ -495,17 +549,6 @@ async fn vpn_connect(
                                 tun_ip = Some(ip);
                                 tun_dns = Some(dns);
                             }
-
-                            #[cfg(target_os = "windows")]
-                            if line.contains("TURN") || line.contains("Relay") {
-                                for ip in vpn::extract_ipv4_addrs(line) {
-                                    if bypass_ips_seen.insert(ip.clone()) {
-                                        vpn::add_bypass_route(&state2.vpn, &ip);
-                                        state2.log(format!("[TUN] bypass route added for {}", ip));
-                                    }
-                                }
-                            }
-
                             if let Some((active, _traffic)) = vpn::parse_stats(line) {
                                 if active > 0 { consecutive_active_ticks += 1; }
                                 else { consecutive_active_ticks = 0; }
@@ -516,12 +559,30 @@ async fn vpn_connect(
                 }
             }
 
-            if tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2 {
-                let ip = tun_ip.clone().unwrap();
-                let dns = tun_dns.clone().unwrap();
+            // Для PaperFlux TUN поднимаем после того, как ядро сообщит о SOCKS5.
+            // Мы парсим либо TUNCONF, либо строку с socks5.
+            let ready = match kind_for_watchdog {
+                ProtocolKind::Csqtt => {
+                    tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2
+                }
+                ProtocolKind::PaperFlux => {
+                    // При proxy-режиме ядро пишет что-то вроде
+                    // "[socks5] listening on 127.0.0.1:PORT".
+                    // Если TUNCONF нет — используем дефолтный IP.
+                    consecutive_active_ticks >= 1
+                        || last_size > 0
+                }
+            };
+
+            if ready {
+                let ip = tun_ip.clone()
+                    .unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
+                let dns = tun_dns.clone()
+                    .unwrap_or_else(|| vpn::DEFAULT_DNS.to_string());
+
                 state2.log(format!(
-                    "[VPN] TUN params: ip={} dns={} (active ticks={})",
-                    ip, dns, consecutive_active_ticks
+                    "[VPN] TUN params: ip={} dns={} (proto={})",
+                    ip, dns, kind_for_watchdog.id()
                 ));
 
                 if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
@@ -541,7 +602,7 @@ async fn vpn_connect(
         }
 
         if !tun_started {
-            state2.log("[VPN] timeout: TUNCONF or Активных>0 not seen within 90s");
+            state2.log("[VPN] timeout waiting for TUN/active");
             state2.events.emit(Event::status(false));
         }
     });
@@ -553,8 +614,6 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
     state.log("[VPN] disconnecting...");
     state.vpn.stop();
     vpn::cleanup_routes(&state.vpn, &state.events);
-
-    // Останавливаем SOCKS5, если был запущен.
     crate::socks5::stop(&state);
 
     let maybe_proc = { let mut core = state.core.lock(); core.take() };
@@ -639,50 +698,108 @@ async fn logs_export(
     (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], body)
 }
 
-// ... остальные хендлеры без изменений ...
+// ============================================================
+//  Core — per-protocol
+// ============================================================
 
-async fn core_version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let version = tokio::fs::read_to_string(state.app_dir.join("LATEST"))
-        .await.unwrap_or_default().trim().to_string();
+async fn core_protocols() -> impl IntoResponse {
+    Json(json!(core_manager::supported_protocols()))
+}
+
+async fn core_version_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let version = tokio::fs::read_to_string(&latest_file)
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     Json(json!({"version": version}))
 }
 
-async fn core_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_latest_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    match core_manager::fetch_latest(&client, &state.events).await {
+    let v = match kind {
+        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
+        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
+    };
+    match v {
         Some(v) => Json(json!({"version": v})).into_response(),
         None => err(500, "cannot fetch LATEST"),
     }
 }
 
-async fn core_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_check_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let remote = core_manager::fetch_latest(&client, &state.events).await.unwrap_or_default();
-    let local = tokio::fs::read_to_string(state.app_dir.join("LATEST"))
-        .await.unwrap_or_default().trim().to_string();
+    let remote = match kind {
+        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
+        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
+    };
+    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let local = tokio::fs::read_to_string(&latest_file)
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let has_update = !remote.is_empty() && remote != local;
     Json(json!({"hasUpdate": has_update, "local": local, "remote": remote}))
 }
 
-async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_download_async_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let state2 = state.clone();
     tokio::spawn(async move {
         state2.events.emit(Event::progress("core_download", 0));
         let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-        if let Some(version) = core_manager::fetch_latest(&client, &state2.events).await {
-            state2.events.emit(Event::progress("core_download", 20));
-            match core_manager::download_core(&client, &version, &state2.core_path, &state2.events).await {
-                Ok(_) => {
-                    let _ = tokio::fs::write(state2.app_dir.join("LATEST"), &version).await;
-                    state2.events.emit(Event::progress("core_download", 100));
-                    state2.log(format!("[CORE] updated to {}", version));
+        let dest = crate::state::core_path_for(&state2.app_dir, kind.id());
+        let latest_file = state2.app_dir.join(format!("LATEST.{}", kind.id()));
+
+        match kind {
+            ProtocolKind::Csqtt => {
+                if let Some(version) = core_manager::fetch_latest_csqtt(&client, &state2.events).await {
+                    state2.events.emit(Event::progress("core_download", 20));
+                    match core_manager::download_csqtt(&client, &version, &dest, &state2.events).await {
+                        Ok(_) => {
+                            let _ = tokio::fs::write(&latest_file, &version).await;
+                            state2.events.emit(Event::progress("core_download", 100));
+                            state2.log(format!("[CORE] CSQTT updated to {}", version));
+                        }
+                        Err(e) => {
+                            state2.log(format!("[CORE] CSQTT download failed: {}", e));
+                            state2.events.emit(Event::error(e.to_string()));
+                        }
+                    }
                 }
-                Err(e) => {
-                    state2.log(format!("[CORE] download failed: {}", e));
-                    state2.events.emit(Event::error(e.to_string()));
+            }
+            ProtocolKind::PaperFlux => {
+                state2.events.emit(Event::progress("core_download", 20));
+                match core_manager::download_paperflux(&client, &dest, &state2.events).await {
+                    Ok(_) => {
+                        let _ = tokio::fs::write(&latest_file, "latest").await;
+                        state2.events.emit(Event::progress("core_download", 100));
+                        state2.log("[CORE] PaperFlux updated".to_string());
+                    }
+                    Err(e) => {
+                        state2.log(format!("[CORE] PaperFlux download failed: {}", e));
+                        state2.events.emit(Event::error(e.to_string()));
+                    }
                 }
             }
         }
@@ -692,37 +809,118 @@ async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoRes
     Json(json!({"ok": true, "async": true})).into_response()
 }
 
-async fn core_download_sync(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_download_sync_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-    let version = match core_manager::fetch_latest(&client, &state.events).await {
-        Some(v) => v, None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
-    };
-    let result = core_manager::download_core(&client, &version, &state.core_path, &state.events).await;
-    *state.core_downloading.lock() = false;
 
-    match result {
-        Ok(_) => {
-            let _ = tokio::fs::write(state.app_dir.join("LATEST"), &version).await;
-            Json(json!({"ok": true, "version": version})).into_response()
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
+    let dest = crate::state::core_path_for(&state.app_dir, kind.id());
+    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+
+    let result = match kind {
+        ProtocolKind::Csqtt => {
+            let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                Some(v) => v,
+                None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+            };
+            match core_manager::download_csqtt(&client, &version, &dest, &state.events).await {
+                Ok(_) => {
+                    let _ = tokio::fs::write(&latest_file, &version).await;
+                    Ok(version)
+                }
+                Err(e) => Err(e),
+            }
         }
+        ProtocolKind::PaperFlux => {
+            match core_manager::download_paperflux(&client, &dest, &state.events).await {
+                Ok(_) => {
+                    let _ = tokio::fs::write(&latest_file, "latest").await;
+                    Ok("latest".to_string())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    };
+
+    *state.core_downloading.lock() = false;
+    match result {
+        Ok(v) => Json(json!({"ok": true, "version": v})).into_response(),
         Err(e) => err(500, e.to_string()),
     }
 }
 
-async fn core_path(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({"path": state.core_path.to_string_lossy()}))
+async fn core_path_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let p = crate::state::core_path_for(&state.app_dir, kind.id());
+    Json(json!({"path": p.to_string_lossy()}))
 }
 
-async fn core_protocols() -> impl IntoResponse {
-    Json(json!(core_manager::supported_protocols()))
-}
-
-async fn core_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = tokio::fs::remove_file(&state.core_path).await;
+async fn core_delete_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let p = crate::state::core_path_for(&state.app_dir, kind.id());
+    let _ = tokio::fs::remove_file(&p).await;
     Json(json!({"ok": true}))
 }
+
+// ============================================================
+//  Core — алиасы CSQTT
+// ============================================================
+
+async fn core_version_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let latest_file = state.app_dir.join("LATEST.Csqtt");
+    let version = tokio::fs::read_to_string(&latest_file).await.unwrap_or_default().trim().to_string();
+    Json(json!({"version": version}))
+}
+
+async fn core_latest_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+    match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+        Some(v) => Json(json!({"version": v})).into_response(),
+        None => err(500, "cannot fetch LATEST"),
+    }
+}
+
+async fn core_check_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+    let remote = core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default();
+    let local = tokio::fs::read_to_string(state.app_dir.join("LATEST.Csqtt"))
+        .await.unwrap_or_default().trim().to_string();
+    let has_update = !remote.is_empty() && remote != local;
+    Json(json!({"hasUpdate": has_update, "local": local, "remote": remote}))
+}
+
+async fn core_download_async_alias(state: State<Arc<AppState>>) -> impl IntoResponse {
+    core_download_async_p(state, Path("CSQTT".into())).await
+}
+
+async fn core_download_sync_alias(state: State<Arc<AppState>>) -> impl IntoResponse {
+    core_download_sync_p(state, Path("CSQTT".into())).await
+}
+
+async fn core_path_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let p = crate::state::core_path_for(&state.app_dir, "CSQTT");
+    Json(json!({"path": p.to_string_lossy()}))
+}
+
+async fn core_delete_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let p = crate::state::core_path_for(&state.app_dir, "CSQTT");
+    let _ = tokio::fs::remove_file(&p).await;
+    Json(json!({"ok": true}))
+}
+
+// ============================================================
+//  Update / VK / Calls / ST / Deploy / Platform / Debug
+// ============================================================
 
 async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
@@ -787,6 +985,11 @@ async fn vk_validate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         },
         None => Json(json!({"valid": false, "message": "no token"})).into_response(),
     }
+}
+
+async fn vk_token_raw(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let token = vk::read_token(&state.app_dir).unwrap_or_default();
+    Json(json!({"token": token}))
 }
 
 async fn vk_cancel() -> impl IntoResponse { Json(json!({"ok": true})) }

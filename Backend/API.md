@@ -1,103 +1,133 @@
 # LaLune API — `http://127.0.0.1:1062`
 
-Единый HTTP-интерфейс для всех бэкендов (Desktop Rust, Android Kotlin,
-iOS Swift, OpenWRT Rust). Все ответы — JSON. Ошибки:
-`{ "error": "...", "code": 4xx|5xx }`.
+Единый HTTP-интерфейс для всех бэкендов. Поддерживается **два протокола**:
+CSQTT и PaperFlux. Протокол задаётся полем `protocol` в ConfigItem.
 
 ---
 
-## Базовые
+## Протоколы
 
-### `GET /ping`
-
-```
-
-{ "ok": true, "version": "0.6.0", "os": "linux", "arch": "x86_64", "uptime": 1234 }
+### `GET /core/protocols`
 
 ```
 
-### `GET /version`
+[
+{"id":"CSQTT","displayName":"CSQTT (VK Calls)","repo":"Endlad2/csqtt-core",...,"coreAsset":"client-windows-x86_64.exe"},
+{"id":"PaperFlux","displayName":"PaperFlux (Docs)","repo":"Endlad2/PaperFlux-core",...,"coreAsset":"paperflux-windows-amd64.exe"}
+]
 
 ```
 
-{ "api": 1, "backend": "0.6.0", "core": "2026.09.12", "ui": "0.6.0" }
+### Core-эндпоинты per-protocol
 
-```
+| Метод | Путь | Описание |
+|---|---|---|
+| `GET` | `/core/{proto}/version` | локальная версия ядра |
+| `GET` | `/core/{proto}/latest` | серверная версия |
+| `GET` | `/core/{proto}/check` | `{hasUpdate,local,remote}` |
+| `POST` | `/core/{proto}/download` | async-скачивание |
+| `POST` | `/core/{proto}/download/sync` | sync-скачивание |
+| `GET` | `/core/{proto}/path` | путь к бинарнику |
+| `DELETE` | `/core/{proto}` | удалить ядро |
 
-### `GET /events` (SSE)
+`{proto}` = `CSQTT` или `PaperFlux`.
 
-```
-
-data: {"type":"log","line":"[INFO] ...","ts":1759331294}
-data: {"type":"log","line":"[CORE] [СТАТИСТИКА] ...","ts":1759331294}
-data: {"type":"status","connected":true,"ts":1759331294}
-data: {"type":"progress","kind":"core_download","percent":42}
-data: {"type":"progress","kind":"vk_token","percent":60,"message":"..."}
-data: {"type":"event","name":"tun_ready","data":{"ip":"10.66.67.12","dns":"8.8.8.8"}}
-data: {"type":"error","message":"..."}
-
-```
-
-### `POST /shutdown` → `{ "ok": true }`
+Старые `/core/*` без proto — алиасы для CSQTT.
 
 ---
 
 ## Конфиги
 
-| Метод | Тело / Ответ |
-|---|---|
-| `GET /configs` | `[{"id":1,"protocol":"CSQTT","peer":"host:46000",...}]` |
-| `GET /configs/{id}` | один конфиг или 404 |
-| `POST /configs` | `{protocol, link}` или `{protocol, peer, password, hashes, name}` → `{id:42}` |
-| `PUT /configs/{id}` | как POST → `{ok:true}` |
-| `DELETE /configs/{id}` | → `{ok:true}` |
-| `POST /configs/parse` | `{link:"csqtt://..."}` → распарсенный конфиг |
-| `GET /configs/selected` | выбранный или `{}` |
-| `PUT /configs/selected` | `{id:42}` или `{}` |
+### Формат ссылок
+
+**CSQTT:**
+```
+
+csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2+h3
+
+```
+
+**PaperFlux:**
+```
+
+paperflux://config?v=1&id=476&name=AccarFlux&server=31.76.252.123&ip=10.10.10.85&transport=yandex&doc=https%3A%2F%2Fdisk.yandex.ru%2Fi%2F...&token=...&volga=https%3A%2F%2Fdisk.yandex.ru%2Fi%2F...
+
+```
+
+Поля PaperFlux:
+- `id` → `profileId`
+- `name` → `name`
+- `server` → `server`
+- `ip` → `clientIp`
+- `transport` → `transport` (yandex/vyandex/boards/mtslink/cupsonline/mailru/oneme/relayv2/direct)
+- `doc` (или `url`) → `url`
+- `urls` → `urls`
+- `token` → `profileToken`
+- `volga` → `volgaUrl`
+
+### ConfigItem
+
+```json
+{
+  "id": 1,
+  "protocol": "CSQTT" | "PaperFlux",
+  "name": "...",
+  "peer": "...",           // CSQTT peer / PaperFlux server
+  "password": "...",       // CSQTT
+  "hashes": "...",         // CSQTT
+  "profileId": "...",      // PaperFlux
+  "profileToken": "...",   // PaperFlux
+  "clientIp": "...",       // PaperFlux
+  "transport": "...",      // PaperFlux
+  "url": "...",            // PaperFlux
+  "urls": "...",           // PaperFlux
+  "volgaUrl": "...",       // PaperFlux
+  "relayUrl": "...",       // PaperFlux
+  "relayToken": "...",     // PaperFlux
+  "maxToken": "...",       // PaperFlux
+  "maxUid": "...",         // PaperFlux
+  "server": "...",         // PaperFlux
+  "rawLink": "..."
+}
+```
 
 ---
 
 ## Настройки
 
-| Метод | Описание |
-|---|---|
-| `GET /settings` | все настройки |
-| `PUT /settings` | заменить целиком |
-| `PATCH /settings` | частично |
-| `POST /settings/reset` | сброс к дефолтам |
-| `GET /settings/{key}` | одна |
-| `PUT /settings/{key}` | обновить одну |
+| Ключ ↕▾ | Протокол ↕▾ | Описание ↕▾ |
+|---|---|---|
+| −`peer`, `password`, `vkHashes` | CSQTT |  |
+| −`workers`, `autoApiWorkers` | оба |  |
+| −`obfs`, `fingerprint`, `clientIds` | CSQTT |  |
+| −`authMode`, `turnTransport`, `captchaMode`, `vkAuthMode` | CSQTT |  |
+| −`allowHashRedistribution`, `validateVkHashes` | CSQTT |  |
+| −`pfTransport` | PaperFlux | yandex/vyandex/boards/mtslink/cupsonline/mailru/oneme/relayv2/direct |
+| −`pfUrl`, `pfUrls`, `pfVolgaUrl` | PaperFlux | документные URL |
+| −`pfMode` | PaperFlux | proxy/raw |
+| −`pfSocks5` | PaperFlux | 127.0.0.1:1080 |
+| −`pfTcpRecovery` | PaperFlux | auto/classic/rack |
+| −`pfSession` | PaperFlux | bool |
+| −`pfClientIp` | PaperFlux | 10.10.10.2 |
+| −`pfAuthService`, `pfIpcSocket`, `pfTunFdSock`, `pfPacketSock` | PaperFlux |  |
+| −`pfExitProfiles`, `pfExitStats`, `pfExitCookies` | PaperFlux |  |
+| −`pfRelayUrl`, `pfRelayToken`, `pfRelayUser`, `pfRelaySession` | PaperFlux | relayv2 |
+| −`pfMaxToken`, `pfMaxUid` | PaperFlux | MAX/OneMe |
+| −`shareVpn`, `showCoreLogs`, `enableSmartTunnel` | оба |  |
+⚙
 
-### Схема настроек
+### `GET /settings-for/{proto}`
 
-```json
+Возвращает список ключей настроек, релевантных протоколу, и placeholder
+для ссылки:
+
+```
 {
-  "peer": "", "vkHashes": "", "vkJsToken": "",
-  "workers": 9, "autoApiWorkers": 9,
-  "password": "", "obfs": "video", "fingerprint": "firefox",
-  "clientIds": "8202606,6287487", "deviceId": "...",
-  "authMode": "manual", "turnTransport": "udp",
-  "turnHost": "", "turnPort": "",
-  "captchaMode": "auto", "vkAuthMode": "vkcalls",
-  "allowHashRedistribution": false, "validateVkHashes": false,
-  "enableSmartTunnel": false,
-  "showCoreLogs": false
+  "protocol": "PaperFlux",
+  "keys": ["pfTransport", "pfUrl", ...],
+  "linkPlaceholder": "paperflux://config?v=1&id=...&name=...&server=...&ip=...&transport=...&doc=...&token=...&volga=..."
 }
 ```
-
-`showCoreLogs` — показывать ли в UI логи ядра (строки с префиксом `[CORE] `).
-По умолчанию `false`.
-
----
-
-## Device
-
-| Метод ↕▾ | Ответ ↕▾ |
-|---|---|
-| −`GET /device/id` | `{ "deviceId": "abc..." }` |
-| −`POST /device/id/regenerate` | `{ "deviceId": "new..." }` |
-| −`GET /device/info` | `{os,arch,hostname,cores,totalMemMb}` |
-⚙
 
 ---
 
@@ -105,137 +135,139 @@ data: {"type":"error","message":"..."}
 
 | Метод ↕▾ | Тело / Ответ ↕▾ |
 |---|---|
-| −`POST /vpn/connect` | `{configId:42}` или `{}` → `{ok:true,status:"connecting"}` |
+| −`POST /vpn/connect` | `{configId:42}` → `{ok:true,status:"connecting"}` |
 | −`POST /vpn/disconnect` | → `{ok:true}` |
 | −`GET /vpn/status` | `{state,connected,uptimeSec,configId,message,since}` |
-| −`POST /vpn/reconnect` | → `{ok:true}` |
 | −`GET /vpn/stats` | `{rxBytes,txBytes,rxRate,txRate,activeSessions}` |
-| −`GET /vpn/tunconf` | `{ip,dns,mtu}` или `{}` |
 ⚙
+
+**PaperFlux** всегда запускается в режиме `--client --mode proxy`
+с SOCKS5 на `127.0.0.1:1080`. TUN-мост поднимается вокруг SOCKS5.
+
+**CSQTT** запускается как раньше (напрямую в TUN).
+
+---
+
+## VK (только для CSQTT)
+
+Стандартные эндпоинты — см. предыдущие версии.
 
 ---
 
 ## Логи
 
-Все эндпоинты поддерживают query-параметр `?source=backend|core|all`
-(по умолчанию `all`):
-
-- `source=backend` — только строки бэкенда (без префикса `[CORE] `)
-- `source=core` — только строки ядра CSQTT (начинаются с `[CORE] `)
-- `source=all` — всё вместе
-
-| Метод ↕▾ | Ответ ↕▾ |
-|---|---|
-| −`GET /logs?source=all` | `["line1","line2",...]` |
-| −`GET /logs/tail?lines=100&source=backend` | последние N |
-| −`DELETE /logs` | `{ok:true}` (очищает весь буфер) |
-| −`GET /logs/stream` | SSE только логов |
-| −`GET /logs/export?source=all` | `text/plain` файл |
-⚙
+`?source=backend|core|all` — фильтр по источнику.
 
 ---
 
-## Ядро CSQTT
+## Полный список
 
-| Метод ↕▾ | Ответ ↕▾ |
+См. секции выше. Все остальные эндпоинты (`/vk/calls/*`, `/smarttunnel/*`,
+`/deploy/*`, `/platform/*`, `/debug/*`, `/logs/*`, `/device/*`) сохранены
+без изменений.
+
+</BDS:create_file>
+
+<BDS:create_file fileName="README-PaperFlux.md">
+
+```markdown
+# PaperFlux в LaLune
+
+PaperFlux — второй поддерживаемый протокол после CSQTT. Пробрасывает
+трафик через облачные документы (Yandex, Mail.ru, OneMe, Boards и др.).
+
+## Ключевые отличия
+
+| | CSQTT | PaperFlux |
+|---|---|---|
+| Транспорт | VK Calls + TURN | Documents (Yandex и др.) |
+| Режим ядра | TUN напрямую | `--client --mode proxy` → SOCKS5 → TUN |
+| VK-токен | нужен | не нужен |
+| Ссылка | `csqtt://connect?...` | `paperflux://config?...` |
+| Идентичность | `peer`/`password`/`hashes` | `profileId`/`profileToken` |
+
+## Формат ссылки
+
+paperflux://config?v=1&id=476&name=AccarFlux&server=31.76.252.123&ip=10.10.10.85&transport=yandex&doc=https%3A%2F%2Fdisk.yandex.ru%2Fi%2F...&token=...&volga=https%3A%2F%2Fdisk.yandex.ru%2Fi%2F...
+
+```
+
+Поля:
+- `id` → `profileId`
+- `name` → имя профиля (отображается в UI)
+- `server` → адрес сервера
+- `ip` → виртуальный IPv4 клиента (обычно `10.10.10.85`)
+- `transport` → `yandex | vyandex | boards | mtslink | cupsonline | mailru | oneme | relayv2 | direct`
+- `doc` или `url` → ссылка на документ
+- `urls` → 1-2 ссылки через запятую
+- `token` → secret профиля (≥32 символов)
+- `volga` → отдельный пустой документ для Volga fallback
+
+## Аргументы ядра
+
+Всегда `--client`. Остальное:
+
+### Режим и версия
+- `--exit-node` — запуск как VPS exit (не используется в клиенте)
+- `--client` — **всегда true**
+- `--version`
+- `--debug`
+
+### Идентичность
+- `--profile-id`
+- `--profile-token`
+- `--client-ip` (по умолчанию `10.10.10.2`)
+
+### Транспорт
+- `--transport` (yandex по умолчанию)
+- `--session` (шифрованная сессия)
+- `--tcp-recovery` (auto/classic/rack)
+
+### Документы и URL
+- `--url`
+- `--urls`
+- `--volga-url`
+
+### Сеть
+- `--mode proxy` — **всегда для LaLune**
+- `--socks5 127.0.0.1:1080` — **всегда**
+- `--auth-service`, `--ipc-socket`, `--tun-fd-sock`, `--packet-sock`
+
+### Групповой exit
+- `--exit-profiles`, `--exit-stats`, `--exit-cookies`
+
+### Relay V2
+- `--relay-url`, `--relay-token`, `--relay-user`, `--relay-session`
+
+### MAX/OneMe
+- `--maxToken`, `--maxUid`
+
+## Где скачивается ядро
+
+| Платформа | URL |
 |---|---|
-| −`GET /core/version` | `{version:"2026.09.12"}` |
-| −`GET /core/latest` | `{version:"2026.09.12"}` |
-| −`GET /core/check` | `{hasUpdate:false,local:"...",remote:"..."}` |
-| −`POST /core/download` | async, прогресс через SSE |
-| −`POST /core/download/sync` | синхронно |
-| −`DELETE /core` | `{ok:true}` |
-| −`GET /core/path` | `{path:"/home/.../client-linux-x86_64"}` |
-| −`GET /core/protocols` | `[{id,displayName,repo,realtime,description,coreAsset}]` |
-⚙
+| Windows | `github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-windows-amd64.exe` |
+| Linux | `github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-linux-amd64` |
+| iOS | `github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-ios.zip` (`liboflux.a` + `liboflux.h`) |
+| Android | `github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-android.zip` (`<abi>/libopenflux.so`) |
 
----
+## Android
 
-## Обновление LaLune
+Ядро кладётся в `jniLibs/<abi>/libopenflux.so` и запускается через
+`Process.start` — как CSQTT. Поэтому на Android имя всегда `libopenflux.so`.
 
-| Метод ↕▾ | Ответ ↕▾ |
+## iOS
+
+Ядро (`liboflux.a`) линкуется в `LaLuneTunnel` extension статически.
+Tunnel вызывает `paperflux_run(args)` из `liboflux.h`. SOCKS5-мост
+и TUN-мост — нативно внутри ядра (режим proxy).
+
+## Расположение файлов
+
+| Файл | Назначение |
 |---|---|
-| −`GET /update/check` | `{hasUpdate,remoteTag,localVersion}` |
-| −`GET /update/url` | `{url:"https://github.com/..."}` |
-⚙
-
----
-
-## VK
-
-| Метод ↕▾ | Тело / Ответ ↕▾ |
-|---|---|
-| −`GET /vk/token/state` | `{hasToken,fetching,progress,message}` |
-| −`POST /vk/token/login` | Desktop: запускает Token.ps1/Token.sh. Mobile: `{needsUi:true,authUrl:"https://oauth.vk.ru/..."}` |
-| −`POST /vk/token/submit` | `{token:"vk1.a.xxx"}` → `{ok:true}` |
-| −`GET /vk/token/raw` | `{token:"vk1.a.xxx"}` — сырой токен (для передачи на роутер) |
-| −`DELETE /vk/token` | `{ok:true}` |
-| −`GET /vk/token/validate` | `{valid:true,message:""}` |
-| −`POST /vk/token/fetch/cancel` | `{ok:true}` |
-⚙
-
----
-
-## VK Auto Calls
-
-| Метод ↕▾ | Тело / Ответ ↕▾ |
-|---|---|
-| −`POST /vk/calls/start` | `{workers:27,autoApiWorkers:9}` → `{hashes:[],callIds:[]}` |
-| −`POST /vk/calls/stop` | `{callIds:[]}` → `{finished:N}` |
-| −`POST /vk/calls/stop-all` | → `{finished:N}` |
-| −`GET /vk/calls/active` | `{callIds:[]}` |
-⚙
-
----
-
-## SmartTunnel
-
-| Метод ↕▾ | Ответ ↕▾ |
-|---|---|
-| −`GET /smarttunnel/status` | `{running:true}` |
-| −`POST /smarttunnel/start` | `{ok:true}` |
-| −`POST /smarttunnel/stop` | `{ok:true}` |
-| −`POST /smarttunnel/reload` | `{ok:true}` |
-| −`GET /smarttunnel/logs` | `["...", "..."]` |
-| −`GET /smarttunnel/args` | `["--peer","..."]` |
-| −`PUT /smarttunnel/args` | `["--peer","..."]` → `{ok:true}` |
-⚙
-
----
-
-## Deploy (заглушка)
-
-| Метод ↕▾ | Ответ ↕▾ |
-|---|---|
-| −`POST /deploy/run` | `{stub:true}` |
-| −`GET /deploy/status` | `{busy:false,stub:true}` |
-| −`GET /deploy/log` | `{log:"",stub:true}` |
-| −`POST /deploy/cancel` | `{stub:true}` |
-| −`GET /deploy/protocols` | `{protocols:[],stub:true}` |
-⚙
-
----
-
-## Platform
-
-| Метод ↕▾ | Тело / Ответ ↕▾ |
-|---|---|
-| −`GET /platform/capabilities` | `{canShowWebView,canRunTun,canDeploy,canAutoUpdate,canSendNotifications,canOpenExternalUrl,os,platform}` |
-| −`POST /platform/open-url` | `{url}` → `{ok:true}` |
-| −`POST /platform/notify` | `{title,body}` → `{ok:true}` |
-| −`POST /platform/open-path` | `{path}` → `{ok:true}` |
-| −`POST /platform/share` | `{text?,filePath?}` → `{ok:true}` |
-⚙
-
----
-
-## Debug
-
-| Метод ↕▾ | Ответ ↕▾ |
-|---|---|
-| −`GET /debug/state` | полный снапшот |
-| −`POST /debug/echo` | эхо тела запроса |
-| −`GET /debug/config` | `{appDir,configsPath,settingsPath,logsPath,tokenPath,corePath}` |
-| −`POST /debug/reload-config` | `{ok:true}` |
-⚙
-
+| `%APPDATA%\.la-lune\paperflux-core.exe` (Win) | ядро |
+| `~/.la-lune/paperflux-core` (Linux) | ядро |
+| `filesDir/la-lune/core/libopenflux.so` (Android) | ядро |
+| `LATEST.PaperFlux` | серверная версия |
+| `LATEST.Csqtt` | серверная версия CSQTT |

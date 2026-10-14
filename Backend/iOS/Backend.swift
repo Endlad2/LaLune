@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// LaLune backend для iOS 17+.
+// LaLune backend для iOS 17+ (CSQTT + PaperFlux).
 // HTTP-сервер на 127.0.0.1:1062, NETunnelProviderManager, VK через
-// собственный WKWebView (VkWebViewController).
-//
-// Точка входа: Backend.shared.attach(window:).run()
+// собственный WKWebView.
 
 import Foundation
 import Network
@@ -70,18 +68,11 @@ public final class Backend {
 
     private var socks5Server: Socks5Server?
 
-    // ============================================================
-    //  Public API
-    // ============================================================
-
-    public func attach(window: UIWindow?) {
-        self.window = window
-    }
+    public func attach(window: UIWindow?) { self.window = window }
 
     public func run() {
         guard !running else { log("[BACKEND] already running"); return }
         running = true
-
         ensureDefaults()
         observeVpnStatus()
 
@@ -91,15 +82,11 @@ public final class Backend {
         } onSseOpen: { [weak self] send in
             guard let self = self else { return UUID() }
             let id = UUID()
-            self.stateQueue.async(flags: .barrier) {
-                self.eventSubscribers[id] = send
-            }
+            self.stateQueue.async(flags: .barrier) { self.eventSubscribers[id] = send }
             return id
         } onSseClose: { [weak self] id in
             guard let self = self else { return }
-            self.stateQueue.async(flags: .barrier) {
-                self.eventSubscribers.removeValue(forKey: id)
-            }
+            self.stateQueue.async(flags: .barrier) { self.eventSubscribers.removeValue(forKey: id) }
         }
 
         self.httpServer = server
@@ -115,19 +102,12 @@ public final class Backend {
     }
 
     private func observeVpnStatus() {
-        NotificationCenter.default.addObserver(
-            forName: .NEVPNStatusDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let self = self,
-                  let conn = note.object as? NEVPNConnection else { return }
+        NotificationCenter.default.addObserver(forName: .NEVPNStatusDidChange, object: nil, queue: .main) { [weak self] note in
+            guard let self = self, let conn = note.object as? NEVPNConnection else { return }
             let connected = conn.status == .connected
             self.vpnConnected = connected
-            self.emitEvent(self.json([
-                "type": "status", "connected": connected,
-                "ts": Int(Date().timeIntervalSince1970),
-            ]))
+            self.emitEvent(self.json(["type": "status", "connected": connected,
+                                      "ts": Int(Date().timeIntervalSince1970)]))
         }
     }
 
@@ -139,18 +119,16 @@ public final class Backend {
         let qIdx = rawPath.firstIndex(of: "?")
         let path = qIdx.map { String(rawPath[..<$0]) } ?? rawPath
         let query = qIdx.map { String(rawPath[rawPath.index(after: $0)...]) } ?? ""
-
         if method == "OPTIONS" { return (200, "{}") }
 
         do {
             switch (method, path) {
             case ("GET", "/ping"):
-                return (200, json(["ok": true, "version": VERSION,
-                                   "os": "ios", "arch": "arm64", "uptime": 0]))
+                return (200, json(["ok": true, "version": VERSION, "os": "ios",
+                                   "arch": "arm64", "platform": "mobile", "uptime": 0]))
             case ("GET", "/version"):
                 return (200, json(["api": 1, "backend": VERSION,
-                                   "core": CoreManager.shared.readLatest(),
-                                   "ui": VERSION]))
+                                   "core": CoreManager.shared.readLatest(), "ui": VERSION]))
             case ("POST", "/shutdown"):
                 stop(); return (200, json(["ok": true]))
 
@@ -188,6 +166,11 @@ public final class Backend {
             case ("POST", "/settings/reset"):
                 saveSettings(defaultSettings())
                 return (200, json(["ok": true]))
+
+            // /settings-for/{proto}
+            case ("GET", let p) where p.hasPrefix("/settings-for/"):
+                let proto = String(p.dropFirst("/settings-for/".count))
+                return (200, settingsForProto(proto))
 
             case ("GET", "/device/id"):
                 return (200, json(["deviceId": getDeviceId()]))
@@ -233,31 +216,17 @@ public final class Backend {
             case ("GET", "/logs/export"):
                 return (200, currentLogs().joined(separator: "\n"))
 
-            case ("GET", "/core/version"):
-                return (200, json(["version": CoreManager.shared.readLatest()]))
-            case ("GET", "/core/latest"):
-                return (200, json(["version": CoreManager.shared.fetchLatestVersion() ?? ""]))
-            case ("GET", "/core/check"):
-                let local = CoreManager.shared.readLatest()
-                let remote = CoreManager.shared.fetchLatestVersion() ?? ""
-                return (200, json([
-                    "hasUpdate": !remote.isEmpty && remote != local,
-                    "local": local, "remote": remote
-                ]))
-            case ("POST", "/core/download/sync"):
-                let ok = CoreManager.shared.downloadCore()
-                return ok ? (200, json(["ok": true])) : (500, err("download failed"))
-            case ("GET", "/core/path"):
-                return (200, json(["path": CoreManager.shared.corePath() ?? ""]))
+            // ---- core/protocols ----
             case ("GET", "/core/protocols"):
-                return (200, """
-                [{"id":"CSQTT","displayName":"CSQTT (VK Calls)","repo":"Endlad2/csqtt-core","realtime":true,"description":"Оригинальный протокол CSQTT","coreAsset":""}]
-                """)
-            case ("DELETE", "/core"):
-                if let p = CoreManager.shared.corePath() {
-                    try? FileManager.default.removeItem(atPath: p)
-                }
-                return (200, json(["ok": true]))
+                return (200, protocolsJson())
+
+            // ---- core per-protocol ----
+            case ("GET", let p) where p.hasPrefix("/core/"):
+                return coreRoute(method: "GET", rest: String(p.dropFirst("/core/".count)))
+            case ("POST", let p) where p.hasPrefix("/core/"):
+                return coreRoute(method: "POST", rest: String(p.dropFirst("/core/".count)))
+            case ("DELETE", let p) where p.hasPrefix("/core/"):
+                return coreRoute(method: "DELETE", rest: String(p.dropFirst("/core/".count)))
 
             case ("GET", "/update/check"):
                 return (200, json(["hasUpdate": false, "remoteTag": "",
@@ -280,6 +249,9 @@ public final class Backend {
             case ("GET", "/vk/token/validate"):
                 let has = readVkToken() != nil
                 return (200, json(["valid": has, "message": has ? "" : "no token"]))
+            case ("GET", "/vk/token/raw"):
+                let token = readVkToken() ?? ""
+                return (200, json(["token": token]))
             case ("POST", "/vk/token/fetch/cancel"):
                 DispatchQueue.main.async { self.vkWebVC?.dismiss(animated: true) }
                 return (200, json(["ok": true]))
@@ -358,8 +330,7 @@ public final class Backend {
 
             case ("GET", "/debug/state"):
                 return (200, json([
-                    "logCount": currentLogs().count,
-                    "appDir": appDir.path,
+                    "logCount": currentLogs().count, "appDir": appDir.path,
                     "vpnConnected": vpnConnected
                 ]))
             case ("POST", "/debug/echo"):
@@ -383,7 +354,99 @@ public final class Backend {
     }
 
     // ============================================================
-    //  Файлы
+    //  Core helpers
+    // ============================================================
+
+    private func protocolsJson() -> String {
+        let arr: [[String: Any]] = [
+            [
+                "id": "CSQTT",
+                "displayName": "CSQTT (VK Calls)",
+                "repo": "Endlad2/csqtt-core",
+                "realtime": true,
+                "description": "Оригинальный протокол CSQTT",
+                "coreAsset": "csqtt-core",
+            ],
+            [
+                "id": "PaperFlux",
+                "displayName": "PaperFlux (Docs)",
+                "repo": "Endlad2/PaperFlux-core",
+                "realtime": true,
+                "description": "Пробрасывает трафик через облачные документы",
+                "coreAsset": "paperflux-ios.zip",
+            ],
+        ]
+        return jsonString(from: arr) ?? "[]"
+    }
+
+    private func coreRoute(method: String, rest: String) -> (Int, String) {
+        let slashIdx = rest.firstIndex(of: "/")
+        let proto = slashIdx.map { String(rest[..<$0]) } ?? rest
+        let tail = slashIdx.map { String(rest[rest.index(after: $0)...]) } ?? ""
+
+        switch (method, tail) {
+        case ("GET", "version"):
+            return (200, json(["version": CoreManager.shared.readLatest(protocol: proto)]))
+        case ("GET", "latest"):
+            return (200, json(["version": CoreManager.shared.fetchLatestVersion(protocol: proto) ?? ""]))
+        case ("GET", "check"):
+            let local = CoreManager.shared.readLatest(protocol: proto)
+            let remote = CoreManager.shared.fetchLatestVersion(protocol: proto) ?? ""
+            return (200, json([
+                "hasUpdate": !remote.isEmpty && remote != local,
+                "local": local, "remote": remote
+            ]))
+        case ("POST", "download/sync"):
+            let ok = CoreManager.shared.downloadCore(protocol: proto)
+            return ok ? (200, json(["ok": true])) : (500, err("download failed"))
+        case ("GET", "path"):
+            return (200, json(["path": CoreManager.shared.corePath(protocol: proto) ?? ""]))
+        case ("DELETE", ""):
+            if let p = CoreManager.shared.corePath(protocol: proto) {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+            return (200, json(["ok": true]))
+        default:
+            return (404, err("core route not found: \(method) /core/\(rest)"))
+        }
+    }
+
+    // ============================================================
+    //  settingsForProto
+    // ============================================================
+
+    private func settingsForProto(_ proto: String) -> String {
+        let isPF = proto.lowercased() == "paperflux"
+        let obj: [String: Any] = isPF
+            ? [
+                "protocol": "PaperFlux",
+                "keys": [
+                    "pfTransport", "pfUrl", "pfUrls", "pfVolgaUrl",
+                    "pfMode", "pfSocks5", "pfTcpRecovery",
+                    "pfRelayUrl", "pfRelayToken", "pfRelayUser", "pfRelaySession",
+                    "pfMaxToken", "pfMaxUid",
+                    "workers", "shareVpn", "showCoreLogs",
+                ],
+                "linkPlaceholder":
+                    "paperflux://config?v=1&id=...&name=...&server=...&ip=...&transport=...&doc=...&token=...&volga=...",
+            ]
+            : [
+                "protocol": "CSQTT",
+                "keys": [
+                    "peer", "vkHashes", "password", "workers", "autoApiWorkers",
+                    "authMode", "obfs", "fingerprint", "clientIds",
+                    "captchaMode", "vkAuthMode", "turnTransport",
+                    "allowHashRedistribution", "validateVkHashes",
+                    "shareVpn", "showCoreLogs",
+                ],
+                "linkPlaceholder":
+                    "csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2",
+            ]
+        return jsonString(from: obj) ?? "{}"
+    }
+
+    // ============================================================
+    //  Files
     // ============================================================
 
     private func ensureDefaults() {
@@ -405,8 +468,16 @@ public final class Backend {
             "turnHost": "", "turnPort": "",
             "captchaMode": "auto", "vkAuthMode": "vkcalls",
             "allowHashRedistribution": false, "validateVkHashes": false,
-            "enableSmartTunnel": false, "showCoreLogs": false,
-            "shareVpn": false
+            // PaperFlux
+            "pfTransport": "yandex", "pfUrl": "", "pfUrls": "", "pfVolgaUrl": "",
+            "pfMode": "proxy", "pfSocks5": "127.0.0.1:1080", "pfTcpRecovery": "auto",
+            "pfSession": false, "pfClientIp": "10.10.10.2",
+            "pfAuthService": "", "pfIpcSocket": "", "pfTunFdSock": "", "pfPacketSock": "",
+            "pfExitProfiles": "", "pfExitStats": "", "pfExitCookies": "",
+            "pfRelayUrl": "", "pfRelayToken": "", "pfRelayUser": 0, "pfRelaySession": "",
+            "pfMaxToken": "", "pfMaxUid": "",
+            // Экспериментальное
+            "enableSmartTunnel": false, "showCoreLogs": false, "shareVpn": false,
         ]
     }
 
@@ -417,15 +488,11 @@ public final class Backend {
         return obj
     }
 
-    private func loadSettingsJson() -> String {
-        jsonString(from: loadSettings()) ?? "{}"
-    }
+    private func loadSettingsJson() -> String { jsonString(from: loadSettings()) ?? "{}" }
 
     private func saveSettings(_ s: [String: Any]) {
         var copy = s
-        if let w = copy["workers"] as? Int {
-            copy["workers"] = min(max(w, MIN_WORKERS), MAX_WORKERS)
-        }
+        if let w = copy["workers"] as? Int { copy["workers"] = min(max(w, MIN_WORKERS), MAX_WORKERS) }
         if let aw = copy["autoApiWorkers"] as? Int {
             copy["autoApiWorkers"] = min(max(aw, MIN_AUTO_API_WORKERS), MAX_AUTO_API_WORKERS)
         }
@@ -489,16 +556,14 @@ public final class Backend {
     private func readVkStateJson() -> String {
         let has = readVkToken() != nil
         return json([
-            "hasToken": has,
-            "fetching": vkLoginInProgress,
+            "hasToken": has, "fetching": vkLoginInProgress,
             "progress": has ? 100 : (vkLoginInProgress ? 40 : 0),
-            "message": has ? "VK token active"
-                : (vkLoginInProgress ? vkLoginMessage : "")
+            "message": has ? "VK token active" : (vkLoginInProgress ? vkLoginMessage : "")
         ])
     }
 
     // ============================================================
-    //  Логи
+    //  Logs
     // ============================================================
 
     private func currentLogs() -> [String] {
@@ -520,14 +585,11 @@ public final class Backend {
                 try? data.write(to: logsURL)
             }
         }
-        emitEvent(json(["type": "log", "line": line,
-                        "ts": Int(Date().timeIntervalSince1970)]))
+        emitEvent(json(["type": "log", "line": line, "ts": Int(Date().timeIntervalSince1970)]))
     }
 
     private func emitEvent(_ payload: String) {
-        stateQueue.sync {
-            for (_, send) in self.eventSubscribers { send(payload) }
-        }
+        stateQueue.sync { for (_, send) in self.eventSubscribers { send(payload) } }
     }
 
     private func jsonArrayFromLogs(tail n: Int? = nil) -> String {
@@ -539,18 +601,17 @@ public final class Backend {
     }
 
     // ============================================================
-    //  Конфиги
+    //  Configs
     // ============================================================
 
     private func loadConfigs() -> [[String: Any]] {
         guard let data = try? Data(contentsOf: configsURL),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return [] }
-        return arr    }
-
-    private func loadConfigsJson() -> String {
-        jsonString(from: loadConfigs()) ?? "[]"
+        return arr
     }
+
+    private func loadConfigsJson() -> String { jsonString(from: loadConfigs()) ?? "[]" }
 
     private func saveConfigs(_ arr: [[String: Any]]) {
         if let data = try? JSONSerialization.data(withJSONObject: arr, options: .prettyPrinted) {
@@ -559,9 +620,7 @@ public final class Backend {
     }
 
     private func findConfig(id: Int64) -> [String: Any]? {
-        loadConfigs().first {
-            ($0["id"] as? Int64) == id || ($0["id"] as? Int) == Int(id)
-        }
+        loadConfigs().first { ($0["id"] as? Int64) == id || ($0["id"] as? Int) == Int(id) }
     }
 
     private func createConfig(body: String) -> (Int, String) {
@@ -579,6 +638,18 @@ public final class Backend {
                 "password": b["password"] as? String ?? "",
                 "hashes": b["hashes"] as? String ?? "",
                 "name": b["name"] as? String ?? "",
+                "profileId": b["profileId"] as? String ?? "",
+                "profileToken": b["profileToken"] as? String ?? "",
+                "clientIp": b["clientIp"] as? String ?? "",
+                "transport": b["transport"] as? String ?? "",
+                "url": b["url"] as? String ?? "",
+                "urls": b["urls"] as? String ?? "",
+                "volgaUrl": b["volgaUrl"] as? String ?? "",
+                "relayUrl": b["relayUrl"] as? String ?? "",
+                "relayToken": b["relayToken"] as? String ?? "",
+                "maxToken": b["maxToken"] as? String ?? "",
+                "maxUid": b["maxUid"] as? String ?? "",
+                "server": b["server"] as? String ?? "",
             ]
         }
         let id = Int64(Date().timeIntervalSince1970 * 1000)
@@ -604,12 +675,19 @@ public final class Backend {
     }
 
     private func parseLink(_ link: String) -> [String: Any] {
+        let lower = link.lowercased()
+        if lower.hasPrefix("paperflux://") || lower.hasPrefix("openflux://") {
+            return parsePaperFlux(link)
+        }
+        return parseCsqtt(link)
+    }
+
+    private func parseCsqtt(_ link: String) -> [String: Any] {
         var out: [String: Any] = [
             "protocol": "CSQTT", "peer": "", "password": "", "hashes": "", "name": ""
         ]
         guard link.lowercased().hasPrefix("csqtt://") else {
-            out["peer"] = link
-            return out
+            out["peer"] = link; return out
         }
         let rest = String(link.dropFirst("csqtt://".count))
         if rest.hasPrefix("connect?") {
@@ -634,50 +712,108 @@ public final class Backend {
         return out
     }
 
+    private func parsePaperFlux(_ link: String) -> [String: Any] {
+        var out: [String: Any] = [
+            "protocol": "PaperFlux",
+            "profileId": "", "profileToken": "", "clientIp": "",
+            "transport": "", "url": "", "urls": "", "volgaUrl": "",
+            "relayUrl": "", "relayToken": "", "maxToken": "", "maxUid": "",
+            "server": "", "peer": "", "name": "",
+        ]
+        guard let schemeRange = link.range(of: "://") else { return out }
+        var rest = String(link[schemeRange.upperBound...])
+        if rest.hasPrefix("config?") { rest = String(rest.dropFirst("config?".count)) }
+        else if rest.hasPrefix("config&") { rest = String(rest.dropFirst("config&".count)) }
+        else if rest.hasPrefix("config") { rest = String(rest.dropFirst("config".count)) }
+
+        var name = "", server = ""
+        for kv in rest.split(separator: "&") {
+            let parts = kv.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let k = String(parts[0])
+            let v = String(parts[1]).removingPercentEncoding ?? String(parts[1])
+            switch k {
+            case "id": out["profileId"] = v
+            case "name": name = v
+            case "server": server = v
+            case "ip": out["clientIp"] = v
+            case "transport": out["transport"] = v
+            case "doc", "url": out["url"] = v
+            case "urls": out["urls"] = v
+            case "token": out["profileToken"] = v
+            case "volga", "volga_url", "volga-url": out["volgaUrl"] = v
+            case "relay_url", "relayUrl": out["relayUrl"] = v
+            case "relay_token", "relayToken": out["relayToken"] = v
+            case "maxToken": out["maxToken"] = v
+            case "maxUid": out["maxUid"] = v
+            default: break
+            }
+        }
+        out["name"] = name.isEmpty ? "PaperFlux" : name
+        out["server"] = server
+        out["peer"] = server
+        return out
+    }
+
     // ============================================================
     //  VPN
     // ============================================================
 
     private func vpnConnect(body: String) -> (Int, String) {
         let settings = loadSettings()
+        var protocolName = "CSQTT"
         var peer = settings["peer"] as? String ?? ""
         var password = settings["password"] as? String ?? ""
         var hashes = settings["vkHashes"] as? String ?? ""
+        var pfArgs: [String] = []
 
         if let data = body.data(using: .utf8),
            let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let configId = b["configId"] as? Int64,
            let c = findConfig(id: configId) {
-            peer = c["peer"] as? String ?? peer
-            password = c["password"] as? String ?? password
-            hashes = c["hashes"] as? String ?? hashes
+            protocolName = c["protocol"] as? String ?? "CSQTT"
+            if protocolName.lowercased() == "paperflux" {
+                pfArgs = buildPaperFluxArgs(config: c, settings: settings)
+                peer = c["server"] as? String ?? ""
+            } else {
+                peer = c["peer"] as? String ?? peer
+                password = c["password"] as? String ?? password
+                hashes = c["hashes"] as? String ?? hashes
+            }
         } else if let sel = readSelectedConfigJson(),
                   let data = sel.data(using: .utf8),
                   let c = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            peer = c["peer"] as? String ?? peer
-            password = c["password"] as? String ?? password
-            hashes = c["hashes"] as? String ?? hashes
+            protocolName = c["protocol"] as? String ?? "CSQTT"
+            if protocolName.lowercased() == "paperflux" {
+                pfArgs = buildPaperFluxArgs(config: c, settings: settings)
+                peer = c["server"] as? String ?? ""
+            } else {
+                peer = c["peer"] as? String ?? peer
+                password = c["password"] as? String ?? password
+                hashes = c["hashes"] as? String ?? hashes
+            }
         }
 
-        if peer.isEmpty { return (400, err("no config selected")) }
+        if peer.isEmpty { return (400, err("no server in config")) }
 
         CoreManager.shared.writeSharedSettings(
-            from: settings, peer: peer, password: password, hashes: hashes
+            from: settings, protocol: protocolName,
+            peer: peer, password: password, hashes: hashes,
+            paperfluxArgs: pfArgs
         )
 
-        if CoreManager.shared.corePath() == nil {
-            log("[VPN] core not installed, downloading...")
-            if !CoreManager.shared.downloadCore() {
+        if CoreManager.shared.corePath(protocol: protocolName) == nil {
+            log("[VPN] \(protocolName) core not installed, downloading...")
+            if !CoreManager.shared.downloadCore(protocol: protocolName) {
                 return (500, err("core download failed"))
             }
         }
 
-        // Если включена раздача — запускаем SOCKS5.
         if settings["shareVpn"] as? Bool == true {
             startSocks5()
         }
 
-        log("[VPN] starting NETunnelProviderManager")
+        log("[VPN] starting NETunnelProviderManager (\(protocolName))")
 
         let manager = NETunnelProviderManager()
         let proto = NETunnelProviderProtocol()
@@ -691,17 +827,10 @@ public final class Backend {
         var finalError: Error?
 
         manager.saveToPreferences { error in
-            if let error = error {
-                finalError = error
-                sem.signal()
-                return
-            }
+            if let error = error { finalError = error; sem.signal(); return }
             manager.loadFromPreferences { _ in
-                do {
-                    try manager.connection.startVPNTunnel()
-                } catch {
-                    finalError = error
-                }
+                do { try manager.connection.startVPNTunnel() }
+                catch { finalError = error }
                 sem.signal()
             }
         }
@@ -716,6 +845,60 @@ public final class Backend {
         return (200, json(["ok": true, "status": "connecting"]))
     }
 
+    private func buildPaperFluxArgs(config c: [String: Any], settings s: [String: Any]) -> [String] {
+        var args: [String] = ["--client"]
+
+        func pick(_ cfgKey: String, _ settKey: String, _ fallback: String = "") -> String {
+            let fromCfg = c[cfgKey] as? String ?? ""
+            if !fromCfg.isEmpty { return fromCfg }
+            let fromSettings = s[settKey] as? String ?? ""
+            return fromSettings.isEmpty ? fallback : fromSettings
+        }
+
+        let profileId = c["profileId"] as? String ?? ""
+        if !profileId.isEmpty { args += ["--profile-id", profileId] }
+        let profileToken = c["profileToken"] as? String ?? ""
+        if !profileToken.isEmpty { args += ["--profile-token", profileToken] }
+
+        let clientIp = pick("clientIp", "pfClientIp", "10.10.10.2")
+        args += ["--client-ip", clientIp]
+
+        let transport = pick("transport", "pfTransport", "yandex")
+        args += ["--transport", transport]
+
+        if s["pfSession"] as? Bool == true { args += ["--session"] }
+        let tcpRecovery = s["pfTcpRecovery"] as? String ?? ""
+        if !tcpRecovery.isEmpty { args += ["--tcp-recovery", tcpRecovery] }
+
+        let url = pick("url", "pfUrl")
+        if !url.isEmpty { args += ["--url", url] }
+        let urls = pick("urls", "pfUrls")
+        if !urls.isEmpty { args += ["--urls", urls] }
+        let volga = pick("volgaUrl", "pfVolgaUrl")
+        if !volga.isEmpty { args += ["--volga-url", volga] }
+
+        // Всегда proxy + socks5 (обёртка TUN снаружи).
+        args += ["--mode", "proxy"]
+        args += ["--socks5", "127.0.0.1:1080"]
+
+        let relayUrl = pick("relayUrl", "pfRelayUrl")
+        if !relayUrl.isEmpty { args += ["--relay-url", relayUrl] }
+        let relayToken = pick("relayToken", "pfRelayToken")
+        if !relayToken.isEmpty { args += ["--relay-token", relayToken] }
+        if let relayUser = s["pfRelayUser"] as? Int, relayUser > 0 {
+            args += ["--relay-user", "\(relayUser)"]
+        }
+        let relaySession = s["pfRelaySession"] as? String ?? ""
+        if !relaySession.isEmpty { args += ["--relay-session", relaySession] }
+
+        let maxToken = pick("maxToken", "pfMaxToken")
+        if !maxToken.isEmpty { args += ["--maxToken", maxToken] }
+        let maxUid = pick("maxUid", "pfMaxUid")
+        if !maxUid.isEmpty { args += ["--maxUid", maxUid] }
+
+        return args
+    }
+
     private func vpnDisconnect() -> (Int, String) {
         NETunnelProviderManager.loadAllFromPreferences { managers, _ in
             managers?.forEach { $0.connection.stopVPNTunnel() }
@@ -728,40 +911,19 @@ public final class Backend {
         return (200, json(["ok": true]))
     }
 
-    // ============================================================
-    //  SOCKS5 (раздача VPN)
-    // ============================================================
-
     private func startSocks5() {
-        if socks5Server != nil {
-            log("[PROXY] already running")
-            return
-        }
-        let server = Socks5Server(port: 1080) { [weak self] line in
-            self?.log(line)
-        }
-        do {
-            try server.start()
-            socks5Server = server
-        } catch {
-            log("[PROXY] failed to start: \(error.localizedDescription)")
-        }
+        if socks5Server != nil { log("[PROXY] already running"); return }
+        let server = Socks5Server(port: 1080) { [weak self] line in self?.log(line) }
+        do { try server.start(); socks5Server = server }
+        catch { log("[PROXY] failed to start: \(error.localizedDescription)") }
     }
 
-    private func stopSocks5() {
-        socks5Server?.stop()
-        socks5Server = nil
-    }
-
-    // ============================================================
-    //  VK — свой WKWebView
-    // ============================================================
+    private func stopSocks5() { socks5Server?.stop(); socks5Server = nil }
 
     private func vkLogin() -> (Int, String) {
         if vkLoginInProgress {
             return (200, json(["ok": true, "needsUi": false, "message": "already in progress"]))
         }
-
         vkLoginInProgress = true
         vkLoginMessage = "Открываю окно авторизации..."
         log("[VK] opening WKWebView")
@@ -772,7 +934,6 @@ public final class Backend {
                 self.emitEvent(self.json(["type": "error", "message": "no root view controller"]))
                 return
             }
-
             let vc = VkWebViewController(
                 onSuccess: { [weak self] token in
                     guard let self = self else { return }
@@ -781,8 +942,7 @@ public final class Backend {
                     self.vkWebVC = nil
                     self.saveVkToken(token)
                     self.log("[VK] token received successfully")
-                    self.emitEvent(self.json(["type": "progress",
-                                              "kind": "vk_token", "percent": 100]))
+                    self.emitEvent(self.json(["type": "progress", "kind": "vk_token", "percent": 100]))
                 },
                 onError: { [weak self] message in
                     guard let self = self else { return }
@@ -793,25 +953,17 @@ public final class Backend {
                     self.emitEvent(self.json(["type": "error", "message": "VK: \(message)"]))
                 }
             )
-
             self.vkWebVC = vc
             rootVC.present(vc, animated: true)
         }
-
         return (200, json(["ok": true, "needsUi": false]))
     }
 
     private func topViewController() -> UIViewController? {
         var vc = window?.rootViewController
-        while let presented = vc?.presentedViewController {
-            vc = presented
-        }
+        while let presented = vc?.presentedViewController { vc = presented }
         return vc
     }
-
-    // ============================================================
-    //  VK Calls
-    // ============================================================
 
     private func vkCallsStart(body: String) -> (Int, String) {
         guard let token = readVkToken() else { return (400, err("no VK token")) }
@@ -821,8 +973,7 @@ public final class Backend {
 
         let s = loadSettings()
         let workers = b["workers"] as? Int ?? s["workers"] as? Int ?? DEFAULT_WORKERS
-        let aw = b["autoApiWorkers"] as? Int
-            ?? s["autoApiWorkers"] as? Int ?? DEFAULT_AUTO_API_WORKERS
+        let aw = b["autoApiWorkers"] as? Int ?? s["autoApiWorkers"] as? Int ?? DEFAULT_AUTO_API_WORKERS
         let count = callCountForWorkers(workers: workers, aw: aw)
 
         var hashes: [String] = []
@@ -844,8 +995,7 @@ public final class Backend {
     private func callCountForWorkers(workers: Int, aw: Int) -> Int {
         let aw2 = aw <= 0 ? DEFAULT_AUTO_API_WORKERS : aw
         let w2 = workers <= 0 ? DEFAULT_WORKERS : workers
-        let count = Int(ceil(Double(w2) / Double(aw2)))
-        return min(max(count, 1), 6)
+        return min(max(Int(ceil(Double(w2) / Double(aw2))), 1), 6)
     }
 
     private func startVkCall(token: String) -> (String, String, Int) {
@@ -855,11 +1005,8 @@ public final class Backend {
         req.timeoutInterval = 8
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        req.setValue(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
+        req.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                     forHTTPHeaderField: "User-Agent")
         req.httpBody = "v=\(VK_API_VERSION)".data(using: .utf8)
 
         let sem = DispatchSemaphore(value: 0)
@@ -878,8 +1025,7 @@ public final class Backend {
             let callId = r["call_id"] as? String ?? ""
             let okLink = r["ok_join_link"] as? String ?? ""
             let joinLink = r["join_link"] as? String ?? ""
-            let hash = !okLink.isEmpty ? okLink
-                : (joinLink.components(separatedBy: "/").last ?? "")
+            let hash = !okLink.isEmpty ? okLink : (joinLink.components(separatedBy: "/").last ?? "")
             result = (callId, hash, 0)
         }.resume()
         sem.wait()
@@ -902,9 +1048,7 @@ public final class Backend {
         return s
     }
 
-    private func err(_ message: String) -> String {
-        json(["error": message])
-    }
+    private func err(_ message: String) -> String { json(["error": message]) }
 
     private func queryValue(_ query: String, _ key: String) -> String? {
         for kv in query.split(separator: "&") {

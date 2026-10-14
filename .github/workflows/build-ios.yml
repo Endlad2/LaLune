@@ -1,14 +1,6 @@
 # .github/workflows/build-ios.yml
 #
-# Сборка LaLune под iOS (Flutter native + Swift backend).
-#
-# Фиксируем Flutter version (3.29.0).
-#
-# ВАЖНО: этот workflow копирует Swift-исходники из Backend/iOS/ в
-# Frontend/ios/Runner/ перед xcodegen generate. Xcode видит ТОЛЬКО
-# файлы в Frontend/ios/Runner/ и Frontend/ios/Tunnel/. Если добавил
-# новый .swift в Backend/iOS/ — обязательно добавь его в шаг
-# "Copy iOS backend sources" ниже, иначе Xcode не найдёт тип.
+# Сборка LaLune под iOS (Flutter native + Swift backend + CSQTT + PaperFlux).
 
 name: Build iOS
 
@@ -28,6 +20,7 @@ env:
   FLUTTER_VERSION: "3.29.0"
   XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
+  PAPERFLUX_IOS_ZIP_URL: https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-ios.zip
 
 jobs:
   build-ios:
@@ -48,14 +41,12 @@ jobs:
         run: |
           set -e
           if [ ! -d "$XCODE_APP" ]; then
-            echo "::warning::$XCODE_APP not found, available Xcodes:"
+            echo "::warning::$XCODE_APP not found"
             ls -1 /Applications | grep -i '^Xcode' || true
-            echo "::warning::falling back to default xcode-select"
           else
             sudo xcode-select -s "$XCODE_APP"
           fi
           xcodebuild -version
-          xcode-select -p
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -64,50 +55,31 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Flutter version
-        run: flutter --version
-
       - name: Install XcodeGen
         run: |
           brew install xcodegen
           xcodegen --version
 
-      # ── Копируем Swift-исходники из Backend/iOS/ в Frontend/ios/ ──
-      #
-      # Xcode видит только то, что лежит в Frontend/ios/Runner/ и
-      # Frontend/ios/Tunnel/. Всё остальное — справочное.
-      #
-      # Если добавляешь новый .swift — допиши его в cp ниже.
       - name: Copy iOS backend sources
         run: |
           set -e
-          mkdir -p Frontend/ios/Runner
-          mkdir -p Frontend/ios/Tunnel
+          mkdir -p Frontend/ios/Runner Frontend/ios/Tunnel
 
-          # Основной target (Runner)
           cp Backend/iOS/Backend.swift              Frontend/ios/Runner/
           cp Backend/iOS/HttpServer.swift           Frontend/ios/Runner/
           cp Backend/iOS/CoreManager.swift          Frontend/ios/Runner/
           cp Backend/iOS/VkWebViewController.swift  Frontend/ios/Runner/
           cp Backend/iOS/Socks5Server.swift         Frontend/ios/Runner/
 
-          # Extension target (LaLuneTunnel)
           cp Backend/iOS/PacketTunnelProvider.swift Frontend/ios/Tunnel/
 
-          echo "=== Runner sources ==="
-          ls -la Frontend/ios/Runner/
-          echo "=== Tunnel sources ==="
-          ls -la Frontend/ios/Tunnel/
-
-          # Жёсткая проверка: Socks5Server.swift должен лежать в Runner/
           if [ ! -f Frontend/ios/Runner/Socks5Server.swift ]; then
-            echo "::error::Frontend/ios/Runner/Socks5Server.swift missing after copy"
+            echo "::error::Socks5Server.swift missing"
             exit 1
           fi
 
       - name: Copy assets
         run: |
-          set -e
           rm -rf Frontend/assets
           cp -r Assets Frontend/assets
 
@@ -115,84 +87,41 @@ jobs:
         working-directory: Frontend
         run: flutter pub get
 
-      # ── Build Flutter framework'и для iOS ─────────────────────
-      #
-      # В Flutter 3.29 у `ios-framework` НЕТ флага --no-codesign.
-      # Эта команда и так не подписывает framework'и — codesign только
-      # для `flutter build ios` (готовое приложение).
       - name: Build Flutter iOS frameworks
         working-directory: Frontend
         run: |
           set -e
           flutter build ios-framework --output=ios/Flutter --release
-
-          echo "=== Generated frameworks ==="
           ls -la ios/Flutter/Release/
-          echo ""
-          echo "=== Flutter.xcframework ==="
-          ls -la ios/Flutter/Release/Flutter.xcframework/ || true
-          echo ""
-          echo "=== App.xcframework ==="
-          ls -la ios/Flutter/Release/App.xcframework/ || true
 
       - name: Download CSQTT iOS core
         run: |
           set -e
           mkdir -p Frontend/ios/Core
           cd Frontend/ios/Core
-
-          echo "Downloading: $CSQTT_IOS_CORE_URL"
-          curl -fL --retry 3 --retry-delay 2 \
-            -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
-
+          curl -fL --retry 3 --retry-delay 2 -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
           ls -la libcsqtt_ios_core.a
-          file libcsqtt_ios_core.a || true
-          lipo -info libcsqtt_ios_core.a || true
+
+      - name: Download PaperFlux iOS core
+        run: |
+          set -e
+          mkdir -p Frontend/ios/Core/paperflux
+          cd Frontend/ios/Core/paperflux
+          curl -fL --retry 3 --retry-delay 2 -o paperflux-ios.zip "$PAPERFLUX_IOS_ZIP_URL"
+          unzip -o paperflux-ios.zip
+          ls -la
+          # liboflux.a + liboflux.h должны быть здесь.
 
       - name: Generate Xcode project
         working-directory: Frontend/ios
         run: |
           set -e
-          if [ ! -f project.yml ]; then
-            echo "::error::Frontend/ios/project.yml not found"
-            exit 1
-          fi
-
           xcodegen generate
-
           PBX=Runner.xcodeproj/project.pbxproj
-          if [ ! -f "$PBX" ]; then
-            echo "::error::$PBX not found after xcodegen"
-            find . -name project.pbxproj || true
-            exit 1
-          fi
-
-          echo "objectVersion after xcodegen:"
-          grep -m1 'objectVersion' "$PBX" || true
-
           if grep -q 'objectVersion = 77;' "$PBX"; then
-            echo "note: downgrading objectVersion 77 -> 56"
             sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' "$PBX"
           fi
-
-          FINAL=$(grep -m1 'objectVersion' "$PBX" || true)
-          echo "objectVersion final: $FINAL"
-          echo "$FINAL" | grep -q '56' \
-            || { echo "::error::objectVersion is not 56 — Xcode 15.4 won't open"; exit 1; }
-
-          # ── Проверяем, что Socks5Server.swift попал в проект ────
-          if grep -q 'Socks5Server.swift' "$PBX"; then
-            echo "OK: Socks5Server.swift is part of Runner.xcodeproj"
-          else
-            echo "::error::Socks5Server.swift NOT in Runner.xcodeproj"
-            echo "Check that:"
-            echo "  1. Frontend/ios/Runner/Socks5Server.swift exists"
-            echo "  2. Frontend/ios/project.yml has:"
-            echo "       sources:"
-            echo "         - path: Runner"
-            find . -name 'Socks5Server.swift' || true
-            exit 1
-          fi
+          grep -q 'Socks5Server.swift' "$PBX" || { echo "::error::Socks5Server.swift NOT in project"; exit 1; }
 
       - name: Archive (unsigned)
         working-directory: Frontend/ios
@@ -205,37 +134,19 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath build/LaLune.xcarchive \
             -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            ONLY_ACTIVE_ARCH=NO
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" ONLY_ACTIVE_ARCH=NO
 
       - name: Package unsigned IPA
         working-directory: Frontend/ios
         run: |
           set -e
           APP="build/LaLune.xcarchive/Products/Applications/LaLune.app"
-
-          if [ ! -d "$APP" ]; then
-            echo "::error::app bundle not found: $APP"
-            find build -maxdepth 6 -type d || true
-            exit 1
-          fi
-
-          echo "=== App bundle ==="
-          ls -la "$APP"
-          echo "=== App/Frameworks ==="
-          ls -la "$APP/Frameworks" || true
-          echo "=== App/PlugIns ==="
-          ls -la "$APP/PlugIns" || true
-
+          [ -d "$APP" ] || { echo "::error::$APP missing"; exit 1; }
           rm -rf build/Payload build/LaLune.ipa
           mkdir -p build/Payload
           cp -R "$APP" build/Payload/LaLune.app
-
           ( cd build && zip -qry LaLune.ipa Payload )
-
           ls -la build/LaLune.ipa
 
       - name: Upload IPA artifact

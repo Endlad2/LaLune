@@ -2,22 +2,51 @@
 
 class ConfigItem {
   final int id;
-  final String protocol;
+  final String protocol; // "CSQTT" | "PaperFlux"
+  // CSQTT
   final String peer;
   final String password;
   final String hashes;
+  // PaperFlux
+  final String profileId;
+  final String profileToken;
+  final String clientIp;
+  final String transport;
+  final String url;
+  final String urls;
+  final String volgaUrl;
+  final String relayUrl;
+  final String relayToken;
+  final String maxToken;
+  final String maxUid;
+  final String server;
+  // Общие
   final String name;
   final String rawLink;
 
   ConfigItem({
     required this.id,
     required this.protocol,
-    required this.peer,
-    required this.password,
-    required this.hashes,
-    required this.name,
+    this.peer = '',
+    this.password = '',
+    this.hashes = '',
+    this.profileId = '',
+    this.profileToken = '',
+    this.clientIp = '',
+    this.transport = '',
+    this.url = '',
+    this.urls = '',
+    this.volgaUrl = '',
+    this.relayUrl = '',
+    this.relayToken = '',
+    this.maxToken = '',
+    this.maxUid = '',
+    this.server = '',
+    this.name = '',
     this.rawLink = '',
   });
+
+  bool get isPaperFlux => protocol.toLowerCase() == 'paperflux';
 
   factory ConfigItem.fromJson(Map<String, dynamic> j) => ConfigItem(
         id: (j['id'] as num?)?.toInt() ?? 0,
@@ -25,7 +54,19 @@ class ConfigItem {
         peer: (j['peer'] ?? '') as String,
         password: (j['password'] ?? '') as String,
         hashes: (j['hashes'] ?? '') as String,
-        name: (j['name'] ?? j['peer'] ?? '') as String,
+        profileId: (j['profileId'] ?? '') as String,
+        profileToken: (j['profileToken'] ?? '') as String,
+        clientIp: (j['clientIp'] ?? '') as String,
+        transport: (j['transport'] ?? '') as String,
+        url: (j['url'] ?? '') as String,
+        urls: (j['urls'] ?? '') as String,
+        volgaUrl: (j['volgaUrl'] ?? '') as String,
+        relayUrl: (j['relayUrl'] ?? '') as String,
+        relayToken: (j['relayToken'] ?? '') as String,
+        maxToken: (j['maxToken'] ?? '') as String,
+        maxUid: (j['maxUid'] ?? '') as String,
+        server: (j['server'] ?? '') as String,
+        name: (j['name'] ?? j['peer'] ?? j['server'] ?? '') as String,
         rawLink: (j['rawLink'] ?? '') as String,
       );
 
@@ -35,9 +76,22 @@ class ConfigItem {
         'peer': peer,
         'password': password,
         'hashes': hashes,
+        'profileId': profileId,
+        'profileToken': profileToken,
+        'clientIp': clientIp,
+        'transport': transport,
+        'url': url,
+        'urls': urls,
+        'volgaUrl': volgaUrl,
+        'relayUrl': relayUrl,
+        'relayToken': relayToken,
+        'maxToken': maxToken,
+        'maxUid': maxUid,
+        'server': server,
         'name': name,
         'rawLink': rawLink,
       };
 
-  String get displayName => name.isEmpty ? peer : name;
+  String get displayName =>
+      name.isNotEmpty ? name : (peer.isNotEmpty ? peer : server);
 }

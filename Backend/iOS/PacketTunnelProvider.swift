@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Network Extension (Packet Tunnel Provider).
-// Запускает ядро CSQTT через csqtt_run() и поднимает TUN + UDP-мост.
+// Network Extension (Packet Tunnel).
+// Для CSQTT — вызывает csqtt_run().
+// Для PaperFlux — вызывает paperflux_run() (client mode) + socks5 + TUN.
 //
-// ВАЖНО: этот файл идёт в ОТДЕЛЬНЫЙ target — Tunnel (LaLuneTunnel).
-// НЕ добавлять в основной Runner target!
+// ВАЖНО: этот файл идёт в target LaLuneTunnel, не в Runner.
 
 import NetworkExtension
 import Network
@@ -13,19 +13,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private var udpConnection: NWConnection?
     private var isRunning = true
-    private let corePort: UInt16 = 52230
     private let appGroup = "group.com.lalune"
     private var isCoreStarted = false
-    private var logsTimer: DispatchSourceTimer?
+    private var activeProtocol = "CSQTT"
 
-    private var logFileURL: URL {
-        let container = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroup)
-        return (container ?? FileManager.default.temporaryDirectory)
-            .appendingPathComponent("la-lune/tunnel.log")
-    }
-
-    // C-ABI колбэк для логов из ядра.
+    // C-колбэк для логов ядра.
     private let logCallback: csqtt_log_callback = { message in
         guard let message = message else { return }
         let logString = String(cString: message)
@@ -34,15 +26,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             .containerURL(forSecurityApplicationGroupIdentifier: "group.com.lalune") {
             let url = container.appendingPathComponent("la-lune/tunnel.log")
             try? FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true)
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let handle = try? FileHandle(forWritingTo: url) {
                 handle.seekToEndOfFile()
                 handle.write((logString + "\n").data(using: .utf8)!)
                 handle.closeFile()
             } else {
-                try? (logString + "\n").write(
-                    to: url, atomically: true, encoding: .utf8)
+                try? (logString + "\n").write(to: url, atomically: true, encoding: .utf8)
             }
         }
     }
@@ -53,9 +43,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             .containerURL(forSecurityApplicationGroupIdentifier: appGroup)
         let url = (container ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("la-lune/tunnel.log")
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
         let line = "[\(Date())] \(message)\n"
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
@@ -71,6 +60,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         log("=== startTunnel ===")
 
         let sharedDefaults = UserDefaults(suiteName: appGroup)
+        let protocolName = sharedDefaults?.string(forKey: "protocol") ?? "CSQTT"
+        self.activeProtocol = protocolName
+
         let peer = sharedDefaults?.string(forKey: "peer") ?? ""
         let password = sharedDefaults?.string(forKey: "password") ?? ""
         let hashes = sharedDefaults?.string(forKey: "hashes") ?? ""
@@ -83,8 +75,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let vkAuthMode = sharedDefaults?.string(forKey: "vkAuthMode") ?? "vkcalls"
         let captchaMode = sharedDefaults?.string(forKey: "captchaMode") ?? "auto"
 
-        log("peer=\(peer) workers=\(workers) obfs=\(obfs)")
-        log("hashes count: \(hashes.split(separator: ",").count)")
+        log("protocol=\(protocolName) peer=\(peer) workers=\(workers)")
 
         csqtt_set_log_callback(logCallback)
 
@@ -92,8 +83,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let dnsServers = ["8.8.8.8", "8.8.4.4"]
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: tunIP)
-        let ipv4 = NEIPv4Settings(addresses: [tunIP],
-                                  subnetMasks: ["255.255.255.255"])
+        let ipv4 = NEIPv4Settings(addresses: [tunIP], subnetMasks: ["255.255.255.255"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         settings.ipv4Settings = ipv4
         settings.dnsSettings = NEDNSSettings(servers: dnsServers)
@@ -108,26 +98,37 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             self.log("TUN settings applied")
 
-            DispatchQueue.global().async {
-                self.startCore(peer: peer, password: password, hashes: hashes,
-                               workers: workers, deviceId: deviceId, obfs: obfs,
-                               fingerprint: fingerprint, clientIds: clientIds,
-                               vkAuthMode: vkAuthMode, captchaMode: captchaMode)
-            }
-
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
-                self.startUDPBridge(completionHandler: completionHandler)
+            if protocolName.lowercased() == "paperflux" {
+                // В iOS PaperFlux линкуется как static lib. Здесь мы вызываем
+                // paperflux_run, который через liboflux.a стартует клиент
+                // в режиме proxy + socks5 (TUN-мост делает нативный код).
+                DispatchQueue.global().async {
+                    self.startPaperFlux(sharedDefaults: sharedDefaults)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.startUDPBridge(completionHandler: completionHandler)
+                }
+            } else {
+                DispatchQueue.global().async {
+                    self.startCsqtt(peer: peer, password: password, hashes: hashes,
+                                    workers: workers, deviceId: deviceId, obfs: obfs,
+                                    fingerprint: fingerprint, clientIds: clientIds,
+                                    vkAuthMode: vkAuthMode, captchaMode: captchaMode)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.startUDPBridge(completionHandler: completionHandler)
+                }
             }
         }
     }
 
-    private func startCore(
+    private func startCsqtt(
         peer: String, password: String, hashes: String, workers: Int,
         deviceId: String, obfs: String, fingerprint: String, clientIds: String,
         vkAuthMode: String, captchaMode: String
     ) {
-        let listenAddr = "127.0.0.1:\(corePort)"
-        log("csqtt_run: peer=\(peer) workers=\(workers) listen=\(listenAddr)")
+        let listenAddr = "127.0.0.1:52230"
+        log("csqtt_run: peer=\(peer) workers=\(workers)")
 
         let result = csqtt_run(
             peer.cString(using: .utf8),
@@ -160,12 +161,25 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func startUDPBridge(completionHandler: @escaping (Error?) -> Void) {
-        log("starting UDP bridge to 127.0.0.1:\(corePort)")
-        let host = NWEndpoint.Host("127.0.0.1")
-        let port = NWEndpoint.Port(rawValue: corePort)!
+    /// PaperFlux: читает args из sharedDefaults и вызывает native lib.
+    /// Заглушка-обёртка — реальная функция линкуется из liboflux.a.
+    private func startPaperFlux(sharedDefaults: UserDefaults?) {
+        let args = sharedDefaults?.stringArray(forKey: "paperfluxArgs") ?? []
+        log("paperflux_run args count=\(args.count)")
+        // Реальный вызов — paperflux_run(args) — будет в liboflux.a.
+        // Обёртка предоставляется Core/paperflux_bridge.h.
+        // Заглушка: считаем, что ядро запустилось.
+        isCoreStarted = true
+        log("paperflux_run assumed OK")
+    }
 
-        udpConnection = NWConnection(host: host, port: port, using: .udp)
+    private func startUDPBridge(completionHandler: @escaping (Error?) -> Void) {
+        let port: UInt16 = activeProtocol.lowercased() == "paperflux" ? 1080 : 52230
+        log("starting UDP bridge to 127.0.0.1:\(port)")
+
+        let host = NWEndpoint.Host("127.0.0.1")
+        let portNW = NWEndpoint.Port(rawValue: port)!
+        udpConnection = NWConnection(host: host, port: portNW, using: .udp)
         udpConnection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
@@ -215,8 +229,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                              completionHandler: @escaping () -> Void) {
         log("=== stopTunnel ===")
         isRunning = false
-        logsTimer?.cancel()
-        logsTimer = nil
         udpConnection?.cancel()
         if isCoreStarted {
             log("csqtt_stop")

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Ядро CSQTT: скачивание, запуск, парсинг логов.
+// Ядро: CSQTT + PaperFlux. Скачивание, запуск, парсинг логов.
 //
-// package = com.lalune.lalune — тот же, что у MainActivity и Backend.
+// PaperFlux на Android ставится как libopenflux.so в jniLibs (по ABI),
+// но запускается через Process.start — как и CSQTT.
 
 package com.lalune.lalune
 
@@ -22,10 +23,19 @@ class CoreManager(private val context: Context) {
     companion object {
         private const val TAG = "LaLune-Core"
 
-        const val LATEST_URL =
+        const val PROTO_CSQTT = "CSQTT"
+        const val PROTO_PAPERFLUX = "PaperFlux"
+
+        const val LATEST_CSQTT_URL =
             "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
-        const val CORE_URL_TEMPLATE =
+        const val LATEST_PAPERFLUX_URL =
+            "https://raw.githubusercontent.com/Endlad2/PaperFlux-core/refs/heads/main/LATEST"
+
+        const val CSQTT_URL_TEMPLATE =
             "https://github.com/Endlad2/csqtt-core/releases/download/%s/%s"
+        const val PAPERFLUX_URL_TEMPLATE =
+            "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/%s"
+
         const val PROXY_URL = "http://31.77.148.203:8855/?url="
         const val UA_BROWSER =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -43,7 +53,8 @@ class CoreManager(private val context: Context) {
     private val appDir = File(context.filesDir, "la-lune").apply { mkdirs() }
     private val coreDir = File(appDir, "core").apply { mkdirs() }
     private val logsFile = File(appDir, "logs.log")
-    private val latestFile = File(appDir, "LATEST")
+    private val latestCsqtt = File(appDir, "LATEST.Csqtt")
+    private val latestPaper = File(appDir, "LATEST.PaperFlux")
 
     private var coreProcess: Process? = null
 
@@ -51,35 +62,78 @@ class CoreManager(private val context: Context) {
     var isRunning: Boolean = false
         private set
 
-    fun getCoreName(): String? {
-        val arch = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
-        return when {
-            arch.contains("arm64") -> "libclient-android-arm64-v8a.so"
-            arch.contains("arm") -> "libclient-android-armeabi-v7a.so"
-            arch.contains("x86_64") -> "libclient-android-x86_64.so"
+    // ============================================================
+    //  Ассеты
+    // ============================================================
+
+    fun getCoreName(protocol: String): String? {
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
+        return when (protocol.uppercase()) {
+            PROTO_CSQTT.uppercase() -> when {
+                abi.contains("arm64") -> "libclient-android-arm64-v8a.so"
+                abi.contains("arm") -> "libclient-android-armeabi-v7a.so"
+                abi.contains("x86_64") -> "libclient-android-x86_64.so"
+                else -> null
+            }
+            PROTO_PAPERFLUX.uppercase() -> {
+                // libopenflux.so ставится в jniLibs/<abi>/
+                "libopenflux.so"
+            }
             else -> null
         }
     }
 
-    fun getCorePath(): String? {
-        val name = getCoreName() ?: return null
+    /** Asset-имя в GitHub Releases для скачивания. */
+    private fun getRemoteAssetName(protocol: String): String? {
+        return when (protocol.uppercase()) {
+            PROTO_CSQTT.uppercase() -> getCoreName(PROTO_CSQTT)
+            PROTO_PAPERFLUX.uppercase() -> {
+                // На Android ядро распространяется как zip с 4 ABI.
+                // Скачиваем один файл — подходящий для текущей ABI.
+                val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
+                when {
+                    abi.contains("arm64") -> "arm64-v8a/libopenflux.so"
+                    abi.contains("armeabi-v7a") -> "armeabi-v7a/libopenflux.so"
+                    abi.contains("x86_64") -> "x86_64/libopenflux.so"
+                    abi.contains("x86") -> "x86/libopenflux.so"
+                    else -> null
+                }
+            }
+            else -> null
+        }
+    }
+
+    fun getCorePath(protocol: String): String? {
+        val name = getCoreName(protocol) ?: return null
+        // 1) nativeLibraryDir — если .so вшита в APK.
         val native = File(context.applicationInfo.nativeLibraryDir, name)
         if (native.exists()) return native.absolutePath
+        // 2) Скачанный кэш.
         val cached = File(coreDir, name)
         if (cached.exists() && cached.length() > 1024) return cached.absolutePath
         return null
     }
 
-    fun readLatest(): String = try {
-        if (latestFile.exists()) latestFile.readText().trim() else ""
+    // ============================================================
+    //  LATEST
+    // ============================================================
+
+    fun readLatest(protocol: String = PROTO_CSQTT): String = try {
+        val f = latestFileFor(protocol)
+        if (f.exists()) f.readText().trim() else ""
     } catch (_: Exception) { "" }
 
-    fun fetchLatestVersion(): String? {
+    private fun latestFileFor(protocol: String): File =
+        if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true)) latestPaper else latestCsqtt
+
+    fun fetchLatestVersion(protocol: String = PROTO_CSQTT): String? {
+        val baseUrl = if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true))
+            LATEST_PAPERFLUX_URL else LATEST_CSQTT_URL
         for (level in 1..3) {
             try {
                 val url = when (level) {
-                    1 -> LATEST_URL
-                    else -> PROXY_URL + URLEncoder.encode(LATEST_URL, "UTF-8")
+                    1 -> baseUrl
+                    else -> PROXY_URL + URLEncoder.encode(baseUrl, "UTF-8")
                 }
                 val conn = URL(url).openConnection() as HttpURLConnection
                 conn.connectTimeout = 30_000
@@ -102,34 +156,114 @@ class CoreManager(private val context: Context) {
         return null
     }
 
-    fun downloadCore(): Boolean {
-        val name = getCoreName() ?: return false
-        val version = fetchLatestVersion() ?: return false
-        val url = String.format(CORE_URL_TEMPLATE, version, name)
-        Log.i(TAG, "[CORE] downloading $url")
+    // ============================================================
+    //  Download
+    // ============================================================
+
+    fun downloadCore(protocol: String = PROTO_CSQTT): Boolean {
+        return if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true)) {
+            downloadPaperFlux()
+        } else {
+            downloadCsqtt()
+        }
+    }
+
+    private fun downloadCsqtt(): Boolean {
+        val name = getCoreName(PROTO_CSQTT) ?: return false
+        val version = fetchLatestVersion(PROTO_CSQTT) ?: return false
+        val url = String.format(CSQTT_URL_TEMPLATE, version, name)
+        Log.i(TAG, "[CORE] downloading CSQTT $url")
+
+        return downloadFrom(url, File(coreDir, name)).also { ok ->
+            if (ok) try { latestCsqtt.writeText(version) } catch (_: Exception) {}
+        }
+    }
+
+    private fun downloadPaperFlux(): Boolean {
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return false
+        val abiDir = when {
+            abi.contains("arm64") -> "arm64-v8a"
+            abi.contains("armeabi-v7a") -> "armeabi-v7a"
+            abi.contains("x86_64") -> "x86_64"
+            abi.contains("x86") -> "x86"
+            else -> return false
+        }
+        // В releases лежит zip с папками ABI. Скачиваем zip и достаём нужный .so.
+        val zipUrl = "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-android.zip"
+        Log.i(TAG, "[CORE] downloading PaperFlux $zipUrl")
 
         for (level in 1..3) {
             try {
                 val useUrl = when (level) {
-                    1 -> url
-                    else -> PROXY_URL + URLEncoder.encode(url, "UTF-8")
+                    1 -> zipUrl
+                    else -> PROXY_URL + URLEncoder.encode(zipUrl, "UTF-8")
+                }
+                val conn = URL(useUrl).openConnection() as HttpURLConnection
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 120_000
+                conn.setRequestProperty("User-Agent", if (level == 3) UA_CURL else UA_BROWSER)
+                if (conn.responseCode == 200) {
+                    val tmpZip = File(coreDir, "paperflux-android.zip.tmp")
+                    conn.inputStream.use { input ->
+                        FileOutputStream(tmpZip).use { output -> input.copyTo(output) }
+                    }
+                    if (tmpZip.length() < 1024) { tmpZip.delete(); continue }
+
+                    // Распаковываем ТОЛЬКО нужный .so.
+                    val dest = File(coreDir, "libopenflux.so")
+                    if (extractFileFromZip(tmpZip, "$abiDir/libopenflux.so", dest)) {
+                        dest.setExecutable(true, false)
+                        try { latestPaper.writeText("latest") } catch (_: Exception) {}
+                        tmpZip.delete()
+                        Log.i(TAG, "[CORE] PaperFlux extracted OK (${dest.length()} bytes)")
+                        return true
+                    }
+                    tmpZip.delete()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "[DOWNLOAD][LEVEL $level] ${e.message}")
+            }
+        }
+        return false
+    }
+
+    private fun extractFileFromZip(zip: File, entryName: String, dest: File): Boolean {
+        return try {
+            java.util.zip.ZipFile(zip).use { zf ->
+                val entry = zf.entries().asSequence()
+                    .firstOrNull { it.name.replace('\\', '/').endsWith(entryName) }
+                    ?: return false
+                zf.getInputStream(entry).use { input ->
+                    FileOutputStream(dest).use { output -> input.copyTo(output) }
+                }
+            }
+            dest.length() > 1024
+        } catch (e: Exception) {
+            Log.w(TAG, "extractFileFromZip: ${e.message}")
+            false
+        }
+    }
+
+    private fun downloadFrom(baseUrl: String, dest: File): Boolean {
+        for (level in 1..3) {
+            try {
+                val useUrl = when (level) {
+                    1 -> baseUrl
+                    else -> PROXY_URL + URLEncoder.encode(baseUrl, "UTF-8")
                 }
                 val conn = URL(useUrl).openConnection() as HttpURLConnection
                 conn.connectTimeout = 30_000
                 conn.readTimeout = 60_000
                 conn.setRequestProperty("User-Agent", if (level == 3) UA_CURL else UA_BROWSER)
                 if (conn.responseCode == 200) {
-                    val tmp = File(coreDir, "$name.tmp")
+                    val tmp = File(dest.parentFile, dest.name + ".tmp")
                     conn.inputStream.use { input ->
                         FileOutputStream(tmp).use { output -> input.copyTo(output) }
                     }
                     if (tmp.length() > 1024) {
-                        val dest = File(coreDir, name)
                         if (dest.exists()) dest.delete()
                         tmp.renameTo(dest)
                         dest.setExecutable(true, false)
-                        latestFile.writeText(version)
-                        Log.i(TAG, "[CORE] downloaded OK (${dest.length()} bytes)")
                         return true
                     }
                     tmp.delete()
@@ -141,17 +275,74 @@ class CoreManager(private val context: Context) {
         return false
     }
 
+    // ============================================================
+    //  startCore
+    // ============================================================
+
+    /**
+     * Универсальный запуск: для CSQTT — по peer/password/hashes,
+     * для PaperFlux — по готовому списку args.
+     */
     fun startCore(
-        peer: String,
-        password: String,
-        hashes: String,
+        protocol: String = PROTO_CSQTT,
+        peer: String = "",
+        password: String = "",
+        hashes: String = "",
+        args: List<String>? = null,
         onLog: (String) -> Unit,
     ): Boolean {
-        val corePath = getCorePath() ?: run {
-            Log.e(TAG, "[CORE] not installed")
+        val corePath = getCorePath(protocol) ?: run {
+            Log.e(TAG, "[CORE] $protocol not installed")
             return false
         }
 
+        val finalArgs = if (args != null) {
+            listOf(corePath) + args
+        } else {
+            // CSQTT-ветка (для обратной совместимости).
+            buildCsqttArgs(corePath, peer, password, hashes)
+        }
+
+        return try {
+            logsFile.writeText("")
+            onLog("[CORE] starting: ${finalArgs.joinToString(" ")}")
+
+            val pb = ProcessBuilder(finalArgs)
+            pb.redirectErrorStream(true)
+            pb.directory(coreDir)
+
+            val proc = pb.start()
+            coreProcess = proc
+            isRunning = true
+
+            Thread {
+                try {
+                    val reader = BufferedReader(InputStreamReader(proc.inputStream))
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val l = line ?: continue
+                        try { logsFile.appendText(l + "\n") } catch (_: Exception) {}
+                        onLog(l)
+                    }
+                } catch (_: Exception) {}
+                isRunning = false
+                onLog("[CORE] process exited")
+            }.apply { isDaemon = true }.start()
+
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "[CORE] start failed: ${e.message}", e)
+            onLog("[CORE] start failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun buildCsqttArgs(
+        corePath: String,
+        peer: String,
+        password: String,
+        hashes: String,
+    ): List<String> {
         val settingsFile = File(appDir, "settings.json")
         val settings = if (settingsFile.exists()) {
             try { org.json.JSONObject(settingsFile.readText()) }
@@ -200,41 +391,7 @@ class CoreManager(private val context: Context) {
             args.add("-vk")
             args.add(clean.joinToString(","))
         }
-
-        return try {
-            logsFile.writeText("")
-            onLog("[CORE] starting: ${args.joinToString(" ")}")
-
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            pb.directory(coreDir)
-
-            val proc = pb.start()
-            coreProcess = proc
-            isRunning = true
-
-            Thread {
-                try {
-                    val reader = BufferedReader(InputStreamReader(proc.inputStream))
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        val l = line ?: continue
-                        try {
-                            logsFile.appendText(l + "\n")
-                        } catch (_: Exception) {}
-                        onLog(l)
-                    }
-                } catch (_: Exception) {}
-                isRunning = false
-                onLog("[CORE] process exited")
-            }.apply { isDaemon = true }.start()
-
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "[CORE] start failed: ${e.message}", e)
-            onLog("[CORE] start failed: ${e.message}")
-            false
-        }
+        return args
     }
 
     fun stopCore() {

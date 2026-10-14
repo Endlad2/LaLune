@@ -2,14 +2,12 @@
 //
 // LaLune backend daemon (Windows/Linux).
 // HTTP API на 127.0.0.1:1062.
-//
-// Windows: Wintun FFI (wintun.dll из %APPDATA%\.la-lune\)
-// Linux:   крейт tun
 
 mod api;
 mod config;
 mod core_manager;
 mod events;
+mod protocol;
 mod settings;
 mod socks5;
 mod state;

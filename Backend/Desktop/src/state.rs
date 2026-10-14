@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Глобальное состояние демона: пути, настройки, конфиги, VPN runtime, events.
+// Глобальное состояние демона.
 
 use anyhow::{anyhow, Result};
 use parking_lot::{Mutex, RwLock};
@@ -20,6 +20,8 @@ pub struct AppState {
     pub settings_path: PathBuf,
     pub logs_path: PathBuf,
     pub token_path: PathBuf,
+    /// Путь к текущему запущенному ядру (csqtt или paperflux).
+    /// Проставляется при connect.
     pub core_path: PathBuf,
 
     pub events: EventBus,
@@ -36,13 +38,11 @@ pub struct AppState {
     pub deploy_log: Mutex<String>,
     pub smarttunnel_running: Mutex<bool>,
 
-    /// SOCKS5-сервер для раздачи VPN (если share_vpn = true).
     pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
 
     shutdown: Notify,
 }
 
-/// Возвращает app_dir (для использования вне AppState).
 pub fn app_dir() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -60,6 +60,13 @@ pub fn app_dir() -> Result<PathBuf> {
     }
 }
 
+/// Возвращает путь к ядру для указанного протокола.
+pub fn core_path_for(app_dir: &PathBuf, protocol_id: &str) -> PathBuf {
+    let kind = crate::protocol::ProtocolKind::from_id(protocol_id)
+        .unwrap_or(crate::protocol::ProtocolKind::Csqtt);
+    app_dir.join(kind.local_filename())
+}
+
 impl AppState {
     pub async fn new() -> Result<Self> {
         let app_dir = app_dir()?;
@@ -69,9 +76,9 @@ impl AppState {
         let settings_path = app_dir.join("settings.json");
         let logs_path = app_dir.join("logs.log");
         let token_path = app_dir.join("token.json");
-        let core_path = app_dir.join(crate::core_manager::core_filename());
+        // По умолчанию — CSQTT.
+        let core_path = core_path_for(&app_dir, "CSQTT");
 
-        // Загружаем или создаём настройки
         let mut settings = if settings_path.exists() {
             let data = std::fs::read_to_string(&settings_path)?;
             serde_json::from_str::<Settings>(&data).unwrap_or_default()
@@ -81,9 +88,7 @@ impl AppState {
         settings.normalize();
         std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
 
-        // Открываем SQLite
         let configs = ConfigStore::open(&configs_path)?;
-
         let events = EventBus::new(1024);
 
         events.emit(crate::events::Event::log(format!(
@@ -154,18 +159,20 @@ impl AppState {
     }
 
     pub async fn cleanup(&self) {
-        // Останавливаем SOCKS5, если запущен.
-        crate::socks5::stop(&Arc::new(self.clone_for_cleanup()));
+        // SOCKS5
+        {
+            let handle = { self.socks5.lock().take() };
+            if let Some(h) = handle { h.abort(); }
+        }
 
-        // Останавливаем VPN runtime (синхронно)
+        // VPN
         self.vpn.stop();
 
-        // Забираем процесс ядра из мьютекса (без await внутри lock).
+        // Core
         let maybe_proc = {
             let mut core = self.core.lock();
             core.take()
         };
-
         if let Some(mut p) = maybe_proc {
             let _ = p.kill().await;
         }
@@ -173,34 +180,5 @@ impl AppState {
 
     pub fn uptime(&self) -> u64 {
         0
-    }
-
-    // Хак для cleanup: socks5::stop принимает &Arc<AppState>, а мы внутри
-    // &self. Проще всего создать временный Arc и не париться.
-    fn clone_for_cleanup(&self) -> AppState {
-        // Нам нужен только доступ к self.socks5 и self.log — создаём
-        // фиктивную структуру через mem::forget нельзя, поэтому просто
-        // вынесем stop сюда явно.
-        AppState {
-            app_dir: self.app_dir.clone(),
-            configs_path: self.configs_path.clone(),
-            settings_path: self.settings_path.clone(),
-            logs_path: self.logs_path.clone(),
-            token_path: self.token_path.clone(),
-            core_path: self.core_path.clone(),
-            events: self.events.clone(),
-            settings: RwLock::new(self.settings.read().clone()),
-            selected_config: RwLock::new(self.selected_config.read().clone()),
-            configs: self.configs.clone(),
-            vpn: self.vpn.clone(),
-            core: Mutex::new(None),
-            logs: Mutex::new(Vec::new()),
-            core_downloading: Mutex::new(false),
-            deploy_busy: Mutex::new(false),
-            deploy_log: Mutex::new(String::new()),
-            smarttunnel_running: Mutex::new(false),
-            socks5: Mutex::new(self.socks5.lock().take()),
-            shutdown: Notify::new(),
-        }
     }
 }

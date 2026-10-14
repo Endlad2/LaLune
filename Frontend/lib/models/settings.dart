@@ -8,6 +8,7 @@ const int kMinAutoApiWorkers = 9;
 const int kMaxAutoApiWorkers = 27;
 
 class Settings {
+  // CSQTT
   final String peer;
   final String vkHashes;
   final String vkJsToken;
@@ -26,9 +27,35 @@ class Settings {
   final String vkAuthMode;
   final bool allowHashRedistribution;
   final bool validateVkHashes;
+
+  // PaperFlux
+  final String pfTransport;
+  final String pfUrl;
+  final String pfUrls;
+  final String pfVolgaUrl;
+  final String pfMode;
+  final String pfSocks5;
+  final String pfTcpRecovery;
+  final bool pfSession;
+  final String pfClientIp;
+  final String pfAuthService;
+  final String pfIpcSocket;
+  final String pfTunFdSock;
+  final String pfPacketSock;
+  final String pfExitProfiles;
+  final String pfExitStats;
+  final String pfExitCookies;
+  final String pfRelayUrl;
+  final String pfRelayToken;
+  final int pfRelayUser;
+  final String pfRelaySession;
+  final String pfMaxToken;
+  final String pfMaxUid;
+
+  // Экспериментальное
   final bool enableSmartTunnel;
   final bool showCoreLogs;
-  final bool shareVpn;   // ← новое
+  final bool shareVpn;
 
   Settings({
     this.peer = '',
@@ -49,6 +76,28 @@ class Settings {
     this.vkAuthMode = 'vkcalls',
     this.allowHashRedistribution = false,
     this.validateVkHashes = false,
+    this.pfTransport = 'yandex',
+    this.pfUrl = '',
+    this.pfUrls = '',
+    this.pfVolgaUrl = '',
+    this.pfMode = 'proxy',
+    this.pfSocks5 = '127.0.0.1:1080',
+    this.pfTcpRecovery = 'auto',
+    this.pfSession = false,
+    this.pfClientIp = '10.10.10.2',
+    this.pfAuthService = '',
+    this.pfIpcSocket = '',
+    this.pfTunFdSock = '',
+    this.pfPacketSock = '',
+    this.pfExitProfiles = '',
+    this.pfExitStats = '',
+    this.pfExitCookies = '',
+    this.pfRelayUrl = '',
+    this.pfRelayToken = '',
+    this.pfRelayUser = 0,
+    this.pfRelaySession = '',
+    this.pfMaxToken = '',
+    this.pfMaxUid = '',
     this.enableSmartTunnel = false,
     this.showCoreLogs = false,
     this.shareVpn = false,
@@ -82,6 +131,28 @@ class Settings {
       vkAuthMode: (j['vkAuthMode'] ?? 'vkcalls') as String,
       allowHashRedistribution: (j['allowHashRedistribution'] ?? false) as bool,
       validateVkHashes: (j['validateVkHashes'] ?? false) as bool,
+      pfTransport: (j['pfTransport'] ?? 'yandex') as String,
+      pfUrl: (j['pfUrl'] ?? '') as String,
+      pfUrls: (j['pfUrls'] ?? '') as String,
+      pfVolgaUrl: (j['pfVolgaUrl'] ?? '') as String,
+      pfMode: (j['pfMode'] ?? 'proxy') as String,
+      pfSocks5: (j['pfSocks5'] ?? '127.0.0.1:1080') as String,
+      pfTcpRecovery: (j['pfTcpRecovery'] ?? 'auto') as String,
+      pfSession: (j['pfSession'] ?? false) as bool,
+      pfClientIp: (j['pfClientIp'] ?? '10.10.10.2') as String,
+      pfAuthService: (j['pfAuthService'] ?? '') as String,
+      pfIpcSocket: (j['pfIpcSocket'] ?? '') as String,
+      pfTunFdSock: (j['pfTunFdSock'] ?? '') as String,
+      pfPacketSock: (j['pfPacketSock'] ?? '') as String,
+      pfExitProfiles: (j['pfExitProfiles'] ?? '') as String,
+      pfExitStats: (j['pfExitStats'] ?? '') as String,
+      pfExitCookies: (j['pfExitCookies'] ?? '') as String,
+      pfRelayUrl: (j['pfRelayUrl'] ?? '') as String,
+      pfRelayToken: (j['pfRelayToken'] ?? '') as String,
+      pfRelayUser: ((j['pfRelayUser'] ?? 0) as num).toInt(),
+      pfRelaySession: (j['pfRelaySession'] ?? '') as String,
+      pfMaxToken: (j['pfMaxToken'] ?? '') as String,
+      pfMaxUid: (j['pfMaxUid'] ?? '') as String,
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
       shareVpn: (j['shareVpn'] ?? false) as bool,
@@ -107,6 +178,28 @@ class Settings {
         'vkAuthMode': vkAuthMode,
         'allowHashRedistribution': allowHashRedistribution,
         'validateVkHashes': validateVkHashes,
+        'pfTransport': pfTransport,
+        'pfUrl': pfUrl,
+        'pfUrls': pfUrls,
+        'pfVolgaUrl': pfVolgaUrl,
+        'pfMode': pfMode,
+        'pfSocks5': pfSocks5,
+        'pfTcpRecovery': pfTcpRecovery,
+        'pfSession': pfSession,
+        'pfClientIp': pfClientIp,
+        'pfAuthService': pfAuthService,
+        'pfIpcSocket': pfIpcSocket,
+        'pfTunFdSock': pfTunFdSock,
+        'pfPacketSock': pfPacketSock,
+        'pfExitProfiles': pfExitProfiles,
+        'pfExitStats': pfExitStats,
+        'pfExitCookies': pfExitCookies,
+        'pfRelayUrl': pfRelayUrl,
+        'pfRelayToken': pfRelayToken,
+        'pfRelayUser': pfRelayUser,
+        'pfRelaySession': pfRelaySession,
+        'pfMaxToken': pfMaxToken,
+        'pfMaxUid': pfMaxUid,
         'enableSmartTunnel': enableSmartTunnel,
         'showCoreLogs': showCoreLogs,
         'shareVpn': shareVpn,
@@ -131,6 +224,28 @@ class Settings {
     String? vkAuthMode,
     bool? allowHashRedistribution,
     bool? validateVkHashes,
+    String? pfTransport,
+    String? pfUrl,
+    String? pfUrls,
+    String? pfVolgaUrl,
+    String? pfMode,
+    String? pfSocks5,
+    String? pfTcpRecovery,
+    bool? pfSession,
+    String? pfClientIp,
+    String? pfAuthService,
+    String? pfIpcSocket,
+    String? pfTunFdSock,
+    String? pfPacketSock,
+    String? pfExitProfiles,
+    String? pfExitStats,
+    String? pfExitCookies,
+    String? pfRelayUrl,
+    String? pfRelayToken,
+    int? pfRelayUser,
+    String? pfRelaySession,
+    String? pfMaxToken,
+    String? pfMaxUid,
     bool? enableSmartTunnel,
     bool? showCoreLogs,
     bool? shareVpn,
@@ -155,6 +270,28 @@ class Settings {
         allowHashRedistribution:
             allowHashRedistribution ?? this.allowHashRedistribution,
         validateVkHashes: validateVkHashes ?? this.validateVkHashes,
+        pfTransport: pfTransport ?? this.pfTransport,
+        pfUrl: pfUrl ?? this.pfUrl,
+        pfUrls: pfUrls ?? this.pfUrls,
+        pfVolgaUrl: pfVolgaUrl ?? this.pfVolgaUrl,
+        pfMode: pfMode ?? this.pfMode,
+        pfSocks5: pfSocks5 ?? this.pfSocks5,
+        pfTcpRecovery: pfTcpRecovery ?? this.pfTcpRecovery,
+        pfSession: pfSession ?? this.pfSession,
+        pfClientIp: pfClientIp ?? this.pfClientIp,
+        pfAuthService: pfAuthService ?? this.pfAuthService,
+        pfIpcSocket: pfIpcSocket ?? this.pfIpcSocket,
+        pfTunFdSock: pfTunFdSock ?? this.pfTunFdSock,
+        pfPacketSock: pfPacketSock ?? this.pfPacketSock,
+        pfExitProfiles: pfExitProfiles ?? this.pfExitProfiles,
+        pfExitStats: pfExitStats ?? this.pfExitStats,
+        pfExitCookies: pfExitCookies ?? this.pfExitCookies,
+        pfRelayUrl: pfRelayUrl ?? this.pfRelayUrl,
+        pfRelayToken: pfRelayToken ?? this.pfRelayToken,
+        pfRelayUser: pfRelayUser ?? this.pfRelayUser,
+        pfRelaySession: pfRelaySession ?? this.pfRelaySession,
+        pfMaxToken: pfMaxToken ?? this.pfMaxToken,
+        pfMaxUid: pfMaxUid ?? this.pfMaxUid,
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
         shareVpn: shareVpn ?? this.shareVpn,

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Диалог добавления конфига. Протокол выбирается из списка.
+// Placeholder для ссылки зависит от протокола и НЕ содержит реальных данных.
 
 import 'package:flutter/material.dart';
 
@@ -8,18 +11,22 @@ class AddConfigResult {
   const AddConfigResult(this.protocol, this.link);
 }
 
+const _protocols = <String>['CSQTT', 'PaperFlux'];
+
+String _placeholderFor(String protocol) {
+  switch (protocol) {
+    case 'PaperFlux':
+      return 'paperflux://config?v=1&id=...&name=...&server=...&ip=...'
+          '&transport=...&doc=...&token=...&volga=...';
+    case 'CSQTT':
+    default:
+      return 'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2';
+  }
+}
+
 Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
-  final csqttCtrl = TextEditingController();
-
+  final linkCtrl = TextEditingController();
   String protocol = 'CSQTT';
-
-  String normalizeLink() {
-    return csqttCtrl.text.trim();
-  }
-
-  bool isLinkValid() {
-    return normalizeLink().isNotEmpty;
-  }
 
   final result = await showDialog<AddConfigResult>(
     context: context,
@@ -27,6 +34,8 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
     builder: (ctx) {
       return StatefulBuilder(
         builder: (ctx, setLocal) {
+          final placeholder = _placeholderFor(protocol);
+
           return AlertDialog(
             backgroundColor: const Color(0xFF0F1540),
             shape: RoundedRectangleBorder(
@@ -35,19 +44,50 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
             ),
             title: const Text('Добавить профиль'),
             content: SizedBox(
-              width: 420,
+              width: 480,
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _protocolDropdown(protocol, (v) {
-                      setLocal(() => protocol = v ?? 'CSQTT');
-                    }),
+                    const Text('Протокол',
+                        style: TextStyle(fontSize: 12, color: Colors.white70)),
+                    const SizedBox(height: 6),
+                    DropdownButtonFormField<String>(
+                      value: protocol,
+                      dropdownColor: const Color(0xFF0F1540),
+                      style: const TextStyle(fontSize: 13, color: Colors.white),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _protocols
+                          .map((p) =>
+                              DropdownMenuItem(value: p, child: Text(p)))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v == null) return;
+                        setLocal(() => protocol = v);
+                      },
+                    ),
                     const SizedBox(height: 14),
-                    _linkField(
-                        csqttCtrl,
-                        'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=...'),
+                    const Text('Ссылка',
+                        style: TextStyle(fontSize: 12, color: Colors.white70)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: linkCtrl,
+                      autofocus: true,
+                      maxLines: 4,
+                      minLines: 2,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: placeholder,
+                        hintStyle: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withOpacity(0.35),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -59,15 +99,14 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
               ),
               ElevatedButton(
                 onPressed: () {
-                  if (!isLinkValid()) {
+                  final link = linkCtrl.text.trim();
+                  if (link.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                          content: Text('Заполните все обязательные поля')),
+                      const SnackBar(content: Text('Введите ссылку')),
                     );
                     return;
                   }
-                  Navigator.pop(
-                      ctx, AddConfigResult(protocol, normalizeLink()));
+                  Navigator.pop(ctx, AddConfigResult(protocol, link));
                 },
                 child: const Text('Сохранить'),
               ),
@@ -78,40 +117,6 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
     },
   );
 
-  csqttCtrl.dispose();
-
+  linkCtrl.dispose();
   return result;
-}
-
-Widget _protocolDropdown(String value, ValueChanged<String?> onChanged) {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const Text('Протокол',
-          style: TextStyle(fontSize: 12, color: Colors.white70)),
-      const SizedBox(height: 6),
-      DropdownButtonFormField<String>(
-        value: value,
-        dropdownColor: const Color(0xFF0F1540),
-        style: const TextStyle(fontSize: 13, color: Colors.white),
-        decoration:
-            const InputDecoration(isDense: true, border: OutlineInputBorder()),
-        items: const [
-          DropdownMenuItem(value: 'CSQTT', child: Text('CSQTT')),
-        ],
-        onChanged: onChanged,
-      ),
-    ],
-  );
-}
-
-Widget _linkField(TextEditingController controller, String hint) {
-  return TextField(
-    controller: controller,
-    autofocus: true,
-    maxLines: 3,
-    minLines: 2,
-    style: const TextStyle(fontSize: 13),
-    decoration: InputDecoration(hintText: hint),
-  );
 }

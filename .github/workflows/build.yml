@@ -24,38 +24,26 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
+        with: { python-version: "3.12" }
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
+        with: { toolchain: ${{ env.RUST_VERSION }} }
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-
       - name: Install Linux desktop build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev \
-            libstdc++-12-dev
-
-      - name: Install Pillow (для make_icons.py)
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev
+      - name: Install Pillow
         run: python -m pip install --upgrade pip Pillow
-
       - name: Generate icons
         run: python make_icons.py
-
       - name: Build (CI mode)
         run: python build.py --ci --target linux
-
       - uses: actions/upload-artifact@v4
         with:
           name: Output-Linux
@@ -70,74 +58,30 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
+        with: { python-version: "3.12" }
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
+        with: { toolchain: ${{ env.RUST_VERSION }} }
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-
-      - name: Install VS2022 Community (Native Desktop C++)
+      - name: Install VS2022 (Native Desktop C++)
         shell: pwsh
         run: |
           choco install visualstudio2022community -y --no-progress `
             --package-parameters "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
-
-      - name: Hide VS2026 from vswhere (optional)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          foreach ($p in @(
-            "C:\Program Files\Microsoft Visual Studio\18",
-            "C:\Program Files (x86)\Microsoft Visual Studio\18"
-          )) {
-            if (Test-Path $p) {
-              Rename-Item -Path $p -NewName "18.hidden" -Force -ErrorAction SilentlyContinue
-            }
-          }
-
-      - name: Verify vswhere
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          Write-Host "--- latest ---"
-          & $vswhere -latest -products * -property installationPath
-
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Show MSVC paths
-        shell: pwsh
-        run: |
-          Write-Host "VCToolsInstallDir: $env:VCToolsInstallDir"
-          Write-Host "WindowsSdkDir: $env:WindowsSdkDir"
-          Write-Host "WindowsSDKVersion: $env:WindowsSDKVersion"
-          where.exe cl.exe
-          where.exe link.exe
-
-      - name: Install Pillow (для make_icons.py)
+        with: { arch: x64 }
+      - name: Install Pillow
         run: python -m pip install --upgrade pip Pillow
-
-      - name: Generate icons (PNG→ICO + foreground)
+      - name: Generate icons
         run: python make_icons.py
-
-      - name: Flutter doctor (diagnostics)
-        run: flutter doctor -v
-
       - name: Build (CI mode)
         shell: cmd
         run: python build.py --ci --target windows
-
       - uses: actions/upload-artifact@v4
         with:
           name: Output-Windows
@@ -145,36 +89,26 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  OpenWRT backend (armsr/armv8, musl) via OpenWRT SDK
+  #  OpenWRT
   # ============================================================
   build-desktop-openwrt:
     name: OpenWRT Backend (armsr/armv8)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: aarch64-unknown-linux-musl
-
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            curl zstd
-
+          sudo apt-get install -y curl zstd
       - name: Build OpenWRT backend
         working-directory: Backend/OpenWRT
         run: |
           chmod +x build.sh
           ./build.sh
-
-      - name: Verify binary
-        run: |
-          ls -la Backend/OpenWRT/output/
-          file Backend/OpenWRT/output/lalune-openwrt-backend || true
-
       - uses: actions/upload-artifact@v4
         with:
           name: Output-OpenWRT
@@ -189,52 +123,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
+        with: { python-version: "3.12" }
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Use preinstalled Android SDK
+      - name: Android SDK path
         run: |
           if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
             echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
             echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           fi
-          echo "ANDROID_HOME=$ANDROID_HOME"
-
-      - name: Accept Android licenses
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-
-      - name: Install Android NDK 27
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
-          ls -la "$ANDROID_HOME/ndk/" || true
-
+      - name: Install NDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
       - name: Copy Android backend
         run: |
           DST="Frontend/android/app/src/main/kotlin/com/lalune/lalune"
           mkdir -p "$DST"
           cp Backend/Android/*.kt "$DST/"
-          ls -la "$DST"
-
       - name: Copy assets
         run: |
           rm -rf Frontend/assets
           cp -r Assets Frontend/assets
-
-      - name: Download core binaries (jniLibs)
+      - name: Download CSQTT cores (jniLibs)
         run: |
           mkdir -p Frontend/android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so \
@@ -243,40 +160,44 @@ jobs:
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
-
+      - name: Download PaperFlux cores (jniLibs)
+        run: |
+          TMP_PF=$(mktemp -d)
+          curl -L --fail --retry 3 -o "$TMP_PF/paperflux-android.zip" \
+            https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-android.zip
+          unzip -o "$TMP_PF/paperflux-android.zip" -d "$TMP_PF/extracted"
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            mkdir -p "Frontend/android/app/src/main/jniLibs/$abi"
+            SRC="$TMP_PF/extracted/$abi/libopenflux.so"
+            if [ -f "$SRC" ]; then
+              cp "$SRC" "Frontend/android/app/src/main/jniLibs/$abi/libopenflux.so"
+            fi
+          done
+          rm -rf "$TMP_PF"
+          ls -laR Frontend/android/app/src/main/jniLibs/ | head -40
       - name: Copy SmartTunnel.lua
         run: |
           mkdir -p Frontend/android/app/src/main/assets
           cp Core/SmartTunnel.lua Frontend/android/app/src/main/assets/SmartTunnel.lua
-
-      - name: Install Pillow (для make_icons.py)
+      - name: Install Pillow
         run: python -m pip install --upgrade pip Pillow
-
-      - name: Generate icons (foreground + ico)
+      - name: Generate icons
         run: python make_icons.py
-
       - name: Flutter pub get
         working-directory: Frontend
         run: flutter pub get
-
-      - name: Generate launcher icons (mipmap + AppIcon)
+      - name: Generate launcher icons
         working-directory: Frontend
         run: flutter pub run flutter_launcher_icons
-
-      - name: Build Android APK (debug)
+      - name: Build APK
         working-directory: Frontend
         run: flutter build apk --debug
-
       - name: Locate & rename APK
-        id: find_apk
         run: |
           APK=$(find Frontend/build/app/outputs/flutter-apk -name "app-debug.apk" -type f | head -n 1)
           [ -z "$APK" ] && exit 1
           mkdir -p Output
           cp "$APK" Output/LaLune-Android.apk
-          ls -la Output/LaLune-Android.apk
-          echo "apk=Output/LaLune-Android.apk" >> $GITHUB_OUTPUT
-
       - uses: actions/upload-artifact@v4
         with:
           name: Output-Android
@@ -284,7 +205,7 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
-  #  LaLuneTokenFetcher
+  #  Token Fetcher
   # ============================================================
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
@@ -299,50 +220,28 @@ jobs:
             runner: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
-
-      - name: Show dotnet version
-        run: dotnet --info
-
-      - name: Sanity check
-        shell: bash
-        run: ls -la Core/LaLuneTokenFetcher
-
+        with: { python-version: "3.12" }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
       - name: Build fetcher
         run: python build_token_grabber.py --platform ${{ matrix.platform }}
-
-      - name: Package into LaLuneTokenFetcher_<OS>.zip
+      - name: Package into zip
         shell: bash
         run: |
           set -e
           OUTPUT_BIN="Core/LaLuneTokenFetcher/output/LaLuneTokenFetcher"
           ZIP_PATH="Core/LaLuneTokenFetcher/LaLuneTokenFetcher_${{ matrix.platform }}.zip"
-
-          if [ ! -d "$OUTPUT_BIN" ]; then
-            find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true
-            exit 1
-          fi
-
-          STAGING_DIR="Core/LaLuneTokenFetcher/output/_staging"
-          rm -rf "$STAGING_DIR"
-          mkdir -p "$STAGING_DIR/vk-token-fetcher"
-          cp -r "$OUTPUT_BIN/." "$STAGING_DIR/vk-token-fetcher/"
-
+          [ -d "$OUTPUT_BIN" ] || { find Core/LaLuneTokenFetcher/output -maxdepth 2 -type d || true; exit 1; }
+          STAGING="Core/LaLuneTokenFetcher/output/_staging"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING/vk-token-fetcher"
+          cp -r "$OUTPUT_BIN/." "$STAGING/vk-token-fetcher/"
           if [ "${{ matrix.platform }}" = "Linux" ]; then
-            chmod +x "$STAGING_DIR/vk-token-fetcher/LaLuneTokenFetcher" || true
+            chmod +x "$STAGING/vk-token-fetcher/LaLuneTokenFetcher" || true
           fi
-
           rm -f "$ZIP_PATH"
-
-          pushd "$STAGING_DIR" >/dev/null
+          pushd "$STAGING" >/dev/null
           if [ "${{ matrix.platform }}" = "Windows" ]; then
             popd >/dev/null
             powershell -Command "Compress-Archive -Path 'Core/LaLuneTokenFetcher/output/_staging/vk-token-fetcher' -DestinationPath '$ZIP_PATH' -Force"
@@ -350,9 +249,6 @@ jobs:
             zip -r "../../LaLuneTokenFetcher_${{ matrix.platform }}.zip" "vk-token-fetcher"
             popd >/dev/null
           fi
-
-          ls -la "$ZIP_PATH"
-
       - uses: actions/upload-artifact@v4
         with:
           name: LaLuneTokenFetcher-${{ matrix.platform }}
@@ -373,10 +269,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
-        with:
-          path: release
-
-      - name: Flatten artifacts into release/
+        with: { path: release }
+      - name: Flatten
         run: |
           set -e
           cd release
@@ -390,10 +284,8 @@ jobs:
           find . -name 'LaLuneTokenFetcher_Windows.zip' -exec cp {} ./ \;
           find . -name 'LaLuneTokenFetcher_Linux.zip'   -exec cp {} ./ \;
           ls -la
-
       - id: date
         run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
-
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.date.outputs.date }}

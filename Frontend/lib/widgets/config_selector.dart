@@ -71,6 +71,11 @@ class _ConfigRowState extends State<_ConfigRow> {
 
   @override
   Widget build(BuildContext context) {
+    // Цвет бейджа зависит от протокола.
+    final badgeColor = widget.config.isPaperFlux
+        ? const Color(0xFFF7E84E)
+        : const Color(0xFF4A6CF7);
+
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -84,12 +89,12 @@ class _ConfigRowState extends State<_ConfigRow> {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: widget.selected
-                ? const Color(0xFF4A6CF7).withOpacity(0.22)
+                ? badgeColor.withOpacity(0.22)
                 : Colors.white.withOpacity(_hover ? 0.06 : 0.02),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: widget.selected
-                  ? const Color(0xFF4A6CF7).withOpacity(0.55)
+                  ? badgeColor.withOpacity(0.55)
                   : Colors.white.withOpacity(0.08),
             ),
           ),
@@ -98,24 +103,38 @@ class _ConfigRowState extends State<_ConfigRow> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF4A6CF7).withOpacity(0.18),
+                  color: badgeColor.withOpacity(0.18),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
                   widget.config.protocol,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xFF4A6CF7),
+                    color: badgeColor,
                   ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  widget.config.displayName,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13.5),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.config.displayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13.5),
+                    ),
+                    if (widget.config.isPaperFlux &&
+                        widget.config.transport.isNotEmpty)
+                      Text(
+                        widget.config.transport,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          color: Colors.white.withOpacity(0.5),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               if (widget.selected)

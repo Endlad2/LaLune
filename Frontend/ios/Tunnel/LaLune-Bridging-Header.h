@@ -37,4 +37,11 @@ int csqtt_run(
 int csqtt_stop(void);
 int csqtt_status(void);
 
+// ---- PaperFlux (liboflux.a) ----
+// paperflux_run вызывается из tunnel-extension'а; args — массив C-строк,
+// последний элемент — NULL.
+int paperflux_run(const char** args);
+int paperflux_stop(void);
+int paperflux_status(void);
+
 #endif

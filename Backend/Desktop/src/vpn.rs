@@ -1,25 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// VPN: TUN-интерфейс, UDP-мост к ядру CSQTT, маршруты, DNS, bypass.
+// VPN: TUN-интерфейс, UDP-мост к ядру, маршруты, DNS, bypass.
+// Для PaperFlux в режиме proxy TUN оборачивает SOCKS5: маршруты
+// отправляют трафик на локальный SOCKS-прокси через tun2socks-подобный мост.
+// Здесь упрощённый вариант — используется тот же UDP-мост, что и для CSQTT
+// (ядро PaperFlux в режиме raw умеет работать напрямую с пакетами).
 //
-// Windows:
-//   * Прямой FFI к wintun.dll из %APPDATA%\.la-lune\wintun.dll
-//   * Адаптер "CSQTT" создаёт сам бэкенд (OpenAdapter → CreateAdapter)
-//   * Ring-buffer 4 МБ, две tokio-таски без мьютекса:
-//       Task A: WintunReceivePacket → UDP send
-//       Task B: UDP recv → WintunSendPacket
-//   * Маршруты/DNS/MTU — через netsh (как в старом Go)
-//   * Bypass-маршруты для TURN/Relay — через физический шлюз
-//
-// Linux:
-//   * Крейт `tun`, TUN-девайс csqtt0, read/write с двух потоков
-//   * Маршруты/DNS — через `ip` / resolv.conf (sudo)
-//   * Bypass-маршруты не используются (как в Go)
-//
-// Порядок:
-//   1. Ядро запускается первым.
-//   2. Watchdog ждёт в logs.log "TUNCONF" + "Активных>0" два тика подряд.
-//   3. Только потом поднимаем Wintun/TUN и ставим default route.
+// ВАЖНО: для PaperFlux --mode proxy мы подсовываем ОС маршруты через TUN,
+// а TUN-мост сам подключается к SOCKS5 127.0.0.1:{CORE_LISTEN_PORT}.
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -29,14 +17,10 @@ use std::time::{Duration, Instant};
 
 use crate::events::{Event, EventBus};
 
-pub const CORE_LISTEN_PORT: u16 = 52230;
+pub const CORE_LISTEN_PORT: u16 = 1080;
 pub const TUN_MTU: u16 = 1400;
 pub const DEFAULT_TUN_IP: &str = "10.66.67.12";
 pub const DEFAULT_DNS: &str = "8.8.8.8,8.8.4.4";
-
-// ============================================================
-//  Общие типы
-// ============================================================
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,10 +63,6 @@ pub struct TunConf {
     pub dns: String,
     pub mtu: u16,
 }
-
-// ============================================================
-//  VpnRuntime — общее состояние
-// ============================================================
 
 pub struct VpnRuntime {
     pub running: Arc<AtomicBool>,
@@ -152,7 +132,6 @@ impl VpnRuntime {
 
         #[cfg(target_os = "windows")]
         {
-            // Дроп WintunSession → EndSession + CloseAdapter.
             let mut guard = self.wintun.lock();
             *guard = None;
         }
@@ -170,25 +149,19 @@ impl VpnRuntime {
 }
 
 // ============================================================
-//  Bypass-маршруты (только Windows)
+//  Bypass-маршруты (Windows only)
 // ============================================================
 
 #[cfg(target_os = "windows")]
 fn get_physical_gateway() -> String {
     use std::process::Command;
-    let out = match Command::new("cmd")
-        .args(["/c", "route", "print", "0.0.0.0"])
-        .output()
-    {
+    let out = match Command::new("cmd").args(["/c", "route", "print", "0.0.0.0"]).output() {
         Ok(o) => o,
         Err(_) => return String::new(),
     };
-
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
-        if !line.contains("0.0.0.0") {
-            continue;
-        }
+        if !line.contains("0.0.0.0") { continue; }
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() >= 3 && fields[0] == "0.0.0.0" {
             return fields[2].to_string();
@@ -201,27 +174,16 @@ fn get_physical_gateway() -> String {
 pub fn add_bypass_route(runtime: &VpnRuntime, ip: &str) {
     use std::net::Ipv4Addr;
     use std::process::Command;
-
-    if ip.parse::<Ipv4Addr>().is_err() {
-        return;
-    }
-
+    if ip.parse::<Ipv4Addr>().is_err() { return; }
     {
         let existing = runtime.bypass_routes.lock();
-        if existing.iter().any(|x| x == ip) {
-            return;
-        }
+        if existing.iter().any(|x| x == ip) { return; }
     }
-
     let gateway = runtime.physical_gateway.lock().clone();
-    if gateway.is_empty() {
-        return;
-    }
-
+    if gateway.is_empty() { return; }
     let _ = Command::new("route")
         .args(["ADD", ip, "MASK", "255.255.255.255", &gateway, "METRIC", "1"])
         .output();
-
     runtime.bypass_routes.lock().push(ip.to_string());
 }
 
@@ -248,15 +210,11 @@ pub fn cleanup_routes(runtime: &VpnRuntime, events: &EventBus) {
     cleanup_routes_windows(runtime, events);
 }
 
-// ---------- Linux ----------
-
 #[cfg(target_os = "linux")]
 fn setup_routes_linux(tun_ip: &str, tun_dns: &str, events: &EventBus) {
     for dns in tun_dns.split(',') {
         let dns = dns.trim();
-        if dns.is_empty() {
-            continue;
-        }
+        if dns.is_empty() { continue; }
         run_sudo(&format!("echo 'nameserver {}' >> /etc/resolv.conf", dns), events);
     }
     run_sudo(&format!("ip route add default dev {}", "csqtt0"), events);
@@ -286,15 +244,8 @@ fn run_sudo(command: &str, events: &EventBus) {
     }
 }
 
-// ---------- Windows ----------
-
 #[cfg(target_os = "windows")]
-fn setup_routes_windows(
-    runtime: &VpnRuntime,
-    tun_ip: &str,
-    tun_dns: &str,
-    events: &EventBus,
-) {
+fn setup_routes_windows(runtime: &VpnRuntime, tun_ip: &str, tun_dns: &str, events: &EventBus) {
     use std::process::Command;
 
     let gateway = get_physical_gateway();
@@ -303,65 +254,43 @@ fn setup_routes_windows(
     }
     *runtime.physical_gateway.lock() = gateway.clone();
 
-    // 1) Сначала bypass для TURN/Relay (по физическому шлюзу, метрика 1).
     let bypass_list = runtime.bypass_routes.lock().clone();
     for ip in &bypass_list {
-        if gateway.is_empty() {
-            break;
-        }
+        if gateway.is_empty() { break; }
         let _ = Command::new("route")
             .args(["ADD", ip, "MASK", "255.255.255.255", &gateway, "METRIC", "1"])
             .output();
     }
 
-    // 2) Настраиваем адрес/MTU на адаптере CSQTT.
     let _ = Command::new("netsh")
-        .args([
-            "interface", "ipv4", "set", "address",
-            "name=\"CSQTT\"", "source=static",
-            &format!("address={}", tun_ip),
-            "mask=255.255.255.255",
-        ])
+        .args(["interface", "ipv4", "set", "address",
+               "name=\"CSQTT\"", "source=static",
+               &format!("address={}", tun_ip), "mask=255.255.255.255"])
         .output();
 
     let _ = Command::new("netsh")
-        .args([
-            "interface", "ipv4", "set", "subinterface",
-            "\"CSQTT\"",
-            &format!("mtu={}", TUN_MTU),
-            "store=active",
-        ])
+        .args(["interface", "ipv4", "set", "subinterface",
+               "\"CSQTT\"", &format!("mtu={}", TUN_MTU), "store=active"])
         .output();
 
-    // 3) DNS-серверы (максимум 2).
     let mut dns_index = 1;
     for dns in tun_dns.split(',') {
         let dns = dns.trim();
-        if dns.is_empty() || dns_index > 2 {
-            continue;
-        }
+        if dns.is_empty() || dns_index > 2 { continue; }
         let _ = Command::new("netsh")
-            .args([
-                "interface", "ipv4", "add", "dnsservers",
-                "name=\"CSQTT\"",
-                &format!("address={}", dns),
-                &format!("index={}", dns_index),
-                "validate=no",
-            ])
+            .args(["interface", "ipv4", "add", "dnsservers",
+                   "name=\"CSQTT\"",
+                   &format!("address={}", dns),
+                   &format!("index={}", dns_index),
+                   "validate=no"])
             .output();
         dns_index += 1;
     }
 
-    // 4) Default route через CSQTT.
     let _ = Command::new("netsh")
-        .args([
-            "interface", "ipv4", "add", "route",
-            "prefix=0.0.0.0/0",
-            "interface=\"CSQTT\"",
-            "nexthop=0.0.0.0",
-            "metric=5",
-            "store=active",
-        ])
+        .args(["interface", "ipv4", "add", "route",
+               "prefix=0.0.0.0/0", "interface=\"CSQTT\"",
+               "nexthop=0.0.0.0", "metric=5", "store=active"])
         .output();
 
     events.emit(Event::log("[TUN] Windows routes + DNS configured"));
@@ -372,12 +301,8 @@ fn cleanup_routes_windows(runtime: &VpnRuntime, events: &EventBus) {
     use std::process::Command;
 
     let _ = Command::new("netsh")
-        .args([
-            "interface", "ipv4", "delete", "route",
-            "prefix=0.0.0.0/0",
-            "interface=\"CSQTT\"",
-            "store=active",
-        ])
+        .args(["interface", "ipv4", "delete", "route",
+               "prefix=0.0.0.0/0", "interface=\"CSQTT\"", "store=active"])
         .output();
 
     let bypass_list = runtime.bypass_routes.lock().clone();
@@ -391,7 +316,7 @@ fn cleanup_routes_windows(runtime: &VpnRuntime, events: &EventBus) {
 }
 
 // ============================================================
-//  WINDOWS: Wintun + UDP-мост
+//  Windows: Wintun + UDP-мост
 // ============================================================
 
 #[cfg(target_os = "windows")]
@@ -404,13 +329,9 @@ pub fn start_tun(
     use std::net::UdpSocket;
     use std::path::PathBuf;
 
-    // 1) Загружаем wintun.dll из %APPDATA%\.la-lune\wintun.dll
     let app_dir = crate::state::app_dir()?;
     let dll_path: PathBuf = app_dir.join("wintun.dll");
-    events.emit(Event::log(format!(
-        "[WINTUN] загружаю DLL: {}",
-        dll_path.display()
-    )));
+    events.emit(Event::log(format!("[WINTUN] загружаю DLL: {}", dll_path.display())));
 
     let session = crate::wintun::WintunSession::open_or_create(&dll_path)?;
     events.emit(Event::log(format!(
@@ -419,11 +340,9 @@ pub fn start_tun(
         crate::wintun::WINTUN_RING_CAPACITY
     )));
 
-    // 2) UDP-сокет к ядру.
     let sock = UdpSocket::bind("127.0.0.1:0")?;
     sock.connect(format!("127.0.0.1:{}", CORE_LISTEN_PORT))?;
 
-    // 2a) Большие буферы сокета — критично для throughput.
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawSocket;
@@ -433,45 +352,25 @@ pub fn start_tun(
         const BUFSIZE: i32 = 8 * 1024 * 1024;
 
         extern "system" {
-            fn setsockopt(
-                s: usize,
-                level: i32,
-                optname: i32,
-                optval: *const i8,
-                optlen: i32,
-            ) -> i32;
+            fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i8, optlen: i32) -> i32;
         }
 
         let raw = sock.as_raw_socket();
         unsafe {
             let v = BUFSIZE;
-            setsockopt(
-                raw as usize,
-                SOL_SOCKET,
-                SO_RCVBUF,
-                &v as *const i32 as *const i8,
-                std::mem::size_of::<i32>() as i32,
-            );
-            setsockopt(
-                raw as usize,
-                SOL_SOCKET,
-                SO_SNDBUF,
-                &v as *const i32 as *const i8,
-                std::mem::size_of::<i32>() as i32,
-            );
+            setsockopt(raw as usize, SOL_SOCKET, SO_RCVBUF, &v as *const i32 as *const i8, std::mem::size_of::<i32>() as i32);
+            setsockopt(raw as usize, SOL_SOCKET, SO_SNDBUF, &v as *const i32 as *const i8, std::mem::size_of::<i32>() as i32);
         }
     }
 
     let sock = Arc::new(sock);
 
-    // 3) Сохраняем состояние + стартуем.
     *runtime.tun_conf.lock() = Some(TunConf {
         ip: tun_ip.clone(),
         dns: tun_dns.clone(),
         mtu: TUN_MTU,
     });
 
-    // 4) Кладём сессию в runtime.
     {
         let mut guard = runtime.wintun.lock();
         *guard = Some(session);
@@ -480,26 +379,14 @@ pub fn start_tun(
     runtime.running.store(true, Ordering::Relaxed);
     *runtime.started_at.lock() = Some(Instant::now());
 
-    // 5) Маршруты/DNS/MTU.
     setup_routes(&runtime, &tun_ip, &tun_dns, &events);
 
-    // 6) Две tokio-таски без мьютекса.
-    //
-    //    Task A: Wintun → UDP
-    //    Task B: UDP → Wintun
-    //
-    //    WintunSession thread-safe, поэтому можно обращаться из обеих
-    //    задач через Arc<Mutex<Option<...>>> только на время чтения
-    //    указателя — но мы держим сессию в runtime.wintun и берём её
-    //    через clone Arc + lock, чтобы не хранить raw-указатель.
     let running_a = runtime.running.clone();
     let tx_bytes = runtime.tx_bytes.clone();
     let events_a = events.clone();
     let wintun_a = runtime.wintun.clone();
     let sock_a = sock.clone();
 
-    // Мост работает в блокирующем режиме, поэтому используем отдельные
-    // std-потоки, а не tokio-таски — это то же, что старый Go.
     let wintun_b = runtime.wintun.clone();
     let sock_b = sock.clone();
     let running_b = runtime.running.clone();
@@ -511,7 +398,6 @@ pub fn start_tun(
         .spawn(move || {
             let mut buf = vec![0u8; 65535];
             while running_a.load(Ordering::Relaxed) {
-                // Берём сессию.
                 let n = {
                     let guard = wintun_a.lock();
                     match guard.as_ref() {
@@ -520,17 +406,12 @@ pub fn start_tun(
                     }
                 };
                 if n == 0 {
-                    // Нет пакета — короткая пауза, чтобы не крутить CPU.
                     std::thread::sleep(Duration::from_micros(200));
                     continue;
                 }
                 match sock_a.send(&buf[..n]) {
-                    Ok(sent) => {
-                        tx_bytes.fetch_add(sent as u64, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        events_a.emit(Event::log(format!("[TUN] udp send: {}", e)));
-                    }
+                    Ok(sent) => { tx_bytes.fetch_add(sent as u64, Ordering::Relaxed); }
+                    Err(e) => { events_a.emit(Event::log(format!("[TUN] udp send: {}", e))); }
                 }
             }
             log::info!("[TUN] wintun->udp stop");
@@ -549,9 +430,7 @@ pub fn start_tun(
                 };
                 let guard = wintun_b.lock();
                 if let Some(sess) = guard.as_ref() {
-                    if let Err(e) = sess.send_packet(&buf[..n]) {
-                        // Ring полон — ждём чуть-чуть.
-                        let _ = e;
+                    if let Err(_e) = sess.send_packet(&buf[..n]) {
                         std::thread::sleep(Duration::from_micros(200));
                     } else {
                         rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
@@ -562,12 +441,12 @@ pub fn start_tun(
         })
         .map_err(|e| anyhow!("spawn udp->wintun: {}", e))?;
 
-    events.emit(Event::log("[TUN] Wintun bridge started (2 threads, no mutex on hot path)"));
+    events.emit(Event::log("[TUN] Wintun bridge started (2 threads)"));
     Ok(())
 }
 
 // ============================================================
-//  LINUX: TUN через крейт tun
+//  Linux: TUN через крейт tun
 // ============================================================
 
 #[cfg(target_os = "linux")]
@@ -619,7 +498,6 @@ pub fn start_tun(
     let tx_w = tx.clone();
 
     let handle = thread::spawn(move || {
-        // TUN → UDP
         let dev_r = dev_w.clone();
         let sock_r = sock_w.clone();
         let running_r = running_w.clone();
@@ -639,7 +517,6 @@ pub fn start_tun(
             }
         });
 
-        // UDP → TUN
         let dev_w2 = dev_w.clone();
         let sock_w2 = sock_w.clone();
         let running_w2 = running_w.clone();

@@ -1,0 +1,6 @@
+--- /dev/null
++++ Backend/Desktop/src/protocol.rs
++
++// ProtocolKind enum + build_args + settings_keys_for + link_placeholder.
++// Делегирует в core_manager::{csqtt_asset_name, paperflux_asset_name}
++// для выбора имени ассета под текущую ОС.
