@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки: CSQTT + PaperFlux. Все pf* поля относятся к PaperFlux.
+// Настройки: CSQTT + PaperFlux. deviceId удалён — новый CSQTT его не использует.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,17 +34,15 @@ pub struct Settings {
     // -------- Общие --------
     pub workers: i32,
     pub auto_api_workers: i32,
-    pub device_id: String,
 
     // -------- PaperFlux --------
-    /// yandex | vyandex | boards | mtslink | cupsonline | mailru | oneme | relayv2 | direct
     pub pf_transport: String,
     pub pf_url: String,
     pub pf_urls: String,
     pub pf_volga_url: String,
-    pub pf_mode: String,          // proxy | raw
-    pub pf_socks5: String,        // "127.0.0.1:1080"
-    pub pf_tcp_recovery: String,  // auto | classic | rack
+    pub pf_mode: String,
+    pub pf_socks5: String,
+    pub pf_tcp_recovery: String,
     pub pf_session: bool,
     pub pf_client_ip: String,
     pub pf_auth_service: String,
@@ -88,7 +86,6 @@ impl Default for Settings {
 
             workers: DEFAULT_WORKERS,
             auto_api_workers: DEFAULT_AUTO_API_WORKERS,
-            device_id: String::new(),
 
             pf_transport: "yandex".into(),
             pf_url: String::new(),
@@ -128,7 +125,6 @@ impl Settings {
         if self.auto_api_workers < MIN_AUTO_API_WORKERS { self.auto_api_workers = MIN_AUTO_API_WORKERS; }
         if self.auto_api_workers > MAX_AUTO_API_WORKERS { self.auto_api_workers = MAX_AUTO_API_WORKERS; }
 
-        // CSQTT
         if self.auth_mode.is_empty() { self.auth_mode = "manual".into(); }
         if self.turn_transport.is_empty() { self.turn_transport = "udp".into(); }
         if self.obfs.is_empty() { self.obfs = "video".into(); }
@@ -137,16 +133,11 @@ impl Settings {
         if self.vk_auth_mode.is_empty() { self.vk_auth_mode = "vkcalls".into(); }
         if self.client_ids.is_empty() { self.client_ids = "8202606,6287487".into(); }
 
-        // PaperFlux
         if self.pf_transport.is_empty() { self.pf_transport = "yandex".into(); }
         if self.pf_mode.is_empty() { self.pf_mode = "proxy".into(); }
         if self.pf_socks5.is_empty() { self.pf_socks5 = "127.0.0.1:1080".into(); }
         if self.pf_tcp_recovery.is_empty() { self.pf_tcp_recovery = "auto".into(); }
         if self.pf_client_ip.is_empty() { self.pf_client_ip = "10.10.10.2".into(); }
-
-        if self.device_id.is_empty() {
-            self.device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
-        }
     }
 
     pub fn merge_from_json(&mut self, value: serde_json::Value) -> anyhow::Result<()> {

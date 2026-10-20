@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// HTTP API. Поддерживает ?source=backend|core|all в /logs*.
-// Core-эндпоинты теперь per-protocol: GET /core/{proto}/check, POST /core/{proto}/download.
-// Старые /core/* оставлены как алиасы на CSQTT для обратной совместимости.
+// HTTP API. deviceId удалён. /smarttunnel/* теперь реально
+// дёргают Lua-рантайм.
 
 use axum::{
     extract::{Path, Query, State},
@@ -51,8 +50,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/settings/reset", post(settings_reset))
         .route("/settings/:key", get(settings_get_key).put(settings_put_key))
         .route("/settings-for/:proto", get(settings_for_proto))
-        .route("/device/id", get(device_id))
-        .route("/device/id/regenerate", post(device_id_regen))
         .route("/device/info", get(device_info))
         .route("/vpn/connect", post(vpn_connect))
         .route("/vpn/disconnect", post(vpn_disconnect))
@@ -64,7 +61,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/logs/tail", get(logs_tail))
         .route("/logs/stream", get(sse_logs))
         .route("/logs/export", get(logs_export))
-        // --- Core: per-protocol ---
         .route("/core/protocols", get(core_protocols))
         .route("/core/:proto/version", get(core_version_p))
         .route("/core/:proto/latest", get(core_latest_p))
@@ -73,7 +69,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/core/:proto/download/sync", post(core_download_sync_p))
         .route("/core/:proto/path", get(core_path_p))
         .route("/core/:proto", delete(core_delete_p))
-        // --- Алиасы CSQTT (обратная совместимость) ---
         .route("/core/version", get(core_version_alias))
         .route("/core/latest", get(core_latest_alias))
         .route("/core/check", get(core_check_alias))
@@ -114,13 +109,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/debug/echo", post(debug_echo))
         .route("/debug/config", get(debug_config))
         .route("/debug/reload-config", post(debug_reload))
+        .route("/debug/lua", get(debug_lua))
+        .route("/debug/lua/eval", post(debug_lua_eval))
         .layer(cors)
         .with_state(state)
 }
-
-// ============================================================
-//  Базовые
-// ============================================================
 
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
@@ -187,10 +180,6 @@ async fn sse_logs(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-// ============================================================
-//  Конфиги
-// ============================================================
-
 async fn configs_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.configs.list() {
         Ok(v) => Json(json!(v)).into_response(),
@@ -217,7 +206,6 @@ struct ConfigCreateBody {
     password: Option<String>,
     hashes: Option<String>,
     name: Option<String>,
-    // PaperFlux
     #[serde(rename = "profileId")] profile_id: Option<String>,
     #[serde(rename = "profileToken")] profile_token: Option<String>,
     #[serde(rename = "clientIp")] client_ip: Option<String>,
@@ -339,18 +327,11 @@ async fn selected_set(
     }
 }
 
-// ============================================================
-//  Настройки
-// ============================================================
-
 async fn settings_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let s = state.settings.read().clone();
     Json(json!(s))
 }
 
-/// Возвращает список ключей настроек, релевантных протоколу,
-/// плюс placeholder для ссылки. UI использует это, чтобы понять,
-/// какие поля показывать в разделе "Настройки".
 async fn settings_for_proto(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
@@ -418,25 +399,6 @@ async fn settings_put_key(
     Json(json!({"ok": true})).into_response()
 }
 
-// ============================================================
-//  Device
-// ============================================================
-
-async fn device_id(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let id = state.settings.read().device_id.clone();
-    Json(json!({"deviceId": id}))
-}
-
-async fn device_id_regen(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let new_id = uuid::Uuid::new_v4().to_string().replace('-', "");
-    {
-        let mut s = state.settings.write();
-        s.device_id = new_id.clone();
-    }
-    let _ = state.save_settings();
-    Json(json!({"deviceId": new_id}))
-}
-
 async fn device_info() -> impl IntoResponse {
     let hostname = hostname::get()
         .map(|s| s.to_string_lossy().to_string())
@@ -450,10 +412,6 @@ async fn device_info() -> impl IntoResponse {
         "totalMemMb": 0,
     }))
 }
-
-// ============================================================
-//  VPN
-// ============================================================
 
 #[derive(Deserialize)]
 struct ConnectBody {
@@ -479,7 +437,6 @@ async fn vpn_connect(
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
-    // Определяем путь ядра под этот протокол.
     let core_path = state::core_path_for(&state.app_dir, kind.id());
 
     if !core_path.exists() {
@@ -517,17 +474,17 @@ async fn vpn_connect(
     };
     *state.core.lock() = Some(core);
 
-    // Для PaperFlux в режиме proxy ядро само поднимает SOCKS5 на 127.0.0.1:PORT.
-    // Для CSQTT SOCKS5 — это наша раздача (share_vpn).
     if kind == ProtocolKind::Csqtt && settings.share_vpn {
         if let Err(e) = crate::socks5::start(state.clone()) {
             state.log(format!("[PROXY] failed to start: {}", e));
         }
     }
 
-    // Watchdog: ждёт TUNCONF + Активных>0 два тика подряд, поднимает TUN.
-    // Для PaperFlux в режиме proxy TUN оборачивает SOCKS5 → сами ставим
-    // маршруты после появления SOCKS-порта в логах ядра.
+    // Lua on_connect().
+    if let Some(lua) = state.lua() {
+        lua.on_connect();
+    }
+
     let state2 = state.clone();
     let kind_for_watchdog = kind;
     tokio::spawn(async move {
@@ -559,16 +516,11 @@ async fn vpn_connect(
                 }
             }
 
-            // Для PaperFlux TUN поднимаем после того, как ядро сообщит о SOCKS5.
-            // Мы парсим либо TUNCONF, либо строку с socks5.
             let ready = match kind_for_watchdog {
                 ProtocolKind::Csqtt => {
                     tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2
                 }
                 ProtocolKind::PaperFlux => {
-                    // При proxy-режиме ядро пишет что-то вроде
-                    // "[socks5] listening on 127.0.0.1:PORT".
-                    // Если TUNCONF нет — используем дефолтный IP.
                     consecutive_active_ticks >= 1
                         || last_size > 0
                 }
@@ -619,6 +571,11 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
     let maybe_proc = { let mut core = state.core.lock(); core.take() };
     if let Some(mut p) = maybe_proc { let _ = p.kill().await; }
     state.events.emit(Event::status(false));
+
+    if let Some(lua) = state.lua() {
+        lua.on_disconnect();
+    }
+
     Json(json!({"ok": true}))
 }
 
@@ -644,10 +601,6 @@ async fn vpn_tunconf(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let c = state.vpn.tun_conf.lock().clone();
     match c { Some(c) => Json(json!(c)).into_response(), None => Json(json!({})).into_response() }
 }
-
-// ============================================================
-//  Логи
-// ============================================================
 
 fn filter_logs(all: &[String], source: Option<&str>) -> Vec<String> {
     match source {
@@ -697,10 +650,6 @@ async fn logs_export(
     let body = filtered.join("\n");
     (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], body)
 }
-
-// ============================================================
-//  Core — per-protocol
-// ============================================================
 
 async fn core_protocols() -> impl IntoResponse {
     Json(json!(core_manager::supported_protocols()))
@@ -872,10 +821,6 @@ async fn core_delete_p(
     Json(json!({"ok": true}))
 }
 
-// ============================================================
-//  Core — алиасы CSQTT
-// ============================================================
-
 async fn core_version_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let latest_file = state.app_dir.join("LATEST.Csqtt");
     let version = tokio::fs::read_to_string(&latest_file).await.unwrap_or_default().trim().to_string();
@@ -917,10 +862,6 @@ async fn core_delete_alias(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let _ = tokio::fs::remove_file(&p).await;
     Json(json!({"ok": true}))
 }
-
-// ============================================================
-//  Update / VK / Calls / ST / Deploy / Platform / Debug
-// ============================================================
 
 async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
@@ -1056,26 +997,63 @@ async fn vk_calls_stop_all(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
 async fn vk_calls_active() -> impl IntoResponse { Json(json!({"callIds": []})) }
 
+// ============================================================
+//  SmartTunnel — реальные вызовы Lua
+// ============================================================
+
 async fn st_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({"running": *state.smarttunnel_running.lock()}))
+    let running = *state.smarttunnel_running.lock();
+    let lua_available = state.lua().is_some();
+    Json(json!({
+        "running": running,
+        "luaAvailable": lua_available,
+    }))
 }
+
 async fn st_start(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = true;
     state.log("[SMART-TUNNEL] start");
+    // Вызываем on_load() повторно, если есть.
+    if let Some(lua) = state.lua() {
+        lua.on_connect();
+    }
     Json(json!({"ok": true}))
 }
+
 async fn st_stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = false;
     state.log("[SMART-TUNNEL] stop");
+    if let Some(lua) = state.lua() {
+        lua.on_disconnect();
+    }
     Json(json!({"ok": true}))
 }
+
 async fn st_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.log("[SMART-TUNNEL] reload");
+    // Переинициализируем Lua-рантайм.
+    match state.init_lua() {
+        Ok(_) => Json(json!({"ok": true})),
+        Err(e) => err(500, format!("lua reload failed: {e:#}")),
+    }
+}
+
+async fn st_logs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let logs = state.logs_snapshot();
+    let filtered: Vec<String> = logs
+        .into_iter()
+        .filter(|l| l.starts_with("[SMART-TUNNEL]") || l.starts_with("[LUA]"))
+        .collect();
+    Json(json!(filtered))
+}
+
+async fn st_args() -> impl IntoResponse {
+    Json(json!(Vec::<String>::new()))
+}
+
+async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
-async fn st_logs() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
-async fn st_args() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
-async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse { Json(json!({"ok": true})) }
 
 async fn deploy_stub() -> impl IntoResponse {
     Json(json!({"stub": true, "message": "DeployManager not yet implemented"}))
@@ -1159,6 +1137,7 @@ async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "vpnStatus": vpn_status,
         "logCount": logs.len(),
         "appDir": state.app_dir.to_string_lossy(),
+        "luaAvailable": state.lua().is_some(),
     }))
 }
 
@@ -1172,6 +1151,7 @@ async fn debug_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "logsPath": state.logs_path.to_string_lossy(),
         "tokenPath": state.token_path.to_string_lossy(),
         "corePath": state.core_path.to_string_lossy(),
+        "luaAvailable": state.lua().is_some(),
     }))
 }
 
@@ -1183,6 +1163,30 @@ async fn debug_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         }
     }
     Json(json!({"ok": true}))
+}
+
+async fn debug_lua(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(json!({
+        "available": state.lua().is_some(),
+        "smarttunnel_running": *state.smarttunnel_running.lock(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct LuaEvalBody { code: String }
+
+async fn debug_lua_eval(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<LuaEvalBody>,
+) -> impl IntoResponse {
+    let lua = match state.lua() {
+        Some(l) => l,
+        None => return err(500, "lua not initialized"),
+    };
+    match lua.eval_str(&body.code) {
+        Ok(v) => Json(json!({"ok": true, "result": v})).into_response(),
+        Err(e) => err(500, format!("lua error: {e:#}")),
+    }
 }
 
 fn err(code: u16, msg: impl Into<String>) -> axum::response::Response {

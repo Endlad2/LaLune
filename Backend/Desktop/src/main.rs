@@ -7,6 +7,7 @@ mod api;
 mod config;
 mod core_manager;
 mod events;
+mod lua_runtime;
 mod protocol;
 mod settings;
 mod socks5;
@@ -36,6 +37,13 @@ async fn main() -> Result<()> {
     log::info!("LaLune backend starting...");
 
     let state = Arc::new(AppState::new().await?);
+
+    // Инициализируем Lua-рантайм (SmartTunnel + csqtt_decode).
+    if let Err(e) = state.init_lua() {
+        log::error!("[LUA] init failed: {e:#}");
+    } else {
+        log::info!("[LUA] runtime initialized");
+    }
 
     state.maybe_autostart_smarttunnel().await;
 

@@ -181,10 +181,11 @@ jobs:
           done
           rm -rf "$TMP_PF"
           ls -laR Frontend/android/app/src/main/jniLibs/ | head -40
-      - name: Copy SmartTunnel.lua
+      - name: Copy Lua scripts to assets
         run: |
           mkdir -p Frontend/android/app/src/main/assets
-          cp Core/SmartTunnel.lua Frontend/android/app/src/main/assets/SmartTunnel.lua
+          cp Core/SmartTunnel.lua   Frontend/android/app/src/main/assets/SmartTunnel.lua
+          cp Core/csqtt_decode.lua  Frontend/android/app/src/main/assets/csqtt_decode.lua
       - name: Install Pillow
         run: python -m pip install --upgrade pip Pillow
       - name: Generate icons

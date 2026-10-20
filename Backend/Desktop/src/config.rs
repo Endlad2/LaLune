@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // Конфиги: SQLite-хранилище + парсинг csqtt:// и paperflux:// ссылок.
+//
+// ВАЖНО: parse_link() для csqtt:// сначала пробует csqtt_decode.lua
+// (через Lua-рантайм), и только при ошибке — нативный fallback.
 
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
@@ -13,7 +16,6 @@ use parking_lot::Mutex;
 #[serde(rename_all = "camelCase")]
 pub struct ConfigItem {
     pub id: i64,
-    /// "CSQTT" | "PaperFlux"
     #[serde(default)]
     pub protocol: String,
 
@@ -50,7 +52,6 @@ pub struct ConfigItem {
     pub max_token: String,
     #[serde(default)]
     pub max_uid: String,
-    /// Адрес сервера из ссылки (для отображения)
     #[serde(default)]
     pub server: String,
 
@@ -97,7 +98,6 @@ impl ConfigStore {
             "#,
         )?;
 
-        // Миграции для старых БД
         let existing: Vec<String> = conn
             .prepare("PRAGMA table_info(configs)")?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -230,11 +230,15 @@ impl ConfigStore {
 //  Парсинг ссылок
 // ============================================================
 
+/// Парсит ссылку. Для csqtt:// сначала пробует Lua-декодер
+/// (csqtt_decode.lua), затем — нативный fallback.
 pub fn parse_link(link: &str) -> Result<ConfigItem> {
     let link = link.trim();
     let lower = link.to_ascii_lowercase();
 
     if lower.starts_with("csqtt://") {
+        // Сначала пробуем Lua (если инициализирован).
+        // Fallback — нативный парсер.
         parse_csqtt(link)
     } else if lower.starts_with("paperflux://") {
         parse_paperflux(link)
@@ -243,14 +247,42 @@ pub fn parse_link(link: &str) -> Result<ConfigItem> {
     } else if lower.starts_with("tots://") {
         parse_generic(link, "ToTS", "tots://")
     } else if lower.starts_with("openflux://") {
-        // Алиас для paperflux (старые ссылки).
         parse_paperflux(&link.replacen("openflux://", "paperflux://", 1))
     } else {
         Err(anyhow!("unsupported scheme"))
     }
 }
 
-fn parse_csqtt(link: &str) -> Result<ConfigItem> {
+/// Парсит CSQTT-ссылку. Пробует Lua-декодер через глобальный
+/// реестр (см. lua_runtime::decode_csqtt_link). Если Lua не
+/// инициализирован или вернул ошибку — нативный fallback.
+pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
+    // Нативный fallback (работает для plain v=2 и user:pass@host).
+    let native = parse_csqtt_native(link);
+
+    // Если Lua-рантайм доступен — попробуем через него.
+    if let Some(lua) = crate::lua_runtime::global_runtime() {
+        match lua.decode_csqtt_link(link) {
+            Ok(decoded) => {
+                let mut cfg = ConfigItem::default();
+                cfg.protocol = "CSQTT".into();
+                cfg.peer = decoded.peer.clone();
+                cfg.password = decoded.password.clone();
+                cfg.hashes = decoded.hashes.clone();
+                cfg.name = if decoded.name.is_empty() { decoded.peer.clone() } else { decoded.name.clone() };
+                cfg.raw_link = link.to_string();
+                return Ok(cfg);
+            }
+            Err(e) => {
+                log::warn!("[CSQTT] lua decode failed: {e:#}; trying native fallback");
+            }
+        }
+    }
+
+    native
+}
+
+fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
     let rest = link.trim_start_matches("csqtt://");
 
     if let Some(query) = rest.strip_prefix("connect?") {
@@ -315,7 +347,6 @@ fn parse_csqtt(link: &str) -> Result<ConfigItem> {
 }
 
 fn parse_paperflux(link: &str) -> Result<ConfigItem> {
-    // paperflux://config?v=1&id=476&name=AccarFlux&server=...&ip=...&transport=yandex&doc=...&token=...&volga=...
     let rest = link.trim_start_matches("paperflux://");
     let query = rest
         .strip_prefix("config?")
@@ -336,7 +367,6 @@ fn parse_paperflux(link: &str) -> Result<ConfigItem> {
         let mut parts = kv.splitn(2, '=');
         let k = parts.next().unwrap_or("");
         let v = parts.next().unwrap_or("");
-        // URL-decode (у нас ссылка может приходить с %3A%2F%2F).
         let v = url_decode(v);
         match k {
             "id" => id = v,
@@ -372,9 +402,7 @@ fn parse_paperflux(link: &str) -> Result<ConfigItem> {
     cfg.urls = urls;
     cfg.volga_url = volga;
     cfg.server = server.clone();
-    // name = человекочитаемое имя профиля.
     cfg.name = display_name;
-    // peer для отображения — сервер.
     cfg.peer = server;
     cfg.raw_link = link.to_string();
     Ok(cfg)
@@ -412,10 +440,6 @@ fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem>
     cfg.raw_link = link.to_string();
     Ok(cfg)
 }
-
-// ============================================================
-//  URL decode (%XX)
-// ============================================================
 
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();

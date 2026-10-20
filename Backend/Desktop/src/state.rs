@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 use crate::config::{ConfigItem, ConfigStore};
 use crate::core_manager::CoreProcess;
 use crate::events::EventBus;
+use crate::lua_runtime::LuaRuntime;
 use crate::settings::Settings;
 use crate::vpn::VpnRuntime;
 
@@ -20,8 +21,6 @@ pub struct AppState {
     pub settings_path: PathBuf,
     pub logs_path: PathBuf,
     pub token_path: PathBuf,
-    /// Путь к текущему запущенному ядру (csqtt или paperflux).
-    /// Проставляется при connect.
     pub core_path: PathBuf,
 
     pub events: EventBus,
@@ -39,6 +38,9 @@ pub struct AppState {
     pub smarttunnel_running: Mutex<bool>,
 
     pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// Lua-рантайм (SmartTunnel + csqtt_decode).
+    pub lua: Mutex<Option<Arc<LuaRuntime>>>,
 
     shutdown: Notify,
 }
@@ -60,7 +62,6 @@ pub fn app_dir() -> Result<PathBuf> {
     }
 }
 
-/// Возвращает путь к ядру для указанного протокола.
 pub fn core_path_for(app_dir: &PathBuf, protocol_id: &str) -> PathBuf {
     let kind = crate::protocol::ProtocolKind::from_id(protocol_id)
         .unwrap_or(crate::protocol::ProtocolKind::Csqtt);
@@ -76,7 +77,6 @@ impl AppState {
         let settings_path = app_dir.join("settings.json");
         let logs_path = app_dir.join("logs.log");
         let token_path = app_dir.join("token.json");
-        // По умолчанию — CSQTT.
         let core_path = core_path_for(&app_dir, "CSQTT");
 
         let mut settings = if settings_path.exists() {
@@ -115,8 +115,21 @@ impl AppState {
             deploy_log: Mutex::new(String::new()),
             smarttunnel_running: Mutex::new(false),
             socks5: Mutex::new(None),
+            lua: Mutex::new(None),
             shutdown: Notify::new(),
         })
+    }
+
+    /// Инициализирует Lua-рантайм. Вызывать один раз после new().
+    pub fn init_lua(self: &Arc<Self>) -> Result<()> {
+        let runtime = Arc::new(LuaRuntime::new(self.clone())?);
+        *self.lua.lock() = Some(runtime);
+        Ok(())
+    }
+
+    /// Возвращает Lua-рантайм (если инициализирован).
+    pub fn lua(&self) -> Option<Arc<LuaRuntime>> {
+        self.lua.lock().clone()
     }
 
     pub fn log(&self, line: impl Into<String>) {
@@ -129,7 +142,12 @@ impl AppState {
             logs.drain(..drain);
         }
         drop(logs);
-        self.events.emit(crate::events::Event::log(line));
+        self.events.emit(crate::events::Event::log(line.clone()));
+
+        // Прокидываем в Lua on_log().
+        if let Some(lua) = self.lua() {
+            lua.on_log(&line);
+        }
     }
 
     pub fn save_settings(&self) -> Result<()> {
@@ -159,16 +177,13 @@ impl AppState {
     }
 
     pub async fn cleanup(&self) {
-        // SOCKS5
         {
             let handle = { self.socks5.lock().take() };
             if let Some(h) = handle { h.abort(); }
         }
 
-        // VPN
         self.vpn.stop();
 
-        // Core
         let maybe_proc = {
             let mut core = self.core.lock();
             core.take()

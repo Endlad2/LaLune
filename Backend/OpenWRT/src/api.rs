@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// HTTP API. Полностью совпадает с Desktop/src/api.rs.
-// Поддерживает ?source=backend|core|all в /logs*.
+// HTTP API. deviceId удалён. /smarttunnel/* теперь реально
+// дёргают Lua-рантайм.
 
 use axum::{
     extract::{Path, Query, State},
@@ -24,14 +24,18 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::config::{parse_link, ConfigItem};
 use crate::core_manager::{self, CoreProcess};
 use crate::events::Event;
-use crate::state::AppState;
+use crate::protocol::{self, ProtocolKind};
+use crate::state::{self, AppState};
 use crate::vk;
 use crate::vpn;
 
 pub const CORE_PREFIX: &str = "[CORE] ";
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
 
     Router::new()
         .route("/ping", get(ping))
@@ -45,8 +49,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/settings", get(settings_get).put(settings_put).patch(settings_patch))
         .route("/settings/reset", post(settings_reset))
         .route("/settings/:key", get(settings_get_key).put(settings_put_key))
-        .route("/device/id", get(device_id))
-        .route("/device/id/regenerate", post(device_id_regen))
+        .route("/settings-for/:proto", get(settings_for_proto))
         .route("/device/info", get(device_info))
         .route("/vpn/connect", post(vpn_connect))
         .route("/vpn/disconnect", post(vpn_disconnect))
@@ -58,14 +61,21 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/logs/tail", get(logs_tail))
         .route("/logs/stream", get(sse_logs))
         .route("/logs/export", get(logs_export))
-        .route("/core/version", get(core_version))
-        .route("/core/latest", get(core_latest))
-        .route("/core/check", get(core_check))
-        .route("/core/download", post(core_download_async))
-        .route("/core/download/sync", post(core_download_sync))
-        .route("/core/path", get(core_path))
         .route("/core/protocols", get(core_protocols))
-        .route("/core", delete(core_delete))
+        .route("/core/:proto/version", get(core_version_p))
+        .route("/core/:proto/latest", get(core_latest_p))
+        .route("/core/:proto/check", get(core_check_p))
+        .route("/core/:proto/download", post(core_download_async_p))
+        .route("/core/:proto/download/sync", post(core_download_sync_p))
+        .route("/core/:proto/path", get(core_path_p))
+        .route("/core/:proto", delete(core_delete_p))
+        .route("/core/version", get(core_version_alias))
+        .route("/core/latest", get(core_latest_alias))
+        .route("/core/check", get(core_check_alias))
+        .route("/core/download", post(core_download_async_alias))
+        .route("/core/download/sync", post(core_download_sync_alias))
+        .route("/core/path", get(core_path_alias))
+        .route("/core", delete(core_delete_alias))
         .route("/update/check", get(update_check))
         .route("/update/url", get(update_url))
         .route("/vk/token/state", get(vk_state))
@@ -73,6 +83,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vk/token/submit", post(vk_submit))
         .route("/vk/token/validate", get(vk_validate))
         .route("/vk/token/fetch/cancel", post(vk_cancel))
+        .route("/vk/token/raw", get(vk_token_raw))
         .route("/vk/token", delete(vk_delete))
         .route("/vk/calls/start", post(vk_calls_start))
         .route("/vk/calls/stop", post(vk_calls_stop))
@@ -98,21 +109,31 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/debug/echo", post(debug_echo))
         .route("/debug/config", get(debug_config))
         .route("/debug/reload-config", post(debug_reload))
+        .route("/debug/lua", get(debug_lua))
+        .route("/debug/lua/eval", post(debug_lua_eval))
         .layer(cors)
         .with_state(state)
 }
 
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
-        "ok": true, "version": "0.6.0",
-        "os": "linux", "arch": "aarch64", "platform": "openwrt",
+        "ok": true,
+        "version": "0.6.0",
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
         "hostname": hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_default(),
+        "platform": "desktop",
         "uptime": state.uptime(),
     }))
 }
 
 async fn version() -> Json<Value> {
-    Json(json!({ "api": 1, "backend": "0.6.0", "core": "unknown", "ui": "0.6.0" }))
+    Json(json!({
+        "api": 1,
+        "backend": "0.6.0",
+        "core": "unknown",
+        "ui": "0.6.0",
+    }))
 }
 
 async fn shutdown(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -120,9 +141,9 @@ async fn shutdown(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
-async fn sse_events(State(state): State<Arc<AppState>>)
-    -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>>
-{
+async fn sse_events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let mut rx = state.events.subscribe();
     let stream = async_stream::stream! {
         loop {
@@ -139,9 +160,9 @@ async fn sse_events(State(state): State<Arc<AppState>>)
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-async fn sse_logs(State(state): State<Arc<AppState>>)
-    -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>>
-{
+async fn sse_logs(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let mut rx = state.events.subscribe();
     let stream = async_stream::stream! {
         loop {
@@ -166,7 +187,10 @@ async fn configs_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-async fn configs_get(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+async fn configs_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
     match state.configs.get(id) {
         Ok(Some(c)) => Json(json!(c)).into_response(),
         Ok(None) => err(404, "not found"),
@@ -182,51 +206,81 @@ struct ConfigCreateBody {
     password: Option<String>,
     hashes: Option<String>,
     name: Option<String>,
+    #[serde(rename = "profileId")] profile_id: Option<String>,
+    #[serde(rename = "profileToken")] profile_token: Option<String>,
+    #[serde(rename = "clientIp")] client_ip: Option<String>,
+    transport: Option<String>,
+    url: Option<String>,
+    urls: Option<String>,
+    #[serde(rename = "volgaUrl")] volga_url: Option<String>,
+    #[serde(rename = "relayUrl")] relay_url: Option<String>,
+    #[serde(rename = "relayToken")] relay_token: Option<String>,
+    #[serde(rename = "maxToken")] max_token: Option<String>,
+    #[serde(rename = "maxUid")] max_uid: Option<String>,
+    server: Option<String>,
 }
 
-async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
-    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".to_string());
-    let mut config = if let Some(link) = body.link {
-        match parse_link(&link) { Ok(c) => c, Err(e) => return err(400, e.to_string()) }
-    } else {
-        ConfigItem {
-            id: 0, protocol,
-            peer: body.peer.unwrap_or_default(),
-            password: body.password.unwrap_or_default(),
-            hashes: body.hashes.unwrap_or_default(),
-            name: body.name.unwrap_or_default(),
-            raw_link: String::new(),
-        }
+fn body_to_item(body: ConfigCreateBody) -> Result<ConfigItem, String> {
+    if let Some(link) = body.link.as_ref().filter(|l| !l.trim().is_empty()) {
+        return parse_link(link).map_err(|e| e.to_string());
+    }
+    let mut c = ConfigItem::default();
+    c.protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
+    c.peer = body.peer.unwrap_or_default();
+    c.password = body.password.unwrap_or_default();
+    c.hashes = body.hashes.unwrap_or_default();
+    c.name = body.name.unwrap_or_default();
+    c.profile_id = body.profile_id.unwrap_or_default();
+    c.profile_token = body.profile_token.unwrap_or_default();
+    c.client_ip = body.client_ip.unwrap_or_default();
+    c.transport = body.transport.unwrap_or_default();
+    c.url = body.url.unwrap_or_default();
+    c.urls = body.urls.unwrap_or_default();
+    c.volga_url = body.volga_url.unwrap_or_default();
+    c.relay_url = body.relay_url.unwrap_or_default();
+    c.relay_token = body.relay_token.unwrap_or_default();
+    c.max_token = body.max_token.unwrap_or_default();
+    c.max_uid = body.max_uid.unwrap_or_default();
+    c.server = body.server.unwrap_or_default();
+    if c.name.is_empty() {
+        c.name = if c.peer.is_empty() { c.server.clone() } else { c.peer.clone() };
+    }
+    Ok(c)
+}
+
+async fn configs_create(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ConfigCreateBody>,
+) -> impl IntoResponse {
+    let config = match body_to_item(body) {
+        Ok(c) => c,
+        Err(e) => return err(400, e),
     };
-    if config.name.is_empty() { config.name = config.peer.clone(); }
     match state.configs.insert(&config) {
         Ok(id) => Json(json!({"id": id})).into_response(),
         Err(e) => err(500, e.to_string()),
     }
 }
 
-async fn configs_update(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
-    let mut config = if let Some(link) = body.link {
-        match parse_link(&link) { Ok(c) => c, Err(e) => return err(400, e.to_string()) }
-    } else {
-        ConfigItem {
-            id: 0,
-            protocol: body.protocol.unwrap_or_else(|| "CSQTT".to_string()),
-            peer: body.peer.unwrap_or_default(),
-            password: body.password.unwrap_or_default(),
-            hashes: body.hashes.unwrap_or_default(),
-            name: body.name.unwrap_or_default(),
-            raw_link: String::new(),
-        }
+async fn configs_update(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(body): Json<ConfigCreateBody>,
+) -> impl IntoResponse {
+    let config = match body_to_item(body) {
+        Ok(c) => c,
+        Err(e) => return err(400, e),
     };
-    if config.name.is_empty() { config.name = config.peer.clone(); }
     match state.configs.update(id, &config) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, e.to_string()),
     }
 }
 
-async fn configs_delete(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+async fn configs_delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
     match state.configs.delete(id) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, e.to_string()),
@@ -254,10 +308,16 @@ async fn selected_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct SelectedSetBody { id: Option<i64> }
 
-async fn selected_set(State(state): State<Arc<AppState>>, Json(body): Json<SelectedSetBody>) -> impl IntoResponse {
+async fn selected_set(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SelectedSetBody>,
+) -> impl IntoResponse {
     if let Some(id) = body.id {
         match state.configs.get(id) {
-            Ok(Some(c)) => { *state.selected_config.write() = Some(c); Json(json!({"ok": true})).into_response() }
+            Ok(Some(c)) => {
+                *state.selected_config.write() = Some(c);
+                Json(json!({"ok": true})).into_response()
+            }
             Ok(None) => err(404, "config not found"),
             Err(e) => err(500, e.to_string()),
         }
@@ -272,9 +332,24 @@ async fn settings_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!(s))
 }
 
-async fn settings_put(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn settings_for_proto(
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    Json(json!({
+        "protocol": kind.id(),
+        "keys": protocol::settings_keys_for(kind),
+        "linkPlaceholder": protocol::link_placeholder(kind),
+    }))
+}
+
+async fn settings_put(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
     let mut s: crate::settings::Settings = match serde_json::from_value(body) {
-        Ok(s) => s, Err(e) => return err(400, e.to_string()),
+        Ok(s) => s,
+        Err(e) => return err(400, e.to_string()),
     };
     s.normalize();
     *state.settings.write() = s;
@@ -282,7 +357,10 @@ async fn settings_put(State(state): State<Arc<AppState>>, Json(body): Json<Value
     Json(json!({"ok": true})).into_response()
 }
 
-async fn settings_patch(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn settings_patch(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.merge_from_json(body) { return err(400, e.to_string()); }
     *state.settings.write() = s;
@@ -298,7 +376,10 @@ async fn settings_reset(State(state): State<Arc<AppState>>) -> impl IntoResponse
     Json(json!({"ok": true}))
 }
 
-async fn settings_get_key(State(state): State<Arc<AppState>>, Path(key): Path<String>) -> impl IntoResponse {
+async fn settings_get_key(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
     let s = state.settings.read().clone();
     match s.get_field(&key) {
         Some(v) => Json(v).into_response(),
@@ -306,7 +387,11 @@ async fn settings_get_key(State(state): State<Arc<AppState>>, Path(key): Path<St
     }
 }
 
-async fn settings_put_key(State(state): State<Arc<AppState>>, Path(key): Path<String>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn settings_put_key(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.set_field(&key, body) { return err(400, e.to_string()); }
     *state.settings.write() = s;
@@ -314,48 +399,68 @@ async fn settings_put_key(State(state): State<Arc<AppState>>, Path(key): Path<St
     Json(json!({"ok": true})).into_response()
 }
 
-async fn device_id(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let id = state.settings.read().device_id.clone();
-    Json(json!({"deviceId": id}))
-}
-
-async fn device_id_regen(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let new_id = uuid::Uuid::new_v4().to_string().replace('-', "");
-    { let mut s = state.settings.write(); s.device_id = new_id.clone(); }
-    let _ = state.save_settings();
-    Json(json!({"deviceId": new_id}))
-}
-
 async fn device_info() -> impl IntoResponse {
-    let hostname = hostname::get().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let hostname = hostname::get()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     let cores = num_cpus::get();
     Json(json!({
-        "os": "linux", "arch": "aarch64", "platform": "openwrt",
-        "hostname": hostname, "cores": cores, "totalMemMb": 0,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "hostname": hostname,
+        "cores": cores,
+        "totalMemMb": 0,
     }))
 }
 
 #[derive(Deserialize)]
-struct ConnectBody { #[serde(rename = "configId")] config_id: Option<i64> }
+struct ConnectBody {
+    #[serde(rename = "configId")]
+    config_id: Option<i64>,
+}
 
-async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<ConnectBody>) -> impl IntoResponse {
+async fn vpn_connect(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ConnectBody>,
+) -> impl IntoResponse {
     let config = if let Some(id) = body.config_id {
         state.configs.get(id).ok().flatten()
     } else {
         state.selected_config.read().clone()
     };
-    let config = match config { Some(c) => c, None => return err(400, "no config selected") };
 
-    state.log(format!("[VPN] connecting to {}", config.name));
+    let config = match config {
+        Some(c) => c,
+        None => return err(400, "no config selected"),
+    };
 
-    if !state.core_path.exists() {
-        state.log("[VPN] core not found, downloading...");
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-        let version = match core_manager::fetch_latest(&client, &state.events).await {
-            Some(v) => v, None => return err(500, "cannot fetch LATEST"),
-        };
-        if let Err(e) = core_manager::download_core(&client, &version, &state.core_path, &state.events).await {
-            return err(500, format!("download failed: {}", e));
+    let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
+    state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
+
+    let core_path = state::core_path_for(&state.app_dir, kind.id());
+
+    if !core_path.exists() {
+        state.log(format!("[VPN] {} core not found, downloading...", kind.id()));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        match kind {
+            ProtocolKind::Csqtt => {
+                let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                    Some(v) => v,
+                    None => return err(500, "cannot fetch CSQTT LATEST"),
+                };
+                if let Err(e) = core_manager::download_csqtt(&client, &version, &core_path, &state.events).await {
+                    return err(500, format!("download CSQTT failed: {}", e));
+                }
+            }
+            ProtocolKind::PaperFlux => {
+                if let Err(e) = core_manager::download_paperflux(&client, &core_path, &state.events).await {
+                    return err(500, format!("download PaperFlux failed: {}", e));
+                }
+            }
         }
     }
 
@@ -363,19 +468,25 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
     state.log(format!("[VPN] core args: {}", args.join(" ")));
 
-    let core = match CoreProcess::spawn(&state.core_path, &args, &state.logs_path, state.events.clone()).await {
-        Ok(c) => c, Err(e) => return err(500, format!("spawn failed: {}", e)),
+    let core = match CoreProcess::spawn(&core_path, &args, &state.logs_path, state.events.clone()).await {
+        Ok(c) => c,
+        Err(e) => return err(500, format!("spawn failed: {}", e)),
     };
     *state.core.lock() = Some(core);
 
-    // Если включена раздача — запускаем SOCKS5.
-    if settings.share_vpn {
+    if kind == ProtocolKind::Csqtt && settings.share_vpn {
         if let Err(e) = crate::socks5::start(state.clone()) {
             state.log(format!("[PROXY] failed to start: {}", e));
         }
     }
 
+    // Lua on_connect().
+    if let Some(lua) = state.lua() {
+        lua.on_connect();
+    }
+
     let state2 = state.clone();
+    let kind_for_watchdog = kind;
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last_size = 0u64;
@@ -392,9 +503,10 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                         let new_part = &content[start..];
                         for line in new_part.lines() {
                             if let Some((ip, dns)) = vpn::parse_tunconf(line) {
-                                tun_ip = Some(ip); tun_dns = Some(dns);
+                                tun_ip = Some(ip);
+                                tun_dns = Some(dns);
                             }
-                            if let Some((active, _)) = vpn::parse_stats(line) {
+                            if let Some((active, _traffic)) = vpn::parse_stats(line) {
                                 if active > 0 { consecutive_active_ticks += 1; }
                                 else { consecutive_active_ticks = 0; }
                             }
@@ -404,10 +516,26 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                 }
             }
 
-            if tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2 {
-                let ip = tun_ip.clone().unwrap();
-                let dns = tun_dns.clone().unwrap();
-                state2.log(format!("[VPN] TUN params: ip={} dns={}", ip, dns));
+            let ready = match kind_for_watchdog {
+                ProtocolKind::Csqtt => {
+                    tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2
+                }
+                ProtocolKind::PaperFlux => {
+                    consecutive_active_ticks >= 1
+                        || last_size > 0
+                }
+            };
+
+            if ready {
+                let ip = tun_ip.clone()
+                    .unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
+                let dns = tun_dns.clone()
+                    .unwrap_or_else(|| vpn::DEFAULT_DNS.to_string());
+
+                state2.log(format!(
+                    "[VPN] TUN params: ip={} dns={} (proto={})",
+                    ip, dns, kind_for_watchdog.id()
+                ));
 
                 if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
                     state2.log(format!("[VPN] tun start failed: {}", e));
@@ -420,11 +548,13 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                 tun_started = true;
             }
 
-            if !tun_started { tokio::time::sleep(Duration::from_millis(500)).await; }
+            if !tun_started {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
         }
 
         if !tun_started {
-            state2.log("[VPN] timeout: TUNCONF or Активных>0 not seen within 90s");
+            state2.log("[VPN] timeout waiting for TUN/active");
             state2.events.emit(Event::status(false));
         }
     });
@@ -435,15 +565,17 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
 async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.log("[VPN] disconnecting...");
     state.vpn.stop();
-    vpn::cleanup_routes(&state.events);
-
-    // Останавливаем SOCKS5.
+    vpn::cleanup_routes(&state.vpn, &state.events);
     crate::socks5::stop(&state);
 
     let maybe_proc = { let mut core = state.core.lock(); core.take() };
     if let Some(mut p) = maybe_proc { let _ = p.kill().await; }
-
     state.events.emit(Event::status(false));
+
+    if let Some(lua) = state.lua() {
+        lua.on_disconnect();
+    }
+
     Json(json!({"ok": true}))
 }
 
@@ -469,8 +601,6 @@ async fn vpn_tunconf(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let c = state.vpn.tun_conf.lock().clone();
     match c { Some(c) => Json(json!(c)).into_response(), None => Json(json!({})).into_response() }
 }
-
-// ---------- ЛОГИ с фильтром по source ----------
 
 fn filter_logs(all: &[String], source: Option<&str>) -> Vec<String> {
     match source {
@@ -517,50 +647,109 @@ async fn logs_export(
 ) -> impl IntoResponse {
     let logs = state.logs_snapshot();
     let filtered = filter_logs(&logs, q.source.as_deref());
-    (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], filtered.join("\n"))
+    let body = filtered.join("\n");
+    (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], body)
 }
 
-// ---------- остальное без изменений ----------
+async fn core_protocols() -> impl IntoResponse {
+    Json(json!(core_manager::supported_protocols()))
+}
 
-async fn core_version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let version = tokio::fs::read_to_string(state.app_dir.join("LATEST")).await
-        .unwrap_or_default().trim().to_string();
+async fn core_version_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let version = tokio::fs::read_to_string(&latest_file)
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     Json(json!({"version": version}))
 }
 
-async fn core_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_latest_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    match core_manager::fetch_latest(&client, &state.events).await {
+    let v = match kind {
+        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
+        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
+    };
+    match v {
         Some(v) => Json(json!({"version": v})).into_response(),
         None => err(500, "cannot fetch LATEST"),
     }
 }
 
-async fn core_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_check_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let remote = core_manager::fetch_latest(&client, &state.events).await.unwrap_or_default();
-    let local = tokio::fs::read_to_string(state.app_dir.join("LATEST")).await
-        .unwrap_or_default().trim().to_string();
+    let remote = match kind {
+        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
+        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
+    };
+    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let local = tokio::fs::read_to_string(&latest_file)
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let has_update = !remote.is_empty() && remote != local;
     Json(json!({"hasUpdate": has_update, "local": local, "remote": remote}))
 }
 
-async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_download_async_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let state2 = state.clone();
     tokio::spawn(async move {
         state2.events.emit(Event::progress("core_download", 0));
         let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-        if let Some(version) = core_manager::fetch_latest(&client, &state2.events).await {
-            state2.events.emit(Event::progress("core_download", 20));
-            match core_manager::download_core(&client, &version, &state2.core_path, &state2.events).await {
-                Ok(_) => {
-                    let _ = tokio::fs::write(state2.app_dir.join("LATEST"), &version).await;
-                    state2.events.emit(Event::progress("core_download", 100));
+        let dest = crate::state::core_path_for(&state2.app_dir, kind.id());
+        let latest_file = state2.app_dir.join(format!("LATEST.{}", kind.id()));
+
+        match kind {
+            ProtocolKind::Csqtt => {
+                if let Some(version) = core_manager::fetch_latest_csqtt(&client, &state2.events).await {
+                    state2.events.emit(Event::progress("core_download", 20));
+                    match core_manager::download_csqtt(&client, &version, &dest, &state2.events).await {
+                        Ok(_) => {
+                            let _ = tokio::fs::write(&latest_file, &version).await;
+                            state2.events.emit(Event::progress("core_download", 100));
+                            state2.log(format!("[CORE] CSQTT updated to {}", version));
+                        }
+                        Err(e) => {
+                            state2.log(format!("[CORE] CSQTT download failed: {}", e));
+                            state2.events.emit(Event::error(e.to_string()));
+                        }
+                    }
                 }
-                Err(e) => { state2.events.emit(Event::error(e.to_string())); }
+            }
+            ProtocolKind::PaperFlux => {
+                state2.events.emit(Event::progress("core_download", 20));
+                match core_manager::download_paperflux(&client, &dest, &state2.events).await {
+                    Ok(_) => {
+                        let _ = tokio::fs::write(&latest_file, "latest").await;
+                        state2.events.emit(Event::progress("core_download", 100));
+                        state2.log("[CORE] PaperFlux updated".to_string());
+                    }
+                    Err(e) => {
+                        state2.log(format!("[CORE] PaperFlux download failed: {}", e));
+                        state2.events.emit(Event::error(e.to_string()));
+                    }
+                }
             }
         }
         *state2.core_downloading.lock() = false;
@@ -569,34 +758,108 @@ async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoRes
     Json(json!({"ok": true, "async": true})).into_response()
 }
 
-async fn core_download_sync(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn core_download_sync_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
+
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-    let version = match core_manager::fetch_latest(&client, &state.events).await {
-        Some(v) => v, None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+    let dest = crate::state::core_path_for(&state.app_dir, kind.id());
+    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+
+    let result = match kind {
+        ProtocolKind::Csqtt => {
+            let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                Some(v) => v,
+                None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+            };
+            match core_manager::download_csqtt(&client, &version, &dest, &state.events).await {
+                Ok(_) => {
+                    let _ = tokio::fs::write(&latest_file, &version).await;
+                    Ok(version)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        ProtocolKind::PaperFlux => {
+            match core_manager::download_paperflux(&client, &dest, &state.events).await {
+                Ok(_) => {
+                    let _ = tokio::fs::write(&latest_file, "latest").await;
+                    Ok("latest".to_string())
+                }
+                Err(e) => Err(e),
+            }
+        }
     };
-    let result = core_manager::download_core(&client, &version, &state.core_path, &state.events).await;
+
     *state.core_downloading.lock() = false;
     match result {
-        Ok(_) => {
-            let _ = tokio::fs::write(state.app_dir.join("LATEST"), &version).await;
-            Json(json!({"ok": true, "version": version})).into_response()
-        }
+        Ok(v) => Json(json!({"ok": true, "version": v})).into_response(),
         Err(e) => err(500, e.to_string()),
     }
 }
 
-async fn core_path(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({"path": state.core_path.to_string_lossy()}))
+async fn core_path_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let p = crate::state::core_path_for(&state.app_dir, kind.id());
+    Json(json!({"path": p.to_string_lossy()}))
 }
 
-async fn core_protocols() -> impl IntoResponse {
-    Json(json!(core_manager::supported_protocols()))
+async fn core_delete_p(
+    State(state): State<Arc<AppState>>,
+    Path(proto): Path<String>,
+) -> impl IntoResponse {
+    let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let p = crate::state::core_path_for(&state.app_dir, kind.id());
+    let _ = tokio::fs::remove_file(&p).await;
+    Json(json!({"ok": true}))
 }
 
-async fn core_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = tokio::fs::remove_file(&state.core_path).await;
+async fn core_version_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let latest_file = state.app_dir.join("LATEST.Csqtt");
+    let version = tokio::fs::read_to_string(&latest_file).await.unwrap_or_default().trim().to_string();
+    Json(json!({"version": version}))
+}
+
+async fn core_latest_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+    match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+        Some(v) => Json(json!({"version": v})).into_response(),
+        None => err(500, "cannot fetch LATEST"),
+    }
+}
+
+async fn core_check_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+    let remote = core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default();
+    let local = tokio::fs::read_to_string(state.app_dir.join("LATEST.Csqtt"))
+        .await.unwrap_or_default().trim().to_string();
+    let has_update = !remote.is_empty() && remote != local;
+    Json(json!({"hasUpdate": has_update, "local": local, "remote": remote}))
+}
+
+async fn core_download_async_alias(state: State<Arc<AppState>>) -> impl IntoResponse {
+    core_download_async_p(state, Path("CSQTT".into())).await
+}
+
+async fn core_download_sync_alias(state: State<Arc<AppState>>) -> impl IntoResponse {
+    core_download_sync_p(state, Path("CSQTT".into())).await
+}
+
+async fn core_path_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let p = crate::state::core_path_for(&state.app_dir, "CSQTT");
+    Json(json!({"path": p.to_string_lossy()}))
+}
+
+async fn core_delete_alias(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let p = crate::state::core_path_for(&state.app_dir, "CSQTT");
+    let _ = tokio::fs::remove_file(&p).await;
     Json(json!({"ok": true}))
 }
 
@@ -628,14 +891,26 @@ async fn vk_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = state;
-    Json(json!({"ok": true, "needsUi": true, "authUrl": vk::auth_url()})).into_response()
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        match vk::launch_token_fetcher(state.events.clone()).await {
+            Ok(_) => Json(json!({"ok": true, "needsUi": false})).into_response(),
+            Err(e) => err(500, e.to_string()),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Json(json!({"ok": true, "needsUi": true, "authUrl": vk::auth_url()})).into_response()
+    }
 }
 
 #[derive(Deserialize)]
 struct VkSubmitBody { token: String }
 
-async fn vk_submit(State(state): State<Arc<AppState>>, Json(body): Json<VkSubmitBody>) -> impl IntoResponse {
+async fn vk_submit(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VkSubmitBody>,
+) -> impl IntoResponse {
     match vk::save_token(&state.app_dir, &body.token) {
         Ok(_) => { state.log("[VK] token saved via /vk/token/submit"); Json(json!({"ok": true})).into_response() }
         Err(e) => err(500, e.to_string()),
@@ -653,6 +928,11 @@ async fn vk_validate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+async fn vk_token_raw(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let token = vk::read_token(&state.app_dir).unwrap_or_default();
+    Json(json!({"token": token}))
+}
+
 async fn vk_cancel() -> impl IntoResponse { Json(json!({"ok": true})) }
 
 async fn vk_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -667,7 +947,10 @@ struct VkCallsStartBody {
     #[serde(rename = "autoApiWorkers")] auto_api_workers: Option<i32>,
 }
 
-async fn vk_calls_start(State(state): State<Arc<AppState>>, Json(body): Json<VkCallsStartBody>) -> impl IntoResponse {
+async fn vk_calls_start(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VkCallsStartBody>,
+) -> impl IntoResponse {
     let token = match vk::read_token(&state.app_dir) { Some(t) => t, None => return err(400, "no VK token") };
     let settings = state.settings.read().clone();
     let workers = body.workers.unwrap_or(settings.workers);
@@ -697,7 +980,10 @@ async fn vk_calls_start(State(state): State<Arc<AppState>>, Json(body): Json<VkC
 #[derive(Deserialize)]
 struct VkCallsStopBody { #[serde(rename = "callIds")] call_ids: Vec<String> }
 
-async fn vk_calls_stop(State(state): State<Arc<AppState>>, Json(body): Json<VkCallsStopBody>) -> impl IntoResponse {
+async fn vk_calls_stop(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VkCallsStopBody>,
+) -> impl IntoResponse {
     let token = match vk::read_token(&state.app_dir) { Some(t) => t, None => return err(400, "no VK token") };
     let client = vk::VkApiClient::new(token);
     let mut finished = 0;
@@ -711,21 +997,63 @@ async fn vk_calls_stop_all(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
 async fn vk_calls_active() -> impl IntoResponse { Json(json!({"callIds": []})) }
 
+// ============================================================
+//  SmartTunnel — реальные вызовы Lua
+// ============================================================
+
 async fn st_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({"running": *state.smarttunnel_running.lock()}))
+    let running = *state.smarttunnel_running.lock();
+    let lua_available = state.lua().is_some();
+    Json(json!({
+        "running": running,
+        "luaAvailable": lua_available,
+    }))
 }
+
 async fn st_start(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = true;
+    state.log("[SMART-TUNNEL] start");
+    // Вызываем on_load() повторно, если есть.
+    if let Some(lua) = state.lua() {
+        lua.on_connect();
+    }
     Json(json!({"ok": true}))
 }
+
 async fn st_stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = false;
+    state.log("[SMART-TUNNEL] stop");
+    if let Some(lua) = state.lua() {
+        lua.on_disconnect();
+    }
     Json(json!({"ok": true}))
 }
-async fn st_reload() -> impl IntoResponse { Json(json!({"ok": true})) }
-async fn st_logs() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
-async fn st_args() -> impl IntoResponse { Json(json!(Vec::<String>::new())) }
-async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse { Json(json!({"ok": true})) }
+
+async fn st_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.log("[SMART-TUNNEL] reload");
+    // Переинициализируем Lua-рантайм.
+    match state.init_lua() {
+        Ok(_) => Json(json!({"ok": true})),
+        Err(e) => err(500, format!("lua reload failed: {e:#}")),
+    }
+}
+
+async fn st_logs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let logs = state.logs_snapshot();
+    let filtered: Vec<String> = logs
+        .into_iter()
+        .filter(|l| l.starts_with("[SMART-TUNNEL]") || l.starts_with("[LUA]"))
+        .collect();
+    Json(json!(filtered))
+}
+
+async fn st_args() -> impl IntoResponse {
+    Json(json!(Vec::<String>::new()))
+}
+
+async fn st_args_put(Json(_body): Json<Value>) -> impl IntoResponse {
+    Json(json!({"ok": true}))
+}
 
 async fn deploy_stub() -> impl IntoResponse {
     Json(json!({"stub": true, "message": "DeployManager not yet implemented"}))
@@ -740,16 +1068,63 @@ async fn platform_caps() -> impl IntoResponse {
         "canRunTun": true,
         "canDeploy": false,
         "canAutoUpdate": false,
-        "canSendNotifications": false,
-        "canOpenExternalUrl": false,
-        "os": "linux",
-        "platform": "openwrt",
+        "canSendNotifications": true,
+        "canOpenExternalUrl": true,
+        "os": std::env::consts::OS,
+        "platform": "desktop",
     }))
 }
-async fn platform_open_url() -> impl IntoResponse { Json(json!({"ok": true})) }
-async fn platform_notify() -> impl IntoResponse { Json(json!({"ok": true})) }
-async fn platform_open_path() -> impl IntoResponse { Json(json!({"ok": true})) }
-async fn platform_share() -> impl IntoResponse { Json(json!({"ok": true})) }
+
+#[derive(Deserialize)]
+struct OpenUrlBody { url: String }
+
+async fn platform_open_url(Json(body): Json<OpenUrlBody>) -> impl IntoResponse {
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(&body.url).spawn(); }
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &body.url]).spawn(); }
+    Json(json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct NotifyBody { title: String, body: String }
+
+async fn platform_notify(Json(body): Json<NotifyBody>) -> impl IntoResponse {
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("notify-send").args([&body.title, &body.body]).spawn(); }
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "[reflection.assembly]::loadwithpartialname('System.Windows.Forms'); \
+             [System.Windows.Forms.MessageBox]::Show('{}', '{}')",
+            body.body.replace('\'', " "), body.title.replace('\'', " ")
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script]).spawn();
+    }
+    Json(json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct OpenPathBody { path: String }
+
+async fn platform_open_path(Json(body): Json<OpenPathBody>) -> impl IntoResponse {
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(&body.path).spawn(); }
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("explorer").arg(&body.path).spawn(); }
+    Json(json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct ShareBody {
+    #[serde(default)] text: Option<String>,
+    #[serde(default, rename = "filePath")] file_path: Option<String>,
+}
+
+async fn platform_share(Json(_body): Json<ShareBody>) -> impl IntoResponse {
+    Json(json!({"ok": true}))
+}
 
 async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let logs = state.logs_snapshot();
@@ -762,6 +1137,7 @@ async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "vpnStatus": vpn_status,
         "logCount": logs.len(),
         "appDir": state.app_dir.to_string_lossy(),
+        "luaAvailable": state.lua().is_some(),
     }))
 }
 
@@ -775,6 +1151,7 @@ async fn debug_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "logsPath": state.logs_path.to_string_lossy(),
         "tokenPath": state.token_path.to_string_lossy(),
         "corePath": state.core_path.to_string_lossy(),
+        "luaAvailable": state.lua().is_some(),
     }))
 }
 
@@ -786,6 +1163,30 @@ async fn debug_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         }
     }
     Json(json!({"ok": true}))
+}
+
+async fn debug_lua(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(json!({
+        "available": state.lua().is_some(),
+        "smarttunnel_running": *state.smarttunnel_running.lock(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct LuaEvalBody { code: String }
+
+async fn debug_lua_eval(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<LuaEvalBody>,
+) -> impl IntoResponse {
+    let lua = match state.lua() {
+        Some(l) => l,
+        None => return err(500, "lua not initialized"),
+    };
+    match lua.eval_str(&body.code) {
+        Ok(v) => Json(json!({"ok": true, "result": v})).into_response(),
+        Err(e) => err(500, format!("lua error: {e:#}")),
+    }
 }
 
 fn err(code: u16, msg: impl Into<String>) -> axum::response::Response {

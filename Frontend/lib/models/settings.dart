@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// deviceId удалён — новый CSQTT его не использует.
 
 const int kDefaultWorkers = 9;
 const int kMinWorkers = 1;
@@ -18,7 +19,6 @@ class Settings {
   final String obfs;
   final String fingerprint;
   final String clientIds;
-  final String deviceId;
   final String authMode;
   final String turnTransport;
   final String turnHost;
@@ -67,7 +67,6 @@ class Settings {
     this.obfs = 'video',
     this.fingerprint = 'firefox',
     this.clientIds = '8202606,6287487',
-    this.deviceId = '',
     this.authMode = 'manual',
     this.turnTransport = 'udp',
     this.turnHost = '',
@@ -122,7 +121,6 @@ class Settings {
       obfs: (j['obfs'] ?? 'video') as String,
       fingerprint: (j['fingerprint'] ?? 'firefox') as String,
       clientIds: (j['clientIds'] ?? '8202606,6287487') as String,
-      deviceId: (j['deviceId'] ?? '') as String,
       authMode: (j['authMode'] ?? 'manual') as String,
       turnTransport: (j['turnTransport'] ?? 'udp') as String,
       turnHost: (j['turnHost'] ?? '') as String,
@@ -169,7 +167,6 @@ class Settings {
         'obfs': obfs,
         'fingerprint': fingerprint,
         'clientIds': clientIds,
-        'deviceId': deviceId,
         'authMode': authMode,
         'turnTransport': turnTransport,
         'turnHost': turnHost,
@@ -215,7 +212,6 @@ class Settings {
     String? obfs,
     String? fingerprint,
     String? clientIds,
-    String? deviceId,
     String? authMode,
     String? turnTransport,
     String? turnHost,
@@ -260,7 +256,6 @@ class Settings {
         obfs: obfs ?? this.obfs,
         fingerprint: fingerprint ?? this.fingerprint,
         clientIds: clientIds ?? this.clientIds,
-        deviceId: deviceId ?? this.deviceId,
         authMode: authMode ?? this.authMode,
         turnTransport: turnTransport ?? this.turnTransport,
         turnHost: turnHost ?? this.turnHost,
