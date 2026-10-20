@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Настройки. deviceId удалён — новый CSQTT его не использует.
 
 import 'dart:async';
 
@@ -68,19 +70,6 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     } catch (e) {
       state = state.copyWith(error: '$e');
       return false;
-    }
-  }
-
-  Future<String> regenerateDeviceId() async {
-    final api = _ref.read(apiClientProvider);
-    try {
-      final j = await api.postJson('/device/id/regenerate', {});
-      final newId = (j['deviceId'] ?? '') as String;
-      state = state.copyWith(data: state.data.copyWith(deviceId: newId));
-      return newId;
-    } catch (e) {
-      state = state.copyWith(error: '$e');
-      return '';
     }
   }
 

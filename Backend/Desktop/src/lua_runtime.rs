@@ -5,33 +5,30 @@
 // Загружает Core/SmartTunnel.lua и Core/csqtt_decode.lua из app_dir
 // (или из встроенных строк, если файлов нет).
 //
-// Регистрирует глобальную таблицу `smarttunnel` с методами:
-//   log, logs, connect, disconnect, is_connected,
-//   set_args, get_args, get_vk_creds,
-//   get_setting, set_setting
-//
-// Регистрирует модуль `zlib` (inflate через flate2), чтобы
-// csqtt_decode.lua мог разжимать zlib-поток.
-//
-// Вызывает on_load() при старте и on_tick() раз в секунду из
-// отдельного tokio-таска. on_log(line) — на каждую строку лога,
-// которую эмитит бэкенд.
+// Регистрирует глобальную таблицу `smarttunnel` и модуль `zlib`.
+// Вызывает on_load() при старте, on_tick() раз в секунду из tokio-таска,
+// on_log(line) на каждую строку лога, on_connect()/on_disconnect() при VPN.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use mlua::{Lua, Table, Value};
 use parking_lot::Mutex;
 
-use crate::events::Event;
 use crate::state::AppState;
 
-/// Встроенный fallback SmartTunnel.lua (если файла нет в app_dir).
 const SMARTTUNNEL_BUILTIN: &str = include_str!("../../../Core/SmartTunnel.lua");
-/// Встроенный fallback csqtt_decode.lua.
 const CSQTT_DECODE_BUILTIN: &str = include_str!("../../../Core/csqtt_decode.lua");
+
+/// Глобальный singleton — чтобы config.rs мог достать рантайм без
+/// прокидывания Arc<AppState> через всю цепочку парсинга.
+static GLOBAL_LUA: OnceLock<Arc<LuaRuntime>> = OnceLock::new();
+
+/// Возвращает глобальный LuaRuntime, если он инициализирован.
+pub fn global_runtime() -> Option<Arc<LuaRuntime>> {
+    GLOBAL_LUA.get().cloned()
+}
 
 pub struct LuaRuntime {
     lua: Arc<Mutex<Lua>>,
@@ -39,29 +36,18 @@ pub struct LuaRuntime {
 }
 
 impl LuaRuntime {
-    /// Создаёт рантайм, грузит скрипты, регистрирует API и вызывает on_load().
     pub fn new(state: Arc<AppState>) -> Result<Self> {
         let lua = Lua::new();
 
-        // ---- 1. Регистрируем модуль zlib ----
         register_zlib(&lua)?;
 
-        // ---- 2. Регистрируем smarttunnel-таблицу ----
-        // Заглушки — реальные функции подставим после создания Self.
-        // Пока просто пустые, чтобы on_load() не падал.
         {
             let st = lua.create_table()?;
             let f_log = lua.create_function(|_, _msg: String| Ok(()))?;
             st.set("log", f_log)?;
-            let f_logs = lua.create_function(|lua, ()| -> mlua::Result<Table> {
-                lua.create_table()
-            })?;
-            st.set("logs", f_logs)?;
             lua.globals().set("smarttunnel", st)?;
         }
 
-        // ---- 3. Грузим csqtt_decode.lua как модуль ----
-        // Пробуем из app_dir, если нет — из встроенной строки.
         let decode_path = state.app_dir.join("csqtt_decode.lua");
         let decode_src = if decode_path.exists() {
             std::fs::read_to_string(&decode_path)
@@ -70,14 +56,12 @@ impl LuaRuntime {
             CSQTT_DECODE_BUILTIN.to_string()
         };
 
-        // Регистрируем как require("csqtt_decode").
         let package: Table = lua.globals().get("package")?;
         let loaded: Table = package.get("loaded")?;
         let decode_chunk = lua.load(&decode_src).set_name("csqtt_decode");
         let decode_module: Value = decode_chunk.eval()?;
         loaded.set("csqtt_decode", decode_module)?;
 
-        // ---- 4. Грузим SmartTunnel.lua ----
         let smart_path = state.app_dir.join("SmartTunnel.lua");
         let smart_src = if smart_path.exists() {
             std::fs::read_to_string(&smart_path)
@@ -93,13 +77,8 @@ impl LuaRuntime {
             state,
         };
 
-        // ---- 5. Подменяем заглушки на реальные функции ----
         runtime.install_api()?;
-
-        // ---- 6. on_load() ----
-        runtime.call_optional("on_load", ())?;
-
-        // ---- 7. Тикер on_tick() раз в секунду ----
+        runtime.call_optional::<()>("on_load", ())?;
         runtime.spawn_ticker();
 
         Ok(runtime)
@@ -110,7 +89,6 @@ impl LuaRuntime {
         let lua = &*lua_guard;
         let st: Table = lua.globals().get("smarttunnel")?;
 
-        // log(msg)
         {
             let state = self.state.clone();
             let f = lua.create_function(move |_, msg: String| {
@@ -120,7 +98,6 @@ impl LuaRuntime {
             st.set("log", f)?;
         }
 
-        // logs() -> table of strings
         {
             let state = self.state.clone();
             let f = lua.create_function(move |lua, ()| -> mlua::Result<Table> {
@@ -134,8 +111,6 @@ impl LuaRuntime {
             st.set("logs", f)?;
         }
 
-        // connect() — заглушка: реальный connect идёт через HTTP.
-        // Возвращает false, пока не реализовано.
         {
             let state = self.state.clone();
             let f = lua.create_function(move |_, ()| -> mlua::Result<bool> {
@@ -145,7 +120,6 @@ impl LuaRuntime {
             st.set("connect", f)?;
         }
 
-        // disconnect()
         {
             let state = self.state.clone();
             let f = lua.create_function(move |_, ()| -> mlua::Result<bool> {
@@ -155,7 +129,6 @@ impl LuaRuntime {
             st.set("disconnect", f)?;
         }
 
-        // is_connected()
         {
             let state = self.state.clone();
             let f = lua.create_function(move |_, ()| -> mlua::Result<bool> {
@@ -164,7 +137,6 @@ impl LuaRuntime {
             st.set("is_connected", f)?;
         }
 
-        // get_setting(key) -> value (string/number/bool/nil)
         {
             let state = self.state.clone();
             let f = lua.create_function(move |lua, key: String| -> mlua::Result<Value> {
@@ -184,7 +156,6 @@ impl LuaRuntime {
             st.set("get_setting", f)?;
         }
 
-        // set_setting(key, value) — только в памяти, без сохранения.
         {
             let state = self.state.clone();
             let f = lua.create_function(move |_, (key, value): (String, Value)| {
@@ -204,7 +175,6 @@ impl LuaRuntime {
             st.set("set_setting", f)?;
         }
 
-        // get_vk_creds() -> table {token, hashes, userId, expiresIn}
         {
             let state = self.state.clone();
             let f = lua.create_function(move |lua, ()| -> mlua::Result<Table> {
@@ -250,9 +220,12 @@ impl LuaRuntime {
         });
     }
 
-    fn call_optional<A>(&self, name: &str, args: A) -> Result<()>
+    /// Вызывает именованную глобальную функцию, если она определена.
+    /// Аргументы — любые, реализующие `IntoLuaMulti` с произвольным
+    /// временем жизни (через for<'a>).
+    fn call_optional<'a, A>(&self, name: &str, args: A) -> Result<()>
     where
-        A: mlua::IntoLuaMulti,
+        A: mlua::IntoLuaMulti<'a>,
     {
         let guard = self.lua.lock();
         let globals = guard.globals();
@@ -264,7 +237,6 @@ impl LuaRuntime {
         Ok(())
     }
 
-    /// Вызывает on_log(line) если функция определена.
     pub fn on_log(&self, line: &str) {
         if !*self.state.smarttunnel_running.lock() {
             return;
@@ -280,18 +252,14 @@ impl LuaRuntime {
         }
     }
 
-    /// Вызывает on_connect() если функция определена.
     pub fn on_connect(&self) {
         let _ = self.call_optional::<()>("on_connect", ());
     }
 
-    /// Вызывает on_disconnect() если функция определена.
     pub fn on_disconnect(&self) {
         let _ = self.call_optional::<()>("on_disconnect", ());
     }
 
-    /// Декодирует CSQTT-ссылку через csqtt_decode.lua.
-    /// Возвращает таблицу {protocol, peer, host, port, password, hashes, name, raw_link}.
     pub fn decode_csqtt_link(&self, link: &str) -> Result<CsqttDecoded> {
         let guard = self.lua.lock();
         let package: Table = guard.globals().get("package")?;
@@ -318,6 +286,23 @@ impl LuaRuntime {
             raw_link: result.get("raw_link").unwrap_or_else(|_| link.to_string()),
         })
     }
+
+    /// Выполняет произвольный Lua-код, возвращает строковое представление
+    /// результата (для /debug/lua/eval).
+    pub fn eval_str(&self, code: &str) -> Result<String> {
+        let guard = self.lua.lock();
+        let val: Value = guard
+            .load(code)
+            .set_name("eval")
+            .eval()
+            .map_err(|e| anyhow!("{}", e))?;
+        Ok(format!("{:?}", val))
+    }
+
+    /// Регистрирует рантайм как глобальный singleton.
+    pub fn install_global(self: Arc<Self>) {
+        let _ = GLOBAL_LUA.set(self);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -332,32 +317,8 @@ pub struct CsqttDecoded {
     pub raw_link: String,
 }
 
-// ============================================================
-//  Модуль zlib для Lua
-// ============================================================
-
 fn register_zlib(lua: &Lua) -> Result<()> {
-    let zlib = lua.create_table()?;
-
-    let inflate = lua.create_function(|_, data: mlua::String| -> mlua::Result<mlua::String> {
-        use std::io::Read;
-        let bytes = data.as_bytes();
-        let mut decoder = flate2::read::ZlibDecoder::new(&bytes[..]);
-        let mut out = Vec::new();
-        decoder
-            .read_to_end(&mut out)
-            .map_err(|e| mlua::Error::RuntimeError(format!("inflate: {}", e)))?;
-        // Возвращаем как строку — lua.create_string принимает &[u8].
-        // mlua::String::from не принимает Vec, поэтому через lua.create_string.
-        // Хак: возвращаем через mlua::String::from_utf8_lossy — но это меняет байты.
-        // Правильно: использовать lua.create_string(&out) и вернуть Value.
-        Ok(()) // placeholder, заменим ниже
-    })?;
-    drop(inflate);
-    let _ = zlib;
-
-    // Правильная реализация через mlua::Function с доступом к Lua.
-    let inflate2 = lua.create_function(|lua, data: mlua::String| -> mlua::Result<mlua::String> {
+    let inflate = lua.create_function(|lua, data: mlua::String| -> mlua::Result<mlua::String> {
         use std::io::Read;
         let bytes = data.as_bytes();
         let mut decoder = flate2::read::ZlibDecoder::new(&bytes[..]);
@@ -369,10 +330,9 @@ fn register_zlib(lua: &Lua) -> Result<()> {
     })?;
 
     let zlib = lua.create_table()?;
-    zlib.set("inflate", inflate2)?;
+    zlib.set("inflate", inflate)?;
     lua.globals().set("zlib", zlib.clone())?;
 
-    // Также регистрируем через package.loaded, чтобы require("zlib") работал.
     let package: Table = lua.globals().get("package")?;
     let loaded: Table = package.get("loaded")?;
     loaded.set("zlib", zlib)?;

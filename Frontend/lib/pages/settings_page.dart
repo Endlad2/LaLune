@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки. Состав полей зависит от protocol выбранного конфига.
-//  * CSQTT     → peer / password / hashes / auth / obfs / fingerprint / ...
-//  * PaperFlux → транспорт (список) + поля из конфига или выбранного транспорта
-//
-// Всегда поверх: shareVpn (SOCKS) + showCoreLogs.
+// Настройки. deviceId удалён — новый CSQTT его не использует.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,7 +19,6 @@ import '../widgets/input_row.dart';
 import '../widgets/router_modal.dart';
 import '../widgets/toast.dart';
 
-/// Список транспортов PaperFlux (см. ТЗ).
 const _pfTransports = <String>[
   'yandex',
   'vyandex',
@@ -36,7 +31,6 @@ const _pfTransports = <String>[
   'direct',
 ];
 
-/// Документные транспорты — для них показываем url/urls/volga.
 const _pfDocTransports = <String>{
   'yandex', 'vyandex', 'boards', 'mtslink', 'cupsonline', 'mailru', 'oneme',
 };
@@ -60,7 +54,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _workersCtl = TextEditingController();
   final _autoApiWorkersCtl = TextEditingController();
   final _clientIdsCtl = TextEditingController();
-  final _deviceIdCtl = TextEditingController();
 
   // PaperFlux
   final _pfUrlCtl = TextEditingController();
@@ -98,7 +91,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _workersCtl.dispose();
     _autoApiWorkersCtl.dispose();
     _clientIdsCtl.dispose();
-    _deviceIdCtl.dispose();
     _pfUrlCtl.dispose();
     _pfUrlsCtl.dispose();
     _pfVolgaCtl.dispose();
@@ -135,13 +127,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _workersCtl.text = s.workers.toString();
     _autoApiWorkersCtl.text = s.autoApiWorkers.toString();
     _clientIdsCtl.text = s.clientIds;
-    _deviceIdCtl.text = s.deviceId;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
     _enableSmartTunnel = s.enableSmartTunnel;
     _showCoreLogs = s.showCoreLogs;
     _shareVpn = s.shareVpn;
 
-    // PaperFlux
     _pfTransport = s.pfTransport.isEmpty ? 'yandex' : s.pfTransport;
     _pfMode = s.pfMode.isEmpty ? 'proxy' : s.pfMode;
     _pfTcpRecovery = s.pfTcpRecovery.isEmpty ? 'auto' : s.pfTcpRecovery;
@@ -197,7 +187,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       enableSmartTunnel: _enableSmartTunnel,
       showCoreLogs: _showCoreLogs,
       shareVpn: _shareVpn,
-      // PaperFlux
       pfTransport: _pfTransport,
       pfUrl: _pfUrlCtl.text.trim(),
       pfUrls: _pfUrlsCtl.text.trim(),
@@ -221,17 +210,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     Toast.show(context,
         ok ? 'Настройки сохранены' : 'Ошибка сохранения настроек',
         isError: !ok);
-  }
-
-  Future<void> _regenDeviceId() async {
-    final id = await ref.read(settingsProvider.notifier).regenerateDeviceId();
-    if (!mounted) return;
-    if (id.isNotEmpty) {
-      setState(() {
-        _deviceIdCtl.text = id;
-        _s = _s.copyWith(deviceId: id);
-      });
-    }
   }
 
   void _setAuthMode(String mode, VkTokenState vk) {
@@ -318,23 +296,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               GlassCard(child: _buildMainBlock()),
               const SizedBox(height: 18),
 
-              // Авторизация только для CSQTT.
               if (!_isPaperFlux) ...[
                 _sectionTitle('Авторизация'),
                 _buildAuthBlock(vk),
                 const SizedBox(height: 18),
               ],
 
-              // Продвинутые настройки — разные для протоколов.
               _sectionTitle(_isPaperFlux ? 'Настройки PaperFlux' : 'Продвинутые настройки'),
               if (_isPaperFlux)
                 GlassCard(child: _buildPaperFluxBlock())
               else
                 GlassCard(child: _buildCsqttAdvancedBlock()),
 
-              const SizedBox(height: 18),
-              _sectionTitle('Device ID'),
-              GlassCard(child: _buildDeviceIdBlock()),
               const SizedBox(height: 18),
 
               _sectionTitle('Экспериментальное'),
@@ -353,10 +326,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ),
     );
   }
-
-  // ============================================================
-  //  Main
-  // ============================================================
 
   Widget _buildMainBlock() {
     final cfg = _selectedConfig;
@@ -392,14 +361,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ),
           ),
 
-        // CSQTT-only поля (readonly — берутся из конфига).
         if (!_isPaperFlux) ...[
           InputRow(label: 'Peer', controller: _peerCtl, readOnly: true),
           InputRow(
               label: 'Password', controller: _passwordCtl, readOnly: true),
         ],
 
-        // Workers — у обоих.
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 5),
           child: Row(
@@ -429,10 +396,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ],
     );
   }
-
-  // ============================================================
-  //  CSQTT advanced
-  // ============================================================
 
   Widget _buildCsqttAdvancedBlock() {
     return Column(
@@ -473,10 +436,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     );
   }
 
-  // ============================================================
-  //  PaperFlux advanced
-  // ============================================================
-
   Widget _buildPaperFluxBlock() {
     final docTransport = _pfDocTransports.contains(_pfTransport);
     final relayTransport = _pfTransport == 'relayv2';
@@ -484,7 +443,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Транспорт — самым верхним, списком.
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 5),
           child: Row(
@@ -514,7 +472,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         ),
 
-        // Общие для PaperFlux.
         InputRow(
             label: 'Client IP',
             controller: _pfClientIpCtl,
@@ -529,7 +486,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           _markDirty();
         }),
 
-        // Документные поля — для doc-транспортов.
         if (docTransport) ...[
           const SizedBox(height: 8),
           const _SubHeader('Документы'),
@@ -547,7 +503,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               onChanged: (_) => _markDirty()),
         ],
 
-        // Relay v2.
         if (relayTransport) ...[
           const SizedBox(height: 8),
           const _SubHeader('Relay V2'),
@@ -565,7 +520,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               onChanged: (_) => _markDirty()),
         ],
 
-        // MAX / OneMe — только если transport = oneme/mailru/boards.
         if (_pfTransport == 'oneme' || _pfTransport == 'mailru' || _pfTransport == 'boards') ...[
           const SizedBox(height: 8),
           const _SubHeader('MAX / OneMe'),
@@ -581,10 +535,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ],
     );
   }
-
-  // ============================================================
-  //  Auth (CSQTT)
-  // ============================================================
 
   Widget _buildAuthBlock(VkTokenState vk) {
     final hasToken = vk.hasToken;
@@ -691,34 +641,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ),
           ),
         ],
-      ],
-    );
-  }
-
-  // ============================================================
-  //  Device ID / Experimental
-  // ============================================================
-
-  Widget _buildDeviceIdBlock() {
-    return Column(
-      children: [
-        InputRow(label: 'Device ID', controller: _deviceIdCtl, readOnly: true),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: _regenDeviceId,
-            icon: const Icon(Icons.refresh, size: 16),
-            label: const Text('Перегенерировать'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white,
-              side: BorderSide(color: Colors.white.withOpacity(0.2)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-          ),
-        ),
       ],
     );
   }
@@ -873,10 +795,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ],
     );
   }
-
-  // ============================================================
-  //  Мелкие хелперы
-  // ============================================================
 
   Widget _authOption(String value, String title, String subtitle,
       {required bool enabled, required VkTokenState vk}) {

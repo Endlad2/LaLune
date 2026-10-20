@@ -39,7 +39,6 @@ pub struct AppState {
 
     pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
 
-    /// Lua-рантайм (SmartTunnel + csqtt_decode).
     pub lua: Mutex<Option<Arc<LuaRuntime>>>,
 
     shutdown: Notify,
@@ -121,13 +120,14 @@ impl AppState {
     }
 
     /// Инициализирует Lua-рантайм. Вызывать один раз после new().
+    /// Также регистрирует рантайм как глобальный singleton (для config.rs).
     pub fn init_lua(self: &Arc<Self>) -> Result<()> {
         let runtime = Arc::new(LuaRuntime::new(self.clone())?);
+        runtime.clone().install_global();
         *self.lua.lock() = Some(runtime);
         Ok(())
     }
 
-    /// Возвращает Lua-рантайм (если инициализирован).
     pub fn lua(&self) -> Option<Arc<LuaRuntime>> {
         self.lua.lock().clone()
     }
@@ -144,7 +144,6 @@ impl AppState {
         drop(logs);
         self.events.emit(crate::events::Event::log(line.clone()));
 
-        // Прокидываем в Lua on_log().
         if let Some(lua) = self.lua() {
             lua.on_log(&line);
         }

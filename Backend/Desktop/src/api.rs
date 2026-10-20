@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// HTTP API. deviceId удалён. /smarttunnel/* теперь реально
-// дёргают Lua-рантайм.
+// HTTP API. deviceId удалён. /smarttunnel/* реально дёргают Lua.
 
 use axum::{
     extract::{Path, Query, State},
@@ -480,7 +479,6 @@ async fn vpn_connect(
         }
     }
 
-    // Lua on_connect().
     if let Some(lua) = state.lua() {
         lua.on_connect();
     }
@@ -1013,7 +1011,6 @@ async fn st_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn st_start(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     *state.smarttunnel_running.lock() = true;
     state.log("[SMART-TUNNEL] start");
-    // Вызываем on_load() повторно, если есть.
     if let Some(lua) = state.lua() {
         lua.on_connect();
     }
@@ -1029,11 +1026,12 @@ async fn st_stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-async fn st_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+// ИСПРАВЛЕНО: оба match-arm'а приводятся к axum::response::Response
+// через .into_response(), чтобы типы совпали.
+async fn st_reload(State(state): State<Arc<AppState>>) -> axum::response::Response {
     state.log("[SMART-TUNNEL] reload");
-    // Переинициализируем Lua-рантайм.
     match state.init_lua() {
-        Ok(_) => Json(json!({"ok": true})),
+        Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, format!("lua reload failed: {e:#}")),
     }
 }
@@ -1178,7 +1176,7 @@ struct LuaEvalBody { code: String }
 async fn debug_lua_eval(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LuaEvalBody>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let lua = match state.lua() {
         Some(l) => l,
         None => return err(500, "lua not initialized"),
