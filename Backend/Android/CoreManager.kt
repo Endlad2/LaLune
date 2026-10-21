@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Ядро: CSQTT + PaperFlux. Скачивание, запуск, парсинг логов.
-//
-// PaperFlux на Android ставится как libopenflux.so в jniLibs (по ABI),
-// но запускается через Process.start — как и CSQTT.
+// Ядро: CSQTT + PaperFlux. deviceId удалён из аргументов CSQTT.
 
 package com.lalune.lalune
 
@@ -62,10 +59,6 @@ class CoreManager(private val context: Context) {
     var isRunning: Boolean = false
         private set
 
-    // ============================================================
-    //  Ассеты
-    // ============================================================
-
     fun getCoreName(protocol: String): String? {
         val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
         return when (protocol.uppercase()) {
@@ -75,21 +68,15 @@ class CoreManager(private val context: Context) {
                 abi.contains("x86_64") -> "libclient-android-x86_64.so"
                 else -> null
             }
-            PROTO_PAPERFLUX.uppercase() -> {
-                // libopenflux.so ставится в jniLibs/<abi>/
-                "libopenflux.so"
-            }
+            PROTO_PAPERFLUX.uppercase() -> "libopenflux.so"
             else -> null
         }
     }
 
-    /** Asset-имя в GitHub Releases для скачивания. */
     private fun getRemoteAssetName(protocol: String): String? {
         return when (protocol.uppercase()) {
             PROTO_CSQTT.uppercase() -> getCoreName(PROTO_CSQTT)
             PROTO_PAPERFLUX.uppercase() -> {
-                // На Android ядро распространяется как zip с 4 ABI.
-                // Скачиваем один файл — подходящий для текущей ABI.
                 val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
                 when {
                     abi.contains("arm64") -> "arm64-v8a/libopenflux.so"
@@ -105,18 +92,12 @@ class CoreManager(private val context: Context) {
 
     fun getCorePath(protocol: String): String? {
         val name = getCoreName(protocol) ?: return null
-        // 1) nativeLibraryDir — если .so вшита в APK.
         val native = File(context.applicationInfo.nativeLibraryDir, name)
         if (native.exists()) return native.absolutePath
-        // 2) Скачанный кэш.
         val cached = File(coreDir, name)
         if (cached.exists() && cached.length() > 1024) return cached.absolutePath
         return null
     }
-
-    // ============================================================
-    //  LATEST
-    // ============================================================
 
     fun readLatest(protocol: String = PROTO_CSQTT): String = try {
         val f = latestFileFor(protocol)
@@ -156,10 +137,6 @@ class CoreManager(private val context: Context) {
         return null
     }
 
-    // ============================================================
-    //  Download
-    // ============================================================
-
     fun downloadCore(protocol: String = PROTO_CSQTT): Boolean {
         return if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true)) {
             downloadPaperFlux()
@@ -188,7 +165,6 @@ class CoreManager(private val context: Context) {
             abi.contains("x86") -> "x86"
             else -> return false
         }
-        // В releases лежит zip с папками ABI. Скачиваем zip и достаём нужный .so.
         val zipUrl = "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-android.zip"
         Log.i(TAG, "[CORE] downloading PaperFlux $zipUrl")
 
@@ -209,7 +185,6 @@ class CoreManager(private val context: Context) {
                     }
                     if (tmpZip.length() < 1024) { tmpZip.delete(); continue }
 
-                    // Распаковываем ТОЛЬКО нужный .so.
                     val dest = File(coreDir, "libopenflux.so")
                     if (extractFileFromZip(tmpZip, "$abiDir/libopenflux.so", dest)) {
                         dest.setExecutable(true, false)
@@ -275,14 +250,6 @@ class CoreManager(private val context: Context) {
         return false
     }
 
-    // ============================================================
-    //  startCore
-    // ============================================================
-
-    /**
-     * Универсальный запуск: для CSQTT — по peer/password/hashes,
-     * для PaperFlux — по готовому списку args.
-     */
     fun startCore(
         protocol: String = PROTO_CSQTT,
         peer: String = "",
@@ -299,7 +266,6 @@ class CoreManager(private val context: Context) {
         val finalArgs = if (args != null) {
             listOf(corePath) + args
         } else {
-            // CSQTT-ветка (для обратной совместимости).
             buildCsqttArgs(corePath, peer, password, hashes)
         }
 
@@ -337,6 +303,7 @@ class CoreManager(private val context: Context) {
         }
     }
 
+    /** buildCsqttArgs: deviceId УБРАН — новое ядро его не принимает. */
     private fun buildCsqttArgs(
         corePath: String,
         peer: String,
@@ -360,13 +327,6 @@ class CoreManager(private val context: Context) {
         val captchaMode = settings.optString("captchaMode", "auto")
         val turnTransport = settings.optString("turnTransport", "udp")
 
-        var deviceId = settings.optString("deviceId", "")
-        if (deviceId.isBlank()) {
-            deviceId = java.util.UUID.randomUUID().toString().replace("-", "")
-            settings.put("deviceId", deviceId)
-            try { settingsFile.writeText(settings.toString()) } catch (_: Exception) {}
-        }
-
         val normalized = hashes.replace(' ', ',').replace('\t', ',')
             .replace('\n', ',').replace('\r', ',')
         val clean = normalized.split(',').map { it.trim() }
@@ -385,7 +345,7 @@ class CoreManager(private val context: Context) {
             "-vk-auth-mode", vkAuthMode,
             "-captcha-mode", captchaMode,
             "-turn-transport", turnTransport,
-            "-device-id", deviceId,
+            // deviceId УБРАН.
         )
         if (clean.isNotEmpty()) {
             args.add("-vk")
