@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Глобальное состояние (то же, что в Desktop).
+// Глобальное состояние OpenWRT.
+//
+// Отличия от Desktop:
+//   * только CSQTT (нет PaperFlux)
+//   * core_path = app_dir/csqtt-client-aarch64 (фиксированное имя)
+//   * Lua-рантайм через mlua 5.4
 
 use anyhow::{anyhow, Result};
 use parking_lot::{Mutex, RwLock};
@@ -11,6 +16,7 @@ use tokio::sync::Notify;
 use crate::config::{ConfigItem, ConfigStore};
 use crate::core_manager::CoreProcess;
 use crate::events::EventBus;
+use crate::lua_runtime::LuaRuntime;
 use crate::settings::Settings;
 use crate::vpn::VpnRuntime;
 
@@ -36,8 +42,9 @@ pub struct AppState {
     pub deploy_log: Mutex<String>,
     pub smarttunnel_running: Mutex<bool>,
 
-    /// SOCKS5-сервер для раздачи VPN.
     pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    pub lua: Mutex<Option<Arc<LuaRuntime>>>,
 
     shutdown: Notify,
 }
@@ -45,6 +52,13 @@ pub struct AppState {
 pub fn app_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot resolve HOME"))?;
     Ok(home.join(".la-lune"))
+}
+
+/// Путь к ядру CSQTT на OpenWRT (фиксированное имя).
+pub fn core_path_for(app_dir: &PathBuf, protocol_id: &str) -> PathBuf {
+    // На OpenWRT только CSQTT, имя фиксировано.
+    let _ = protocol_id;
+    app_dir.join(crate::core_manager::core_filename())
 }
 
 impl AppState {
@@ -70,10 +84,18 @@ impl AppState {
         let configs = ConfigStore::open(&configs_path)?;
         let events = EventBus::new(1024);
 
-        events.emit(crate::events::Event::log(format!("[INFO] app dir: {}", app_dir.display())));
+        events.emit(crate::events::Event::log(format!(
+            "[INFO] app dir: {}",
+            app_dir.display()
+        )));
 
         Ok(Self {
-            app_dir, configs_path, settings_path, logs_path, token_path, core_path,
+            app_dir,
+            configs_path,
+            settings_path,
+            logs_path,
+            token_path,
+            core_path,
             events,
             settings: RwLock::new(settings),
             selected_config: RwLock::new(None),
@@ -86,8 +108,20 @@ impl AppState {
             deploy_log: Mutex::new(String::new()),
             smarttunnel_running: Mutex::new(false),
             socks5: Mutex::new(None),
+            lua: Mutex::new(None),
             shutdown: Notify::new(),
         })
+    }
+
+    pub fn init_lua(self: &Arc<Self>) -> Result<()> {
+        let runtime = Arc::new(LuaRuntime::new(self.clone())?);
+        runtime.clone().install_global();
+        *self.lua.lock() = Some(runtime);
+        Ok(())
+    }
+
+    pub fn lua(&self) -> Option<Arc<LuaRuntime>> {
+        self.lua.lock().clone()
     }
 
     pub fn log(&self, line: impl Into<String>) {
@@ -95,9 +129,16 @@ impl AppState {
         log::info!("{}", line);
         let mut logs = self.logs.lock();
         logs.push(line.clone());
-        if logs.len() > 1000 { let d = logs.len() - 1000; logs.drain(..d); }
+        if logs.len() > 1000 {
+            let drain = logs.len() - 1000;
+            logs.drain(..drain);
+        }
         drop(logs);
-        self.events.emit(crate::events::Event::log(line));
+        self.events.emit(crate::events::Event::log(line.clone()));
+
+        if let Some(lua) = self.lua() {
+            lua.on_log(&line);
+        }
     }
 
     pub fn save_settings(&self) -> Result<()> {
@@ -106,7 +147,9 @@ impl AppState {
         Ok(())
     }
 
-    pub fn logs_snapshot(&self) -> Vec<String> { self.logs.lock().clone() }
+    pub fn logs_snapshot(&self) -> Vec<String> {
+        self.logs.lock().clone()
+    }
 
     pub async fn maybe_autostart_smarttunnel(&self) {
         let enabled = self.settings.read().enable_smart_tunnel;
@@ -116,19 +159,32 @@ impl AppState {
         }
     }
 
-    pub fn notify_shutdown(&self) { self.shutdown.notify_waiters(); }
-    pub async fn shutdown_notified(&self) { self.shutdown.notified().await; }
+    pub fn notify_shutdown(&self) {
+        self.shutdown.notify_waiters();
+    }
+
+    pub async fn shutdown_notified(&self) {
+        self.shutdown.notified().await;
+    }
 
     pub async fn cleanup(&self) {
-        // Останавливаем SOCKS5.
         {
             let handle = { self.socks5.lock().take() };
             if let Some(h) = handle { h.abort(); }
         }
+
         self.vpn.stop();
-        let maybe_proc = { let mut core = self.core.lock(); core.take() };
-        if let Some(mut p) = maybe_proc { let _ = p.kill().await; }
+
+        let maybe_proc = {
+            let mut core = self.core.lock();
+            core.take()
+        };
+        if let Some(mut p) = maybe_proc {
+            let _ = p.kill().await;
+        }
     }
 
-    pub fn uptime(&self) -> u64 { 0 }
+    pub fn uptime(&self) -> u64 {
+        0
+    }
 }

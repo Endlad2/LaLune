@@ -2,17 +2,15 @@
 //!
 //! Cross-platform Rust crate for parsing and decrypting `csqtt://` links.
 //!
-//! Формат:
-//! ```text
-//! csqtt://<base64url(iv || ciphertext || tag)>
-//! ```
-//! AES-256-GCM, ключ = SHA-256("csqtt-chiper-key"), IV = 12 байт.
-//!
 //! ## C ABI (для Android/iOS)
 //!
 //! Экспортирует `csqtt_link_parse` — возвращает JSON-строку (malloc),
 //! которую надо освободить через `csqtt_link_free`.
 //! Также `csqtt_link_last_error` — вернуть текст последней ошибки.
+//!
+//! На Android дополнительно регистрируется `mod jni_wrapper` (см. ниже),
+//! который экспортирует `Java_com_lalune_lalune_CsqttLink_nativeParse`
+//! и т.д. для вызова из Kotlin.
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -22,32 +20,24 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-/// The cipher key seed used by CSQTT client and server.
 pub const CSQTT_CIPHER_KEY_SEED: &str = "csqtt-chiper-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CsqttLinkError {
     #[error("link does not start with csqtt://")]
     InvalidScheme,
-
     #[error("invalid base64 payload: {0}")]
     InvalidBase64(String),
-
     #[error("payload too short (expected at least {expected} bytes, got {actual})")]
     PayloadTooShort { expected: usize, actual: usize },
-
     #[error("decryption failed: authentication tag mismatch")]
     DecryptionFailed,
-
     #[error("decrypted payload is not valid UTF-8")]
     InvalidUtf8,
-
     #[error("invalid plaintext format: {0}")]
     InvalidFormat(String),
-
     #[error("missing required parameter: {0}")]
     MissingParameter(String),
-
     #[error("invalid value for parameter {name}: {value}")]
     InvalidParameter { name: String, value: String },
 }
@@ -71,7 +61,6 @@ impl CsqttLink {
         format!("{}:{}", formatted_host, self.port)
     }
 
-    /// Готовая ссылка `csqtt://connect?v=2&...` из распарсенных полей.
     pub fn to_link(&self) -> String {
         let mut out = String::from("csqtt://connect?v=2");
         out.push_str("&host=");
@@ -85,12 +74,7 @@ impl CsqttLink {
         if !self.hashes.is_empty() {
             out.push_str("&hashes=");
             out.push_str(
-                &self
-                    .hashes
-                    .iter()
-                    .map(|h| url_encode(h))
-                    .collect::<Vec<_>>()
-                    .join("+"),
+                &self.hashes.iter().map(|h| url_encode(h)).collect::<Vec<_>>().join("+"),
             );
         }
         if !self.vk_access_token.is_empty() {
@@ -147,10 +131,7 @@ fn decode_base64_payload(clean: &str) -> Result<Vec<u8>, CsqttLinkError> {
 }
 
 pub fn decrypt_csqtt_payload(raw_payload: &str) -> Result<String, CsqttLinkError> {
-    let clean = raw_payload
-        .replace('\n', "")
-        .replace('\r', "")
-        .replace(' ', "");
+    let clean = raw_payload.replace('\n', "").replace('\r', "").replace(' ', "");
     let bytes = decode_base64_payload(&clean)?;
 
     const MIN_LEN: usize = 12 + 16;
@@ -180,7 +161,6 @@ pub fn parse_csqtt_link(raw: &str) -> Result<CsqttLink, CsqttLinkError> {
         .strip_prefix("csqtt://")
         .ok_or(CsqttLinkError::InvalidScheme)?
         .trim();
-
     let plaintext = decrypt_csqtt_payload(payload)?;
     parse_plaintext(&plaintext)
 }
@@ -224,7 +204,6 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         .get("v")
         .ok_or_else(|| CsqttLinkError::MissingParameter("v".into()))
         .map(|s| decode_query_component(s))?;
-
     if version != "2" {
         return Err(CsqttLinkError::InvalidFormat(format!(
             "unsupported version: {}",
@@ -236,7 +215,6 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         .get("host")
         .ok_or_else(|| CsqttLinkError::MissingParameter("host".into()))
         .map(|s| decode_query_component(s))?;
-
     if host.is_empty() {
         return Err(CsqttLinkError::MissingParameter("host".into()));
     }
@@ -255,14 +233,12 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         .get("peer")
         .ok_or_else(|| CsqttLinkError::MissingParameter("peer".into()))
         .map(|s| decode_query_component(s))?;
-
     let port: u16 = port_str
         .parse()
         .map_err(|_| CsqttLinkError::InvalidParameter {
             name: "peer".into(),
             value: port_str.clone(),
         })?;
-
     if port == 0 {
         return Err(CsqttLinkError::InvalidParameter {
             name: "peer".into(),
@@ -276,7 +252,6 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         .unwrap_or_default()
         .trim()
         .to_string();
-
     if !password.is_empty() && password.chars().any(|c| c.is_whitespace()) {
         return Err(CsqttLinkError::InvalidParameter {
             name: "password".into(),
@@ -288,12 +263,10 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         None => Vec::new(),
         Some(raw) => parse_link_hashes(raw)?,
     };
-
     let vk_access_token = match params.get("token") {
         None => String::new(),
         Some(raw) => parse_vk_token(raw)?,
     };
-
     if !hashes.is_empty() && !vk_access_token.is_empty() {
         return Err(CsqttLinkError::InvalidFormat(
             "hashes and token are mutually exclusive".into(),
@@ -386,11 +359,7 @@ fn parse_raw_query(raw: &str) -> Option<std::collections::BTreeMap<String, Strin
         return Some(extracted);
     }
 
-    if !result.is_empty() {
-        Some(result)
-    } else {
-        None
-    }
+    if !result.is_empty() { Some(result) } else { None }
 }
 
 fn decode_query_component(value: &str) -> String {
@@ -523,7 +492,7 @@ fn url_encode(input: &str) -> String {
 }
 
 // ============================================================
-//  C ABI (для Android/iOS/JNI)
+//  C ABI
 // ============================================================
 
 use std::ffi::{CStr, CString};
@@ -540,13 +509,6 @@ fn set_last_error(msg: String) {
     });
 }
 
-/// Парсит `csqtt://` ссылку, возвращает JSON-строку.
-/// Строку нужно освободить через `csqtt_link_free`.
-/// В случае ошибки возвращает NULL, а текст ошибки можно получить
-/// через `csqtt_link_last_error`.
-///
-/// # Safety
-/// `input` — валидный указатель на null-terminated UTF-8 строку.
 #[no_mangle]
 pub unsafe extern "C" fn csqtt_link_parse(input: *const c_char) -> *mut c_char {
     if input.is_null() {
@@ -585,10 +547,6 @@ pub unsafe extern "C" fn csqtt_link_parse(input: *const c_char) -> *mut c_char {
     }
 }
 
-/// Освобождает строку, возвращённую `csqtt_link_parse`.
-///
-/// # Safety
-/// `ptr` должен быть результатом `csqtt_link_parse` (или NULL).
 #[no_mangle]
 pub unsafe extern "C" fn csqtt_link_free(ptr: *mut c_char) {
     if !ptr.is_null() {
@@ -596,11 +554,6 @@ pub unsafe extern "C" fn csqtt_link_free(ptr: *mut c_char) {
     }
 }
 
-/// Возвращает текст последней ошибки (в текущем потоке) или NULL.
-///
-/// # Safety
-/// Указатель валиден, пока не будет очищен `csqtt_link_clear_error`
-/// или следующей ошибкой.
 #[no_mangle]
 pub unsafe extern "C" fn csqtt_link_last_error() -> *const c_char {
     LAST_ERROR.with(|cell| {
@@ -619,11 +572,6 @@ pub unsafe extern "C" fn csqtt_link_clear_error() {
     });
 }
 
-/// Возвращает строку `csqtt://connect?v=2&...` из переданной `csqtt://`-ссылки,
-/// либо NULL при ошибке.
-///
-/// # Safety
-/// `input` — валидный указатель на null-terminated UTF-8 строку.
 #[no_mangle]
 pub unsafe extern "C" fn csqtt_link_decode(input: *const c_char) -> *mut c_char {
     if input.is_null() {
@@ -651,3 +599,10 @@ pub unsafe extern "C" fn csqtt_link_decode(input: *const c_char) -> *mut c_char 
         }
     }
 }
+
+// ============================================================
+//  JNI (только Android)
+// ============================================================
+
+#[cfg(target_os = "android")]
+mod jni_wrapper;
