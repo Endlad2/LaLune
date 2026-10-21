@@ -2,9 +2,12 @@
 //
 // Android-конфиг Flutter-проекта.
 //
-// Добавлена зависимость LuaJ — чистый Java-интерпретатор Lua 5.2
-// (без NDK/JNI/внешних .so). Используется в Backend/Android/LuaRuntime.kt
-// для SmartTunnel + csqtt_decode.
+// csqtt-link упаковывается как ELF-бинарник в jniLibs/<abi>/libcsqtt-link.so.
+// ВАЖНО: APK-упаковщик по умолчанию сжимает .so → ProcessBuilder не сможет
+// exec-нуть файл (EACCES). Поэтому useLegacyPackaging = true +
+// keepDebugSymbols для libcsqtt-link.so, чтобы файл шёл в APK без сжатия.
+//
+// LuaJ — чистый Java Lua 5.2 интерпретатор, используется в LuaRuntime.kt.
 
 plugins {
     id("com.android.application")
@@ -42,10 +45,18 @@ android {
 
     packaging {
         jniLibs {
+            // Оставляем .so без сжатия — это критично для csqtt-link,
+            // потому что он запускается как ELF-бинарник через ProcessBuilder,
+            // а не грузится через System.loadLibrary.
             useLegacyPackaging = true
+
+            // Явно просим не сжимать и не резать debug symbols у нашего ELF.
+            // В большинстве AGP-версий этого достаточно вместе с
+            // useLegacyPackaging = true.
+            keepDebugSymbols += setOf(
+                "**/libcsqtt-link.so",
+            )
         }
-        // LuaJ-jse не содержит дубликатов META-INF, но на всякий случай
-        // исключаем типичные конфликты.
         resources {
             excludes += setOf(
                 "META-INF/DEPENDENCIES",

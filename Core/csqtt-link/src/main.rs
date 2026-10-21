@@ -1,7 +1,18 @@
 //! `csqtt-link` — CLI для парсинга и дешифровки `csqtt://` ссылок.
 //!
-//! Читает ссылки из `--url`, позиционных аргументов или stdin.
-//! По умолчанию печатает расшифрованную ссылку `csqtt://connect?...`.
+//! На Android этот бинарник лежит в `jniLibs/<abi>/libcsqtt-link.so`
+//! и запускается из Kotlin через `ProcessBuilder` с аргументом
+//! `--json <link>`. На Desktop/Linux/Windows — обычный CLI.
+//!
+//! Режимы:
+//!   csqtt-link <link>              — human-readable
+//!   csqtt-link --json <link>       — JSON в stdout
+//!   echo <link> | csqtt-link       — stdin
+//!
+//! Exit codes:
+//!   0 — OK
+//!   1 — ошибка парсинга/дешифровки
+//!   2 — usage error
 
 use clap::{Parser, ValueEnum};
 use csqtt_link::{decrypt_csqtt_payload, parse_csqtt_link, CsqttLink, CsqttLinkError};

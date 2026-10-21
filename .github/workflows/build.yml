@@ -197,6 +197,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
       - name: Use preinstalled Android SDK
         run: |
           if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
@@ -211,6 +216,49 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
           ls -la "$ANDROID_HOME/ndk/" || true
+
+      # ============================================================
+      #  csqtt-link: собрать как бинарник для Android (все ABI)
+      #  и положить в jniLibs/<abi>/libcsqtt-link.so
+      # ============================================================
+      - name: Build csqtt-link for Android (all ABIs)
+        working-directory: Core/csqtt-link
+        run: |
+          set -euo pipefail
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          export TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          export PATH="$TOOLCHAIN/bin:$PATH"
+
+          # ---- arm64-v8a ----
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android24-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          cargo build --release --target aarch64-linux-android
+          mkdir -p ../../Frontend/android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/csqtt-link \
+             ../../Frontend/android/app/src/main/jniLibs/arm64-v8a/libcsqtt-link.so
+
+          # ---- armeabi-v7a ----
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$TOOLCHAIN/bin/armv7a-linux-androideabi24-clang"
+          export CC_armv7_linux_androideabi="$TOOLCHAIN/bin/armv7a-linux-androideabi24-clang"
+          export AR_armv7_linux_androideabi="$TOOLCHAIN/bin/llvm-ar"
+          cargo build --release --target armv7-linux-androideabi
+          mkdir -p ../../Frontend/android/app/src/main/jniLibs/armeabi-v7a
+          cp target/armv7-linux-androideabi/release/csqtt-link \
+             ../../Frontend/android/app/src/main/jniLibs/armeabi-v7a/libcsqtt-link.so
+
+          # ---- x86_64 ----
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/x86_64-linux-android24-clang"
+          export CC_x86_64_linux_android="$TOOLCHAIN/bin/x86_64-linux-android24-clang"
+          export AR_x86_64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          cargo build --release --target x86_64-linux-android
+          mkdir -p ../../Frontend/android/app/src/main/jniLibs/x86_64
+          cp target/x86_64-linux-android/release/csqtt-link \
+             ../../Frontend/android/app/src/main/jniLibs/x86_64/libcsqtt-link.so
+
+          echo "=== jniLibs after csqtt-link build ==="
+          ls -la ../../Frontend/android/app/src/main/jniLibs/*/libcsqtt-link.so
+
       - name: Copy Android backend
         run: |
           DST="Frontend/android/app/src/main/kotlin/com/lalune/lalune"
@@ -230,10 +278,25 @@ jobs:
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
-      - name: Copy SmartTunnel.lua
+      - name: Download PaperFlux cores (jniLibs)
+        run: |
+          TMP_PF=$(mktemp -d)
+          curl -L --fail --retry 3 -o "$TMP_PF/paperflux-android.zip" \
+            https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-android.zip
+          unzip -o "$TMP_PF/paperflux-android.zip" -d "$TMP_PF/extracted"
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            mkdir -p "Frontend/android/app/src/main/jniLibs/$abi"
+            SRC="$TMP_PF/extracted/$abi/libopenflux.so"
+            if [ -f "$SRC" ]; then
+              cp "$SRC" "Frontend/android/app/src/main/jniLibs/$abi/libopenflux.so"
+            fi
+          done
+          rm -rf "$TMP_PF"
+      - name: Copy Lua scripts to assets
         run: |
           mkdir -p Frontend/android/app/src/main/assets
-          cp Core/SmartTunnel.lua Frontend/android/app/src/main/assets/SmartTunnel.lua
+          cp Core/SmartTunnel.lua   Frontend/android/app/src/main/assets/SmartTunnel.lua
+          cp Core/csqtt_decode.lua  Frontend/android/app/src/main/assets/csqtt_decode.lua
       - name: Install Pillow (для make_icons.py)
         run: python -m pip install --upgrade pip Pillow
 
@@ -251,6 +314,13 @@ jobs:
       - name: Build Android APK (debug)
         working-directory: Frontend
         run: flutter build apk --debug
+
+      - name: Verify csqtt-link in APK
+        run: |
+          set -euo pipefail
+          APK=$(find Frontend/build/app/outputs/flutter-apk -name "app-debug.apk" -type f | head -n 1)
+          echo "APK: $APK"
+          unzip -l "$APK" | grep -E 'libcsqtt-link|libclient-android|libopenflux' || true
 
       - name: Locate & rename APK
         id: find_apk

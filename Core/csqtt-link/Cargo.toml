@@ -9,8 +9,10 @@ license = "PolyForm-Noncommercial-1.0.0"
 [lib]
 name = "csqtt_link"
 path = "src/lib.rs"
-# На non-Android: lib + staticlib (staticlib для iOS).
-# cdylib (для Android libcsqtt_decode.so) добавляется через [target.'cfg(...)'].
+# lib для Desktop/OpenWRT (как зависимость),
+# staticlib для iOS (линкуется в tunnel-extension).
+# cdylib НЕ нужен: на Android запускается как ELF-бинарник через
+# ProcessBuilder, на musl cdylib не поддерживается.
 crate-type = ["lib", "staticlib"]
 
 [[bin]]
@@ -27,9 +29,6 @@ clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-[target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
-
 [dev-dependencies]
 hex = "0.4"
 assert_cmd = "2.0"
@@ -40,3 +39,4 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"

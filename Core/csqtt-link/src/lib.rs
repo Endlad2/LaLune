@@ -2,15 +2,17 @@
 //!
 //! Cross-platform Rust crate for parsing and decrypting `csqtt://` links.
 //!
-//! ## C ABI (для Android/iOS)
+//! ## C ABI (для iOS staticlib)
 //!
-//! Экспортирует `csqtt_link_parse` — возвращает JSON-строку (malloc),
-//! которую надо освободить через `csqtt_link_free`.
-//! Также `csqtt_link_last_error` — вернуть текст последней ошибки.
+//! Экспортирует `csqtt_link_parse` / `csqtt_link_decode` / `csqtt_link_free`
+//! / `csqtt_link_last_error` / `csqtt_link_clear_error`.
 //!
-//! На Android дополнительно регистрируется `mod jni_wrapper` (см. ниже),
-//! который экспортирует `Java_com_lalune_lalune_CsqttLink_nativeParse`
-//! и т.д. для вызова из Kotlin.
+//! ## Android
+//!
+//! На Android этот крейт собирается как **бинарник** `csqtt-link` и
+//! кладётся в `jniLibs/<abi>/libcsqtt-link.so` (имя `.so` обязательно,
+//! чтобы Gradle упаковал файл в APK). Запускается из Kotlin через
+//! `ProcessBuilder` — как обычный ELF-бинарник. JNI не используется.
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -492,7 +494,7 @@ fn url_encode(input: &str) -> String {
 }
 
 // ============================================================
-//  C ABI
+//  C ABI (для iOS staticlib)
 // ============================================================
 
 use std::ffi::{CStr, CString};
@@ -599,10 +601,3 @@ pub unsafe extern "C" fn csqtt_link_decode(input: *const c_char) -> *mut c_char 
         }
     }
 }
-
-// ============================================================
-//  JNI (только Android)
-// ============================================================
-
-#[cfg(target_os = "android")]
-mod jni_wrapper;

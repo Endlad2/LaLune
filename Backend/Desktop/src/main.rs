@@ -29,21 +29,23 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // По умолчанию — debug, чтобы видеть все наши [PARSE] / [CSQTT-LINK] / [LUA] логи.
+    // Переопределяется переменной RUST_LOG (например RUST_LOG=info).
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
+        env_logger::Env::default().default_filter_or("debug"),
     )
     .format_timestamp_millis()
     .init();
 
-    log::info!("LaLune backend starting...");
+    log::info!("LaLune backend starting (default log level = debug)...");
+    log::info!("Set RUST_LOG=info to reduce noise, RUST_LOG=trace for more.");
 
     let state = Arc::new(AppState::new().await?);
+    log::info!("AppState created, app_dir={}", state.app_dir.display());
 
-    // Инициализируем Lua-рантайм (SmartTunnel + csqtt_decode).
-    if let Err(e) = state.init_lua() {
-        log::error!("[LUA] init failed: {e:#}");
-    } else {
-        log::info!("[LUA] runtime initialized");
+    match state.init_lua() {
+        Ok(_) => log::info!("[LUA] state.init_lua() OK"),
+        Err(e) => log::error!("[LUA] state.init_lua() FAILED: {e:#}"),
     }
 
     state.maybe_autostart_smarttunnel().await;
@@ -53,6 +55,8 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], 1062));
     let listener = TcpListener::bind(addr).await?;
     log::info!("API listening on http://{}", addr);
+    log::info!("Try: curl http://127.0.0.1:1062/debug/config");
+    log::info!("Try: curl -X POST http://127.0.0.1:1062/configs -H 'Content-Type: application/json' -d '{{\"link\":\"csqtt://...\"}}'");
 
     let state_for_shutdown = state.clone();
     axum::serve(listener, app)

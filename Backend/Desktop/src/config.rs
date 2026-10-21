@@ -5,7 +5,10 @@
 // Приоритет парсеров для csqtt://:
 //   1. csqtt-link (Rust, AES-256-GCM) — основной
 //   2. Lua (csqtt_decode.lua) — если пользователь положил файл
-//   3. Нативный (plain v=2 / user:pass@host) — fallback для старых ссылок
+//   3. Нативный (plain v=2 / user:pass@host) — fallback
+//
+// Логирование: щедрое, на уровне INFO/WARN, чтобы всё было видно
+// в /logs/tail и в stderr бэкенда без RUST_LOG=debug.
 
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
@@ -22,8 +25,6 @@ pub struct ConfigItem {
     pub id: i64,
     #[serde(default)]
     pub protocol: String,
-
-    // -------- CSQTT --------
     #[serde(default)]
     pub peer: String,
     #[serde(default)]
@@ -32,8 +33,6 @@ pub struct ConfigItem {
     pub hashes: String,
     #[serde(default)]
     pub name: String,
-
-    // -------- PaperFlux --------
     #[serde(default)]
     pub profile_id: String,
     #[serde(default)]
@@ -58,7 +57,6 @@ pub struct ConfigItem {
     pub max_uid: String,
     #[serde(default)]
     pub server: String,
-
     #[serde(default)]
     pub raw_link: String,
 }
@@ -70,6 +68,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn open(path: &Path) -> Result<Self> {
+        log::info!("[CONFIG] opening SQLite at {}", path.display());
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -125,10 +124,12 @@ impl ConfigStore {
         ];
         for (col, def) in want {
             if !existing.iter().any(|c| c == col) {
+                log::info!("[CONFIG] migrating: ADD COLUMN {}", col);
                 conn.execute(&format!("ALTER TABLE configs ADD COLUMN {col} {def}"), [])?;
             }
         }
 
+        log::info!("[CONFIG] SQLite ready");
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -168,6 +169,7 @@ impl ConfigStore {
         let rows = stmt.query_map([], Self::row_to_item)?;
         let mut out = Vec::new();
         for row in rows { out.push(row?); }
+        log::info!("[CONFIG] list: {} configs", out.len());
         Ok(out)
     }
 
@@ -184,6 +186,10 @@ impl ConfigStore {
     }
 
     pub fn insert(&self, c: &ConfigItem) -> Result<i64> {
+        log::info!(
+            "[CONFIG] insert: protocol={} peer={} password_len={} hashes_len={} name={}",
+            c.protocol, c.peer, c.password.len(), c.hashes.len(), c.name
+        );
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO configs (
@@ -198,10 +204,13 @@ impl ConfigStore {
                 c.relay_url, c.relay_token, c.max_token, c.max_uid, c.server,
             ],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        log::info!("[CONFIG] inserted id={}", id);
+        Ok(id)
     }
 
     pub fn update(&self, id: i64, c: &ConfigItem) -> Result<()> {
+        log::info!("[CONFIG] update id={} protocol={}", id, c.protocol);
         let conn = self.conn.lock();
         let n = conn.execute(
             "UPDATE configs SET
@@ -220,10 +229,12 @@ impl ConfigStore {
             ],
         )?;
         if n == 0 { return Err(anyhow!("config {} not found", id)); }
+        log::info!("[CONFIG] updated id={}", id);
         Ok(())
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
+        log::info!("[CONFIG] delete id={}", id);
         let conn = self.conn.lock();
         conn.execute("DELETE FROM configs WHERE id = ?", params![id])?;
         Ok(())
@@ -234,9 +245,23 @@ impl ConfigStore {
 //  Парсинг ссылок
 // ============================================================
 
+fn short_link(link: &str) -> String {
+    let s = link.trim();
+    if s.chars().count() <= 80 {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(60).collect();
+        let tail: String = s.chars().rev().take(12).collect::<String>()
+            .chars().rev().collect();
+        format!("{}...{} (len={})", head, tail, s.chars().count())
+    }
+}
+
 pub fn parse_link(link: &str) -> Result<ConfigItem> {
     let link = link.trim();
     let lower = link.to_ascii_lowercase();
+
+    log::info!("[PARSE] scheme-detect link={}", short_link(link));
 
     if lower.starts_with("csqtt://") {
         parse_csqtt(link)
@@ -249,20 +274,25 @@ pub fn parse_link(link: &str) -> Result<ConfigItem> {
     } else if lower.starts_with("openflux://") {
         parse_paperflux(&link.replacen("openflux://", "paperflux://", 1))
     } else {
+        log::warn!("[PARSE] unsupported scheme: {:?}", &link.chars().take(20).collect::<String>());
         Err(anyhow!("unsupported scheme"))
     }
 }
 
 /// Парсит csqtt:// ссылку.
-///
-/// Приоритет:
-///   1. csqtt-link (Rust, AES-256-GCM) — рекомендованный
-///   2. Lua (csqtt_decode.lua) — если пользователь положил скрипт
-///   3. Нативный (plain v=2 / user:pass@host) — fallback
+/// Приоритет: csqtt-link → Lua → нативный.
 pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
-    // 1. csqtt-link
+    log::info!("[PARSE][CSQTT] === start ===");
+    log::info!("[PARSE][CSQTT] raw link = {}", short_link(link));
+
+    // ---- 1. csqtt-link ----
+    log::info!("[PARSE][CSQTT] trying csqtt-link (AES-256-GCM)...");
     match csqtt_link_bridge::parse(link) {
         Ok(parsed) => {
+            log::info!(
+                "[PARSE][CSQTT] csqtt-link OK: host={} port={} password_len={} hashes={}",
+                parsed.host, parsed.port, parsed.password.len(), parsed.hashes.len()
+            );
             let mut cfg = ConfigItem::default();
             cfg.protocol = "CSQTT".into();
             cfg.peer = parsed.peer_address();
@@ -270,38 +300,64 @@ pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
             cfg.hashes = parsed.hashes.join(",");
             cfg.name = parsed.peer_address();
             cfg.raw_link = link.to_string();
+            log::info!("[PARSE][CSQTT] === success via csqtt-link ===");
             return Ok(cfg);
         }
         Err(e) => {
-            log::debug!("[CSQTT] csqtt-link failed: {e:#}; trying Lua fallback");
+            log::warn!("[PARSE][CSQTT] csqtt-link FAILED: {:#}", e);
         }
     }
 
-    // 2. Lua
-    if let Some(lua) = crate::lua_runtime::global_runtime() {
-        match lua.decode_csqtt_link(link) {
-            Ok(decoded) => {
-                let mut cfg = ConfigItem::default();
-                cfg.protocol = "CSQTT".into();
-                cfg.peer = decoded.peer.clone();
-                cfg.password = decoded.password.clone();
-                cfg.hashes = decoded.hashes.clone();
-                cfg.name = if decoded.name.is_empty() {
-                    decoded.peer.clone()
-                } else {
-                    decoded.name.clone()
-                };
-                cfg.raw_link = link.to_string();
-                return Ok(cfg);
+    // ---- 2. Lua ----
+    let lua = crate::lua_runtime::global_runtime();
+    match lua {
+        Some(lua) => {
+            log::info!("[PARSE][CSQTT] trying Lua (csqtt_decode.lua)...");
+            match lua.decode_csqtt_link(link) {
+                Ok(decoded) => {
+                    log::info!(
+                        "[PARSE][CSQTT] lua OK: peer={} password_len={} hashes_len={}",
+                        decoded.peer, decoded.password.len(), decoded.hashes.len()
+                    );
+                    let mut cfg = ConfigItem::default();
+                    cfg.protocol = "CSQTT".into();
+                    cfg.peer = decoded.peer.clone();
+                    cfg.password = decoded.password.clone();
+                    cfg.hashes = decoded.hashes.clone();
+                    cfg.name = if decoded.name.is_empty() {
+                        decoded.peer.clone()
+                    } else {
+                        decoded.name.clone()
+                    };
+                    cfg.raw_link = link.to_string();
+                    log::info!("[PARSE][CSQTT] === success via Lua ===");
+                    return Ok(cfg);
+                }
+                Err(e) => {
+                    log::warn!("[PARSE][CSQTT] Lua FAILED: {:#}", e);
+                }
             }
-            Err(e) => {
-                log::debug!("[CSQTT] lua decode failed: {e:#}; trying native fallback");
-            }
+        }
+        None => {
+            log::warn!("[PARSE][CSQTT] Lua runtime not initialized, skip");
         }
     }
 
-    // 3. Нативный fallback
-    parse_csqtt_native(link)
+    // ---- 3. Нативный fallback ----
+    log::info!("[PARSE][CSQTT] trying native fallback (plain v=2 / user:pass@host)...");
+    match parse_csqtt_native(link) {
+        Ok(cfg) => {
+            log::info!("[PARSE][CSQTT] === success via native fallback ===");
+            Ok(cfg)
+        }
+        Err(e) => {
+            log::error!("[PARSE][CSQTT] native fallback FAILED: {:#}", e);
+            log::error!("[PARSE][CSQTT] === all parsers failed ===");
+            Err(anyhow!(
+                "csqtt:// invalid format (csqtt-link: not AES-GCM; lua: unavailable; native: expected connect?v=2 or user:pass@host)"
+            ))
+        }
+    }
 }
 
 fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
@@ -327,7 +383,7 @@ fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
         }
 
         if host.is_empty() || port.is_empty() || password.is_empty() {
-            return Err(anyhow!("csqtt:// missing host/peer/password"));
+            return Err(anyhow!("csqtt://connect? missing host/peer/password"));
         }
 
         let hashes: Vec<String> = hashes_raw
@@ -365,10 +421,14 @@ fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
         return Ok(cfg);
     }
 
-    Err(anyhow!("csqtt:// invalid format"))
+    Err(anyhow!(
+        "csqtt:// not connect? and not user:pass@host — got {} chars",
+        rest.chars().count()
+    ))
 }
 
 fn parse_paperflux(link: &str) -> Result<ConfigItem> {
+    log::info!("[PARSE][PAPERFLUX] {}", short_link(link));
     let rest = link.trim_start_matches("paperflux://");
     let query = rest
         .strip_prefix("config?")
@@ -427,10 +487,12 @@ fn parse_paperflux(link: &str) -> Result<ConfigItem> {
     cfg.name = display_name;
     cfg.peer = server;
     cfg.raw_link = link.to_string();
+    log::info!("[PARSE][PAPERFLUX] OK: server={} transport={}", cfg.server, cfg.transport);
     Ok(cfg)
 }
 
 fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem> {
+    log::info!("[PARSE][{}] {}", protocol, short_link(link));
     let rest = link.trim_start_matches(prefix);
     let mut peer = String::new();
     let mut password = String::new();

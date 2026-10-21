@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Lua-рантайм для OpenWRT. Идентичен Desktop, но с учётом того, что
-// на OpenWRT нет PaperFlux и flate2 тоже включён в Cargo.toml.
+// Lua-рантайм для SmartTunnel + csqtt_decode (OpenWRT).
 //
-// Ключевые решения:
-//   * Lua 5.4 (mlua, vendored).
-//   * Lua держится в parking_lot::Mutex<Lua>.
-//   * Никаких generic-функций с IntoLuaMulti<'a> — отдельные методы
-//     для on_load / on_tick / on_connect / on_disconnect / on_log.
+// decode_csqtt_link: ВСЁ, что держит borrow guard, живёт внутри
+// блока { ... }. Наружу выходит только Result<CsqttDecoded>.
+// Это тот же фикс E0505/E0597, что в Desktop-версии.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -34,49 +31,78 @@ pub struct LuaRuntime {
 
 impl LuaRuntime {
     pub fn new(state: Arc<AppState>) -> Result<Self> {
+        log::info!("[LUA] init: creating Lua 5.4 VM");
         let lua = Lua::new();
 
+        log::info!("[LUA] init: registering zlib.inflate");
         register_zlib(&lua)?;
 
         {
+            log::info!("[LUA] init: creating smarttunnel placeholder table");
             let st = lua.create_table()?;
             let f_log = lua.create_function(|_, _msg: String| Ok(()))?;
             st.set("log", f_log)?;
             lua.globals().set("smarttunnel", st)?;
         }
 
-        // csqtt_decode.lua (блок ограничивает borrow package/loaded)
         {
             let decode_path = state.app_dir.join("csqtt_decode.lua");
             let decode_src = if decode_path.exists() {
-                std::fs::read_to_string(&decode_path)
-                    .with_context(|| format!("read {}", decode_path.display()))?
+                log::info!("[LUA] init: loading csqtt_decode.lua from {}", decode_path.display());
+                match std::fs::read_to_string(&decode_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!(
+                            "[LUA] init: read {} failed: {:#}; using builtin",
+                            decode_path.display(), e
+                        );
+                        CSQTT_DECODE_BUILTIN.to_string()
+                    }
+                }
             } else {
+                log::info!(
+                    "[LUA] init: csqtt_decode.lua not on disk, using builtin ({} bytes)",
+                    CSQTT_DECODE_BUILTIN.len()
+                );
                 CSQTT_DECODE_BUILTIN.to_string()
             };
 
             {
                 let package: Table = lua.globals().get("package")?;
                 let loaded: Table = package.get("loaded")?;
-                let decode_module: Value = lua
-                    .load(&decode_src)
-                    .set_name("csqtt_decode")
-                    .eval()
-                    .with_context(|| "eval csqtt_decode.lua")?;
-                loaded.set("csqtt_decode", decode_module)?;
+                match lua.load(&decode_src).set_name("csqtt_decode").eval::<Value>() {
+                    Ok(decode_module) => {
+                        loaded.set("csqtt_decode", decode_module)?;
+                        log::info!("[LUA] init: csqtt_decode module registered");
+                    }
+                    Err(e) => {
+                        log::error!("[LUA] init: eval csqtt_decode.lua FAILED: {:#}", e);
+                        return Err(anyhow!("csqtt_decode.lua eval: {:#}", e));
+                    }
+                }
             }
         }
 
-        // SmartTunnel.lua
         {
             let smart_path = state.app_dir.join("SmartTunnel.lua");
             let smart_src = if smart_path.exists() {
+                log::info!("[LUA] init: loading SmartTunnel.lua from {}", smart_path.display());
                 std::fs::read_to_string(&smart_path)
                     .with_context(|| format!("read {}", smart_path.display()))?
             } else {
+                log::info!(
+                    "[LUA] init: SmartTunnel.lua not on disk, using builtin ({} bytes)",
+                    SMARTTUNNEL_BUILTIN.len()
+                );
                 SMARTTUNNEL_BUILTIN.to_string()
             };
-            lua.load(&smart_src).set_name("SmartTunnel").exec()?;
+            match lua.load(&smart_src).set_name("SmartTunnel").exec() {
+                Ok(_) => log::info!("[LUA] init: SmartTunnel.lua executed"),
+                Err(e) => {
+                    log::error!("[LUA] init: SmartTunnel.lua FAILED: {:#}", e);
+                    return Err(anyhow!("SmartTunnel.lua exec: {:#}", e));
+                }
+            }
         }
 
         let runtime = Self {
@@ -84,10 +110,16 @@ impl LuaRuntime {
             state,
         };
 
+        log::info!("[LUA] init: installing smarttunnel API");
         runtime.install_api()?;
+
+        log::info!("[LUA] init: calling on_load()");
         runtime.call_on_load()?;
+
+        log::info!("[LUA] init: starting ticker");
         runtime.spawn_ticker();
 
+        log::info!("[LUA] === runtime initialized ===");
         Ok(runtime)
     }
 
@@ -183,6 +215,7 @@ impl LuaRuntime {
             })?)?;
         }
 
+        log::info!("[LUA] install_api: all 9 methods registered");
         Ok(())
     }
 
@@ -191,9 +224,14 @@ impl LuaRuntime {
         let state = self.state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut tick = 0u64;
             loop {
                 interval.tick().await;
                 if !*state.smarttunnel_running.lock() { continue; }
+                tick += 1;
+                if tick % 60 == 0 {
+                    log::debug!("[LUA] ticker: {} ticks", tick);
+                }
                 let guard = lua.lock();
                 let res: mlua::Result<()> = (|| {
                     let f: Value = guard.globals().get("on_tick")?;
@@ -204,6 +242,7 @@ impl LuaRuntime {
                 })();
                 if let Err(e) = res {
                     drop(guard);
+                    log::warn!("[LUA] on_tick error: {:#}", e);
                     state.log(format!("[LUA] on_tick error: {}", e));
                 }
             }
@@ -214,7 +253,15 @@ impl LuaRuntime {
         let guard = self.lua.lock();
         let f: Value = guard.globals().get("on_load").unwrap_or(Value::Nil);
         if let Value::Function(func) = f {
-            func.call::<_, ()>(()).context("on_load")?;
+            match func.call::<_, ()>(()) {
+                Ok(_) => log::info!("[LUA] on_load() OK"),
+                Err(e) => {
+                    log::warn!("[LUA] on_load() error: {:#}", e);
+                    return Err(anyhow!("on_load: {:#}", e));
+                }
+            }
+        } else {
+            log::info!("[LUA] on_load() not defined");
         }
         Ok(())
     }
@@ -231,6 +278,7 @@ impl LuaRuntime {
     }
 
     pub fn on_connect(&self) {
+        log::info!("[LUA] on_connect() invoked");
         let guard = self.lua.lock();
         let f: Value = guard.globals().get("on_connect").unwrap_or(Value::Nil);
         if let Value::Function(func) = f {
@@ -239,6 +287,7 @@ impl LuaRuntime {
     }
 
     pub fn on_disconnect(&self) {
+        log::info!("[LUA] on_disconnect() invoked");
         let guard = self.lua.lock();
         let f: Value = guard.globals().get("on_disconnect").unwrap_or(Value::Nil);
         if let Value::Function(func) = f {
@@ -246,31 +295,54 @@ impl LuaRuntime {
         }
     }
 
+    // ============================================================
+    //  decode_csqtt_link — фикс E0505/E0597
+    //
+    //  Всё, что держит borrow guard (package/loaded/module/parse/
+    //  call_result/result), живёт внутри блока { ... }. Наружу
+    //  выходит только owned Result<CsqttDecoded>. Тогда drop(guard)
+    //  в конце валиден.
+    // ============================================================
     pub fn decode_csqtt_link(&self, link: &str) -> Result<CsqttDecoded> {
+        log::info!("[LUA] decode_csqtt_link: input_len={}", link.len());
+
         let guard = self.lua.lock();
-        let package: Table = guard.globals().get("package")?;
-        let loaded: Table = package.get("loaded")?;
-        let module: Table = loaded
-            .get("csqtt_decode")
-            .map_err(|_| anyhow!("csqtt_decode module not loaded"))?;
-        let parse: mlua::Function = module
-            .get("parse_csqtt_link")
-            .map_err(|_| anyhow!("parse_csqtt_link missing"))?;
 
-        let result: Table = parse
-            .call(link.to_string())
-            .map_err(|e| anyhow!("csqtt_decode error: {}", e))?;
+        let decoded: Result<CsqttDecoded> = {
+            let package: Table = guard.globals().get("package")?;
+            let loaded: Table = package.get("loaded")?;
+            let module: Table = loaded
+                .get("csqtt_decode")
+                .map_err(|_| anyhow!("csqtt_decode module not loaded"))?;
+            let parse: mlua::Function = module
+                .get("parse_csqtt_link")
+                .map_err(|_| anyhow!("parse_csqtt_link missing"))?;
 
-        Ok(CsqttDecoded {
-            protocol: result.get("protocol").unwrap_or_else(|_| "CSQTT".into()),
-            peer: result.get("peer").unwrap_or_default(),
-            host: result.get("host").unwrap_or_default(),
-            port: result.get("port").unwrap_or_default(),
-            password: result.get("password").unwrap_or_default(),
-            hashes: result.get("hashes").unwrap_or_default(),
-            name: result.get("name").unwrap_or_default(),
-            raw_link: result.get("raw_link").unwrap_or_else(|_| link.to_string()),
-        })
+            let call_result: mlua::Result<Table> = parse.call::<_, Table>(link.to_string());
+
+            match call_result {
+                Ok(result) => {
+                    log::info!("[LUA] decode_csqtt_link: parse_csqtt_link returned table");
+                    Ok(CsqttDecoded {
+                        protocol: result.get("protocol").unwrap_or_else(|_| "CSQTT".into()),
+                        peer: result.get("peer").unwrap_or_default(),
+                        host: result.get("host").unwrap_or_default(),
+                        port: result.get("port").unwrap_or_default(),
+                        password: result.get("password").unwrap_or_default(),
+                        hashes: result.get("hashes").unwrap_or_default(),
+                        name: result.get("name").unwrap_or_default(),
+                        raw_link: result.get("raw_link").unwrap_or_else(|_| link.to_string()),
+                    })
+                }
+                Err(e) => {
+                    log::warn!("[LUA] decode_csqtt_link: parse_csqtt_link error: {:#}", e);
+                    Err(anyhow!("csqtt_decode error: {}", e))
+                }
+            }
+        };
+
+        drop(guard);
+        decoded
     }
 
     pub fn eval_str(&self, code: &str) -> Result<String> {
@@ -280,7 +352,10 @@ impl LuaRuntime {
     }
 
     pub fn install_global(self: Arc<Self>) {
-        let _ = GLOBAL_LUA.set(self);
+        match GLOBAL_LUA.set(self) {
+            Ok(_) => log::info!("[LUA] install_global: registered"),
+            Err(_) => log::warn!("[LUA] install_global: already set (ignored)"),
+        }
     }
 }
 
@@ -300,11 +375,13 @@ fn register_zlib(lua: &Lua) -> Result<()> {
     let inflate = lua.create_function(|lua, data: mlua::String| -> mlua::Result<mlua::String> {
         use std::io::Read;
         let bytes = data.as_bytes();
+        log::debug!("[LUA] zlib.inflate: input {} bytes", bytes.len());
         let mut decoder = flate2::read::ZlibDecoder::new(&bytes[..]);
         let mut out = Vec::new();
         decoder
             .read_to_end(&mut out)
             .map_err(|e| mlua::Error::RuntimeError(format!("inflate: {}", e)))?;
+        log::debug!("[LUA] zlib.inflate: output {} bytes", out.len());
         lua.create_string(&out)
     })?;
 
@@ -316,5 +393,6 @@ fn register_zlib(lua: &Lua) -> Result<()> {
     let loaded: Table = package.get("loaded")?;
     loaded.set("zlib", zlib)?;
 
+    log::info!("[LUA] zlib module registered");
     Ok(())
 }

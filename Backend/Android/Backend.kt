@@ -3,7 +3,7 @@
 // LaLune backend для Android.
 //
 // deviceId удалён.
-// csqtt:// парсится в порядке: csqtt-link (libcsqtt_decode.so) → Lua → нативный.
+// csqtt:// парсится: csqtt-link (ProcessBuilder) → Lua → нативный.
 
 package com.lalune.lalune
 
@@ -34,7 +34,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 
@@ -112,8 +111,10 @@ class Backend(private val context: Context) {
         ensureDefaults()
         registerVpnReceiver()
         startLuaRuntime()
-        // Прогреваем libcsqtt_decode.so (если есть).
-        CsqttLink.ensureLoaded()
+
+        // Прогреваем поиск csqtt-link бинарника (если нет — лог в /debug/lua).
+        CsqttLink.ensureAvailable(context)
+
         startHttpServer()
         addLog("[BACKEND] LaLune Android backend started on http://$HOST:$PORT")
     }
@@ -277,7 +278,11 @@ class Backend(private val context: Context) {
                 path == "/configs" && method == "GET" -> 200 to loadConfigs().toString()
                 path == "/configs/parse" && method == "POST" -> {
                     val b = JSONObject(body)
-                    200 to parseLink(b.optString("link", "")).toString()
+                    val link = b.optString("link", "")
+                    Log.i(TAG, "[API] POST /configs/parse link_len=${link.length}")
+                    val parsed = parseLink(link)
+                    Log.i(TAG, "[API] /configs/parse OK: peer=${parsed.optString("peer")}")
+                    200 to parsed.toString()
                 }
                 path == "/configs/selected" && method == "GET" -> {
                     val sel = readSelectedConfig()
@@ -421,7 +426,7 @@ class Backend(private val context: Context) {
                     200 to jsonOk(
                         "running" to smarttunnelRunning,
                         "luaAvailable" to (luaRuntime != null),
-                        "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
+                        "csqttLinkAvailable" to (CsqttLink.ensureAvailable(context) != null),
                     )
                 path == "/smarttunnel/start" && method == "POST" -> {
                     smarttunnelRunning = true
@@ -442,7 +447,8 @@ class Backend(private val context: Context) {
                 }
                 path == "/smarttunnel/logs" && method == "GET" -> {
                     val filtered = logs.filter {
-                        it.startsWith("[SMART-TUNNEL]") || it.startsWith("[LUA]")
+                        it.startsWith("[SMART-TUNNEL]") || it.startsWith("[LUA]") ||
+                            it.startsWith("[CSQTT-LINK]")
                     }
                     200 to JSONArray(filtered).toString()
                 }
@@ -473,7 +479,7 @@ class Backend(private val context: Context) {
                     "logCount" to logs.size, "appDir" to appDir.absolutePath,
                     "vpnConnected" to vpnConnected,
                     "luaAvailable" to (luaRuntime != null),
-                    "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
+                    "csqttLinkAvailable" to (CsqttLink.ensureAvailable(context) != null),
                 )
                 path == "/debug/echo" && method == "POST" -> 200 to body
                 path == "/debug/config" && method == "GET" -> 200 to jsonOk(
@@ -483,13 +489,13 @@ class Backend(private val context: Context) {
                     "logsPath" to logsFile.absolutePath,
                     "tokenPath" to tokenFile.absolutePath,
                     "luaAvailable" to (luaRuntime != null),
-                    "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
+                    "csqttLinkAvailable" to (CsqttLink.ensureAvailable(context) != null),
                 )
                 path == "/debug/reload-config" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/debug/lua" && method == "GET" -> 200 to jsonOk(
                     "available" to (luaRuntime != null),
                     "smarttunnelRunning" to smarttunnelRunning,
-                    "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
+                    "csqttLinkAvailable" to (CsqttLink.ensureAvailable(context) != null),
                 )
 
                 else -> 404 to jsonErr("route not found: $method $path")
@@ -814,6 +820,7 @@ class Backend(private val context: Context) {
     private fun createConfig(body: String): Pair<Int, String> = try {
         val b = JSONObject(body)
         val link = b.optString("link", "")
+        Log.i(TAG, "[API] POST /configs link_len=${link.length} protocol=${b.optString("protocol", "CSQTT")}")
         val parsed = if (link.isNotEmpty()) parseLink(link) else JSONObject().apply {
             put("protocol", b.optString("protocol", PROTO_CSQTT))
             put("peer", b.optString("peer", ""))
@@ -836,8 +843,12 @@ class Backend(private val context: Context) {
         val id = System.currentTimeMillis()
         parsed.put("id", id); parsed.put("rawLink", link)
         val arr = loadConfigs(); arr.put(parsed); saveConfigs(arr)
+        Log.i(TAG, "[API] /configs INSERTED id=$id peer=${parsed.optString("peer")}")
         200 to jsonOk("id" to id)
-    } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
+    } catch (e: Exception) {
+        Log.e(TAG, "[API] /configs insert failed: ${e.message}", e)
+        400 to jsonErr(e.message ?: "bad json")
+    }
 
     private fun updateConfig(id: Long, body: String): Pair<Int, String> = try {
         val b = JSONObject(body); val arr = loadConfigs()
@@ -875,7 +886,7 @@ class Backend(private val context: Context) {
     }
 
     // ============================================================
-    //  parseLink — приоритет: csqtt-link → Lua → нативный
+    //  parseLink — csqtt-link (ProcessBuilder) → Lua → нативный
     // ============================================================
 
     private fun parseLink(link: String): JSONObject {
@@ -887,16 +898,18 @@ class Backend(private val context: Context) {
     }
 
     private fun parseCsqtt(link: String): JSONObject {
-        // 1. csqtt-link (libcsqtt_decode.so)
-        val json = CsqttLink.parse(link)
+        Log.i(TAG, "[PARSE][CSQTT] start, link_len=${link.length}")
+
+        // ---- 1. csqtt-link (libcsqtt-link.so через ProcessBuilder) ----
+        Log.i(TAG, "[PARSE][CSQTT] trying csqtt-link (ProcessBuilder)...")
+        val json = CsqttLink.parse(context, link)
         if (json != null) {
             try {
-                val obj = JSONObject(json)
-                val host = obj.optString("host", "")
-                val port = obj.optInt("port", 0)
+                val host = json.optString("host", "")
+                val port = json.optInt("port", 0)
                 if (host.isNotEmpty() && port > 0) {
                     val peer = "$host:$port"
-                    val hashesArr = obj.optJSONArray("hashes")
+                    val hashesArr = json.optJSONArray("hashes")
                     val hashesStr = StringBuilder()
                     if (hashesArr != null) {
                         for (i in 0 until hashesArr.length()) {
@@ -904,25 +917,32 @@ class Backend(private val context: Context) {
                             hashesStr.append(hashesArr.getString(i))
                         }
                     }
+                    Log.i(TAG, "[PARSE][CSQTT] csqtt-link OK: host=$host port=$port hashes=${hashesStr.length}")
                     return JSONObject().apply {
                         put("protocol", "CSQTT")
                         put("peer", peer)
-                        put("password", obj.optString("password", ""))
+                        put("password", json.optString("password", ""))
                         put("hashes", hashesStr.toString())
                         put("name", peer)
                         put("rawLink", link)
                     }
+                } else {
+                    Log.w(TAG, "[PARSE][CSQTT] csqtt-link returned empty host/port")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "csqtt-link json parse failed: ${e.message}")
+                Log.w(TAG, "[PARSE][CSQTT] csqtt-link json parse failed: ${e.message}")
             }
+        } else {
+            Log.w(TAG, "[PARSE][CSQTT] csqtt-link returned null (not available or failed)")
         }
 
-        // 2. Lua (csqtt_decode.lua)
+        // ---- 2. Lua ----
         val lua = luaRuntime
         if (lua != null) {
+            Log.i(TAG, "[PARSE][CSQTT] trying Lua (csqtt_decode.lua)...")
             val decoded = lua.decodeCsqttLink(link)
             if (decoded != null) {
+                Log.i(TAG, "[PARSE][CSQTT] Lua OK: peer=${decoded.peer}")
                 return JSONObject().apply {
                     put("protocol", "CSQTT")
                     put("peer", decoded.peer)
@@ -931,10 +951,15 @@ class Backend(private val context: Context) {
                     put("name", if (decoded.name.isEmpty()) decoded.peer else decoded.name)
                     put("rawLink", link)
                 }
+            } else {
+                Log.w(TAG, "[PARSE][CSQTT] Lua returned null")
             }
+        } else {
+            Log.w(TAG, "[PARSE][CSQTT] luaRuntime not initialized, skip")
         }
 
-        // 3. Нативный fallback (plain v=2 / user:pass@host)
+        // ---- 3. Нативный fallback ----
+        Log.i(TAG, "[PARSE][CSQTT] trying native fallback...")
         return parseCsqttNative(link)
     }
 
