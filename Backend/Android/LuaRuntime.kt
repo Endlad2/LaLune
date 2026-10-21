@@ -4,20 +4,6 @@
 //
 // Использует LuaJ (org.luaj:luaj-jse:3.0.1) — чистый Java-интерпретатор
 // Lua 5.2, работает на Android без NDK/JNI.
-//
-// Регистрирует глобальную таблицу `smarttunnel`:
-//   log(msg), logs(), connect(), disconnect(), is_connected(),
-//   get_setting(key), set_setting(key, value), get_vk_creds()
-//
-// Регистрирует модуль `zlib` (inflate через java.util.zip.Inflater),
-// чтобы csqtt_decode.lua мог разжимать zlib-поток.
-//
-// Грузит Core/SmartTunnel.lua и Core/csqtt_decode.lua из assets,
-// если файлов нет в appDir — кладёт их туда при первом запуске.
-//
-// Вызывает on_load() при старте, on_tick() раз в секунду из
-// отдельного потока, on_log(line) на каждую строку лога,
-// on_connect()/on_disconnect() при VPN.
 
 package com.lalune.lalune
 
@@ -58,19 +44,15 @@ class LuaRuntime(
 
     @Volatile var smarttunnelRunning: Boolean = false
 
-    /** Загружает скрипты, регистрирует API, вызывает on_load(). */
     fun init() {
         val g = JsePlatform.standardGlobals()
 
-        // ---- zlib ----
         registerZlib(g)
 
-        // ---- smarttunnel table ----
         val st = LuaTable()
         registerSmarttunnelApi(g, st)
         g.set("smarttunnel", st)
 
-        // ---- csqtt_decode.lua ----
         val decodeSrc = loadOrExtractAsset(ASSET_DECODE)
         if (decodeSrc != null) {
             try {
@@ -88,7 +70,6 @@ class LuaRuntime(
             Log.w(TAG, "csqtt_decode.lua not found (assets + appDir)")
         }
 
-        // ---- SmartTunnel.lua ----
         val smartSrc = loadOrExtractAsset(ASSET_SMART)
         if (smartSrc != null) {
             try {
@@ -103,10 +84,7 @@ class LuaRuntime(
 
         globals = g
 
-        // ---- on_load() ----
         callOptional("on_load")
-
-        // ---- ticker ----
         startTicker()
 
         Log.i(TAG, "[LUA] runtime initialized (LuaJ)")
@@ -203,6 +181,12 @@ class LuaRuntime(
 
     // ============================================================
     //  zlib.inflate
+    //
+    //  ВАЖНО: LuaJ 3.0.1 LuaError имеет конструкторы:
+    //    LuaError(int), LuaError(String), LuaError(String, int)
+    //  Конструктора LuaError(String, Throwable) НЕТ.
+    //  Поэтому исходный exception логируем отдельно, а в Lua бросаем
+    //  просто LuaError(String).
     // ============================================================
 
     private fun registerZlib(g: Globals) {
@@ -225,7 +209,8 @@ class LuaRuntime(
                     }
                     return LuaValue.valueOf(out.toByteArray())
                 } catch (e: Exception) {
-                    throw LuaError("inflate: ${e.message}", e)
+                    Log.w(TAG, "zlib.inflate failed: ${e.message}", e)
+                    throw LuaError("inflate: ${e.message}")
                 } finally {
                     inflater.end()
                 }
