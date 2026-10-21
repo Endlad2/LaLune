@@ -1,0 +1,42 @@
+[package]
+name = "csqtt-link"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+description = "CLI + library for parsing and decrypting csqtt:// links"
+license = "PolyForm-Noncommercial-1.0.0"
+
+[lib]
+name = "csqtt_link"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "csqtt-link"
+path = "src/main.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
+sha2 = "0.10"
+url = "2.5"
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# hmac нужен только для примера roundtrip; в lib используется sha2.
+hmac = "0.12"
+
+[dev-dependencies]
+hex = "0.4"
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

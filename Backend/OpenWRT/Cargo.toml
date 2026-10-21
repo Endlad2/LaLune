@@ -44,7 +44,9 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
 
 mlua = { version = "0.9", features = ["lua54", "vendored", "send"] }
-flate2 = "1"
+
+# csqtt-link: AES-256-GCM декодер csqtt:// ссылок (локальный крейт)
+csqtt-link = { path = "../../Core/csqtt-link" }
 
 [profile.release]
 opt-level = "z"

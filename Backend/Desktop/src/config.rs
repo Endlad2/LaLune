@@ -2,8 +2,10 @@
 //
 // Конфиги: SQLite-хранилище + парсинг csqtt:// и paperflux:// ссылок.
 //
-// ВАЖНО: parse_link() для csqtt:// сначала пробует csqtt_decode.lua
-// (через Lua-рантайм), и только при ошибке — нативный fallback.
+// Приоритет парсеров для csqtt://:
+//   1. csqtt-link (Rust, AES-256-GCM) — основной
+//   2. Lua (csqtt_decode.lua) — если пользователь положил файл
+//   3. Нативный (plain v=2 / user:pass@host) — fallback для старых ссылок
 
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
@@ -11,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use parking_lot::Mutex;
+
+use crate::csqtt_link_bridge;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -230,15 +234,11 @@ impl ConfigStore {
 //  Парсинг ссылок
 // ============================================================
 
-/// Парсит ссылку. Для csqtt:// сначала пробует Lua-декодер
-/// (csqtt_decode.lua), затем — нативный fallback.
 pub fn parse_link(link: &str) -> Result<ConfigItem> {
     let link = link.trim();
     let lower = link.to_ascii_lowercase();
 
     if lower.starts_with("csqtt://") {
-        // Сначала пробуем Lua (если инициализирован).
-        // Fallback — нативный парсер.
         parse_csqtt(link)
     } else if lower.starts_with("paperflux://") {
         parse_paperflux(link)
@@ -253,14 +253,31 @@ pub fn parse_link(link: &str) -> Result<ConfigItem> {
     }
 }
 
-/// Парсит CSQTT-ссылку. Пробует Lua-декодер через глобальный
-/// реестр (см. lua_runtime::decode_csqtt_link). Если Lua не
-/// инициализирован или вернул ошибку — нативный fallback.
+/// Парсит csqtt:// ссылку.
+///
+/// Приоритет:
+///   1. csqtt-link (Rust, AES-256-GCM) — рекомендованный
+///   2. Lua (csqtt_decode.lua) — если пользователь положил скрипт
+///   3. Нативный (plain v=2 / user:pass@host) — fallback
 pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
-    // Нативный fallback (работает для plain v=2 и user:pass@host).
-    let native = parse_csqtt_native(link);
+    // 1. csqtt-link
+    match csqtt_link_bridge::parse(link) {
+        Ok(parsed) => {
+            let mut cfg = ConfigItem::default();
+            cfg.protocol = "CSQTT".into();
+            cfg.peer = parsed.peer_address();
+            cfg.password = parsed.password.clone();
+            cfg.hashes = parsed.hashes.join(",");
+            cfg.name = parsed.peer_address();
+            cfg.raw_link = link.to_string();
+            return Ok(cfg);
+        }
+        Err(e) => {
+            log::debug!("[CSQTT] csqtt-link failed: {e:#}; trying Lua fallback");
+        }
+    }
 
-    // Если Lua-рантайм доступен — попробуем через него.
+    // 2. Lua
     if let Some(lua) = crate::lua_runtime::global_runtime() {
         match lua.decode_csqtt_link(link) {
             Ok(decoded) => {
@@ -269,17 +286,22 @@ pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
                 cfg.peer = decoded.peer.clone();
                 cfg.password = decoded.password.clone();
                 cfg.hashes = decoded.hashes.clone();
-                cfg.name = if decoded.name.is_empty() { decoded.peer.clone() } else { decoded.name.clone() };
+                cfg.name = if decoded.name.is_empty() {
+                    decoded.peer.clone()
+                } else {
+                    decoded.name.clone()
+                };
                 cfg.raw_link = link.to_string();
                 return Ok(cfg);
             }
             Err(e) => {
-                log::warn!("[CSQTT] lua decode failed: {e:#}; trying native fallback");
+                log::debug!("[CSQTT] lua decode failed: {e:#}; trying native fallback");
             }
         }
     }
 
-    native
+    // 3. Нативный fallback
+    parse_csqtt_native(link)
 }
 
 fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {

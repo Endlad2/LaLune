@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Конфиги: SQLite-хранилище + парсинг csqtt:// и paperflux:// ссылок.
+// Конфиги OpenWRT (только CSQTT, без PaperFlux).
 //
-// ВАЖНО: parse_link() для csqtt:// сначала пробует csqtt_decode.lua
-// (через Lua-рантайм), и только при ошибке — нативный fallback.
+// Приоритет парсеров csqtt://:
+//   1. csqtt-link (Rust, AES-256-GCM)
+//   2. Lua (csqtt_decode.lua)
+//   3. Нативный fallback
 
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
@@ -12,49 +14,17 @@ use std::path::Path;
 use std::sync::Arc;
 use parking_lot::Mutex;
 
+use crate::csqtt_link_bridge;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigItem {
     pub id: i64,
-    #[serde(default)]
     pub protocol: String,
-
-    // -------- CSQTT --------
-    #[serde(default)]
     pub peer: String,
-    #[serde(default)]
     pub password: String,
-    #[serde(default)]
     pub hashes: String,
-    #[serde(default)]
     pub name: String,
-
-    // -------- PaperFlux --------
-    #[serde(default)]
-    pub profile_id: String,
-    #[serde(default)]
-    pub profile_token: String,
-    #[serde(default)]
-    pub client_ip: String,
-    #[serde(default)]
-    pub transport: String,
-    #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub urls: String,
-    #[serde(default)]
-    pub volga_url: String,
-    #[serde(default)]
-    pub relay_url: String,
-    #[serde(default)]
-    pub relay_token: String,
-    #[serde(default)]
-    pub max_token: String,
-    #[serde(default)]
-    pub max_uid: String,
-    #[serde(default)]
-    pub server: String,
-
     #[serde(default)]
     pub raw_link: String,
 }
@@ -80,88 +50,42 @@ impl ConfigStore {
                 hashes TEXT NOT NULL DEFAULT '',
                 name TEXT DEFAULT '',
                 raw_link TEXT DEFAULT '',
-                profile_id TEXT DEFAULT '',
-                profile_token TEXT DEFAULT '',
-                client_ip TEXT DEFAULT '',
-                transport TEXT DEFAULT '',
-                url TEXT DEFAULT '',
-                urls TEXT DEFAULT '',
-                volga_url TEXT DEFAULT '',
-                relay_url TEXT DEFAULT '',
-                relay_token TEXT DEFAULT '',
-                max_token TEXT DEFAULT '',
-                max_uid TEXT DEFAULT '',
-                server TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             "#,
         )?;
 
-        let existing: Vec<String> = conn
+        let has_raw_link: bool = conn
             .prepare("PRAGMA table_info(configs)")?
             .query_map([], |r| r.get::<_, String>(1))?
             .filter_map(|r| r.ok())
-            .collect();
+            .any(|name| name == "raw_link");
 
-        let want = [
-            ("raw_link", "TEXT DEFAULT ''"),
-            ("profile_id", "TEXT DEFAULT ''"),
-            ("profile_token", "TEXT DEFAULT ''"),
-            ("client_ip", "TEXT DEFAULT ''"),
-            ("transport", "TEXT DEFAULT ''"),
-            ("url", "TEXT DEFAULT ''"),
-            ("urls", "TEXT DEFAULT ''"),
-            ("volga_url", "TEXT DEFAULT ''"),
-            ("relay_url", "TEXT DEFAULT ''"),
-            ("relay_token", "TEXT DEFAULT ''"),
-            ("max_token", "TEXT DEFAULT ''"),
-            ("max_uid", "TEXT DEFAULT ''"),
-            ("server", "TEXT DEFAULT ''"),
-        ];
-        for (col, def) in want {
-            if !existing.iter().any(|c| c == col) {
-                conn.execute(&format!("ALTER TABLE configs ADD COLUMN {col} {def}"), [])?;
-            }
+        if !has_raw_link {
+            conn.execute("ALTER TABLE configs ADD COLUMN raw_link TEXT DEFAULT ''", [])?;
         }
 
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
-    fn row_to_item(r: &rusqlite::Row) -> rusqlite::Result<ConfigItem> {
-        Ok(ConfigItem {
-            id: r.get(0)?,
-            protocol: r.get::<_, String>(1).unwrap_or_else(|_| "CSQTT".into()),
-            peer: r.get::<_, String>(2).unwrap_or_default(),
-            password: r.get::<_, String>(3).unwrap_or_default(),
-            hashes: r.get::<_, String>(4).unwrap_or_default(),
-            name: r.get::<_, String>(5).unwrap_or_default(),
-            raw_link: r.get::<_, String>(6).unwrap_or_default(),
-            profile_id: r.get::<_, String>(7).unwrap_or_default(),
-            profile_token: r.get::<_, String>(8).unwrap_or_default(),
-            client_ip: r.get::<_, String>(9).unwrap_or_default(),
-            transport: r.get::<_, String>(10).unwrap_or_default(),
-            url: r.get::<_, String>(11).unwrap_or_default(),
-            urls: r.get::<_, String>(12).unwrap_or_default(),
-            volga_url: r.get::<_, String>(13).unwrap_or_default(),
-            relay_url: r.get::<_, String>(14).unwrap_or_default(),
-            relay_token: r.get::<_, String>(15).unwrap_or_default(),
-            max_token: r.get::<_, String>(16).unwrap_or_default(),
-            max_uid: r.get::<_, String>(17).unwrap_or_default(),
-            server: r.get::<_, String>(18).unwrap_or_default(),
-        })
-    }
-
-    const SELECT_COLS: &'static str =
-        "id, protocol, peer, password, hashes, name, raw_link, \
-         profile_id, profile_token, client_ip, transport, url, urls, volga_url, \
-         relay_url, relay_token, max_token, max_uid, server";
-
     pub fn list(&self) -> Result<Vec<ConfigItem>> {
         let conn = self.conn.lock();
-        let sql = format!("SELECT {} FROM configs ORDER BY id DESC", Self::SELECT_COLS);
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], Self::row_to_item)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, protocol, peer, password, hashes, name, raw_link \
+             FROM configs ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ConfigItem {
+                id: r.get(0)?,
+                protocol: r.get(1)?,
+                peer: r.get(2)?,
+                password: r.get(3)?,
+                hashes: r.get(4)?,
+                name: r.get(5)?,
+                raw_link: r.get(6).unwrap_or_default(),
+            })
+        })?;
         let mut out = Vec::new();
         for row in rows { out.push(row?); }
         Ok(out)
@@ -169,11 +93,21 @@ impl ConfigStore {
 
     pub fn get(&self, id: i64) -> Result<Option<ConfigItem>> {
         let conn = self.conn.lock();
-        let sql = format!("SELECT {} FROM configs WHERE id = ?", Self::SELECT_COLS);
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, protocol, peer, password, hashes, name, raw_link \
+             FROM configs WHERE id = ?",
+        )?;
         let mut rows = stmt.query(params![id])?;
         if let Some(r) = rows.next()? {
-            Ok(Some(Self::row_to_item(r)?))
+            Ok(Some(ConfigItem {
+                id: r.get(0)?,
+                protocol: r.get(1)?,
+                peer: r.get(2)?,
+                password: r.get(3)?,
+                hashes: r.get(4)?,
+                name: r.get(5)?,
+                raw_link: r.get(6).unwrap_or_default(),
+            }))
         } else {
             Ok(None)
         }
@@ -182,17 +116,9 @@ impl ConfigStore {
     pub fn insert(&self, c: &ConfigItem) -> Result<i64> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO configs (
-                protocol, peer, password, hashes, name, raw_link,
-                profile_id, profile_token, client_ip, transport, url, urls, volga_url,
-                relay_url, relay_token, max_token, max_uid, server
-             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            params![
-                c.protocol, c.peer, c.password, c.hashes, c.name, c.raw_link,
-                c.profile_id, c.profile_token, c.client_ip, c.transport,
-                c.url, c.urls, c.volga_url,
-                c.relay_url, c.relay_token, c.max_token, c.max_uid, c.server,
-            ],
+            "INSERT INTO configs (protocol, peer, password, hashes, name, raw_link) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![c.protocol, c.peer, c.password, c.hashes, c.name, c.raw_link],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -200,20 +126,9 @@ impl ConfigStore {
     pub fn update(&self, id: i64, c: &ConfigItem) -> Result<()> {
         let conn = self.conn.lock();
         let n = conn.execute(
-            "UPDATE configs SET
-                protocol=?, peer=?, password=?, hashes=?, name=?, raw_link=?,
-                profile_id=?, profile_token=?, client_ip=?, transport=?,
-                url=?, urls=?, volga_url=?,
-                relay_url=?, relay_token=?, max_token=?, max_uid=?, server=?,
-                updated_at=CURRENT_TIMESTAMP
-             WHERE id=?",
-            params![
-                c.protocol, c.peer, c.password, c.hashes, c.name, c.raw_link,
-                c.profile_id, c.profile_token, c.client_ip, c.transport,
-                c.url, c.urls, c.volga_url,
-                c.relay_url, c.relay_token, c.max_token, c.max_uid, c.server,
-                id,
-            ],
+            "UPDATE configs SET protocol=?, peer=?, password=?, hashes=?, name=?, \
+             raw_link=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            params![c.protocol, c.peer, c.password, c.hashes, c.name, c.raw_link, id],
         )?;
         if n == 0 { return Err(anyhow!("config {} not found", id)); }
         Ok(())
@@ -226,41 +141,43 @@ impl ConfigStore {
     }
 }
 
-// ============================================================
-//  Парсинг ссылок
-// ============================================================
-
-/// Парсит ссылку. Для csqtt:// сначала пробует Lua-декодер
-/// (csqtt_decode.lua), затем — нативный fallback.
 pub fn parse_link(link: &str) -> Result<ConfigItem> {
     let link = link.trim();
     let lower = link.to_ascii_lowercase();
 
     if lower.starts_with("csqtt://") {
-        // Сначала пробуем Lua (если инициализирован).
-        // Fallback — нативный парсер.
         parse_csqtt(link)
-    } else if lower.starts_with("paperflux://") {
-        parse_paperflux(link)
     } else if lower.starts_with("olcrtc://") {
         parse_generic(link, "OLCRTC", "olcrtc://")
     } else if lower.starts_with("tots://") {
-        parse_generic(link, "ToTS", "tots://")
+        parse_generic(link, "TOTS", "tots://")
     } else if lower.starts_with("openflux://") {
-        parse_paperflux(&link.replacen("openflux://", "paperflux://", 1))
+        parse_generic(link, "OPENFLUX", "openflux://")
     } else {
         Err(anyhow!("unsupported scheme"))
     }
 }
 
-/// Парсит CSQTT-ссылку. Пробует Lua-декодер через глобальный
-/// реестр (см. lua_runtime::decode_csqtt_link). Если Lua не
-/// инициализирован или вернул ошибку — нативный fallback.
+/// CSQTT: csqtt-link → Lua → нативный fallback.
 pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
-    // Нативный fallback (работает для plain v=2 и user:pass@host).
-    let native = parse_csqtt_native(link);
+    // 1. csqtt-link
+    match csqtt_link_bridge::parse(link) {
+        Ok(parsed) => {
+            let mut cfg = ConfigItem::default();
+            cfg.protocol = "CSQTT".into();
+            cfg.peer = parsed.peer_address();
+            cfg.password = parsed.password.clone();
+            cfg.hashes = parsed.hashes.join(",");
+            cfg.name = parsed.peer_address();
+            cfg.raw_link = link.to_string();
+            return Ok(cfg);
+        }
+        Err(e) => {
+            log::debug!("[CSQTT] csqtt-link failed: {e:#}; trying Lua fallback");
+        }
+    }
 
-    // Если Lua-рантайм доступен — попробуем через него.
+    // 2. Lua
     if let Some(lua) = crate::lua_runtime::global_runtime() {
         match lua.decode_csqtt_link(link) {
             Ok(decoded) => {
@@ -269,17 +186,22 @@ pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
                 cfg.peer = decoded.peer.clone();
                 cfg.password = decoded.password.clone();
                 cfg.hashes = decoded.hashes.clone();
-                cfg.name = if decoded.name.is_empty() { decoded.peer.clone() } else { decoded.name.clone() };
+                cfg.name = if decoded.name.is_empty() {
+                    decoded.peer.clone()
+                } else {
+                    decoded.name.clone()
+                };
                 cfg.raw_link = link.to_string();
                 return Ok(cfg);
             }
             Err(e) => {
-                log::warn!("[CSQTT] lua decode failed: {e:#}; trying native fallback");
+                log::debug!("[CSQTT] lua decode failed: {e:#}; trying native fallback");
             }
         }
     }
 
-    native
+    // 3. Нативный fallback
+    parse_csqtt_native(link)
 }
 
 fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
@@ -315,14 +237,15 @@ fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
             .collect();
 
         let peer = format!("{}:{}", host, port);
-        let mut cfg = ConfigItem::default();
-        cfg.protocol = "CSQTT".into();
-        cfg.peer = peer.clone();
-        cfg.password = password;
-        cfg.hashes = hashes.join(",");
-        cfg.name = peer.clone();
-        cfg.raw_link = link.to_string();
-        return Ok(cfg);
+        return Ok(ConfigItem {
+            id: 0,
+            protocol: "CSQTT".into(),
+            peer: peer.clone(),
+            password,
+            hashes: hashes.join(","),
+            name: peer.clone(),
+            raw_link: link.to_string(),
+        });
     }
 
     if let Some(at) = rest.find('@') {
@@ -334,78 +257,18 @@ fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
         } else {
             format!("{}:46000", hostport)
         };
-        let mut cfg = ConfigItem::default();
-        cfg.protocol = "CSQTT".into();
-        cfg.peer = peer.clone();
-        cfg.password = password;
-        cfg.name = peer;
-        cfg.raw_link = link.to_string();
-        return Ok(cfg);
+        return Ok(ConfigItem {
+            id: 0,
+            protocol: "CSQTT".into(),
+            peer: peer.clone(),
+            password,
+            hashes: String::new(),
+            name: peer,
+            raw_link: link.to_string(),
+        });
     }
 
     Err(anyhow!("csqtt:// invalid format"))
-}
-
-fn parse_paperflux(link: &str) -> Result<ConfigItem> {
-    let rest = link.trim_start_matches("paperflux://");
-    let query = rest
-        .strip_prefix("config?")
-        .or_else(|| rest.strip_prefix("config&"))
-        .ok_or_else(|| anyhow!("paperflux:// missing 'config?' prefix"))?;
-
-    let mut id = String::new();
-    let mut name = String::new();
-    let mut server = String::new();
-    let mut ip = String::new();
-    let mut transport = String::new();
-    let mut doc = String::new();
-    let mut token = String::new();
-    let mut volga = String::new();
-    let mut urls = String::new();
-
-    for kv in query.split('&') {
-        let mut parts = kv.splitn(2, '=');
-        let k = parts.next().unwrap_or("");
-        let v = parts.next().unwrap_or("");
-        let v = url_decode(v);
-        match k {
-            "id" => id = v,
-            "name" => name = v,
-            "server" => server = v,
-            "ip" => ip = v,
-            "transport" => transport = v,
-            "doc" | "url" => doc = v,
-            "urls" => urls = v,
-            "token" => token = v,
-            "volga" | "volga_url" | "volga-url" => volga = v,
-            _ => {}
-        }
-    }
-
-    if transport.is_empty() {
-        return Err(anyhow!("paperflux:// missing 'transport'"));
-    }
-
-    let display_name = if name.is_empty() {
-        format!("PaperFlux ({})", transport)
-    } else {
-        name.clone()
-    };
-
-    let mut cfg = ConfigItem::default();
-    cfg.protocol = "PaperFlux".into();
-    cfg.profile_id = id;
-    cfg.profile_token = token;
-    cfg.client_ip = ip;
-    cfg.transport = transport;
-    cfg.url = doc;
-    cfg.urls = urls;
-    cfg.volga_url = volga;
-    cfg.server = server.clone();
-    cfg.name = display_name;
-    cfg.peer = server;
-    cfg.raw_link = link.to_string();
-    Ok(cfg)
 }
 
 fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem> {
@@ -431,45 +294,13 @@ fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem>
     if peer.is_empty() { return Err(anyhow!("{} missing peer", protocol)); }
     if name.is_empty() { name = peer.clone(); }
 
-    let mut cfg = ConfigItem::default();
-    cfg.protocol = protocol.into();
-    cfg.peer = peer;
-    cfg.password = password;
-    cfg.hashes = hashes;
-    cfg.name = name;
-    cfg.raw_link = link.to_string();
-    Ok(cfg)
-}
-
-fn url_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h = hex_val(bytes[i + 1]);
-            let l = hex_val(bytes[i + 2]);
-            if let (Some(h), Some(l)) = (h, l) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
-            }
-        }
-        if bytes[i] == b'+' {
-            out.push(b' ');
-        } else {
-            out.push(bytes[i]);
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    Ok(ConfigItem {
+        id: 0,
+        protocol: protocol.into(),
+        peer,
+        password,
+        hashes,
+        name,
+        raw_link: link.to_string(),
+    })
 }

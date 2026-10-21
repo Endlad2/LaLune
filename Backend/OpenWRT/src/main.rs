@@ -6,10 +6,12 @@
 //   * Bind на 0.0.0.0:1062 (LAN-доступ).
 //   * Ядро: ~/.la-lune/csqtt-client-aarch64 (фиксированное имя).
 //   * Lua-рантайм (SmartTunnel + csqtt_decode) — mlua 5.4.
+//   * csqtt-link как библиотека для парсинга csqtt:// ссылок.
 
 mod api;
 mod config;
 mod core_manager;
+mod csqtt_link_bridge;
 mod events;
 mod lua_runtime;
 mod settings;

@@ -2,10 +2,8 @@
 //
 // LaLune backend для Android.
 //
-// Запускает HTTP-сервер на 127.0.0.1:1062, управляет VpnService,
-// ядром CSQTT/PaperFlux, VK-авторизацией, конфигами, настройками.
-//
-// package = com.lalune.lalune — тот же, что у MainActivity.
+// deviceId удалён.
+// csqtt:// парсится в порядке: csqtt-link (libcsqtt_decode.so) → Lua → нативный.
 
 package com.lalune.lalune
 
@@ -90,6 +88,7 @@ class Backend(private val context: Context) {
     private var currentVkFetcher: VkWebViewFetcher? = null
     private var coreManager: CoreManager? = null
     private var socks5Server: Socks5Server? = null
+    private var luaRuntime: LuaRuntime? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -112,6 +111,9 @@ class Backend(private val context: Context) {
 
         ensureDefaults()
         registerVpnReceiver()
+        startLuaRuntime()
+        // Прогреваем libcsqtt_decode.so (если есть).
+        CsqttLink.ensureLoaded()
         startHttpServer()
         addLog("[BACKEND] LaLune Android backend started on http://$HOST:$PORT")
     }
@@ -119,9 +121,34 @@ class Backend(private val context: Context) {
     fun stop() {
         running = false
         stopSocks5()
+        luaRuntime?.destroy()
+        luaRuntime = null
         try { httpServer?.close() } catch (_: Exception) {}
         httpServer = null
         try { unregisterVpnReceiver() } catch (_: Exception) {}
+    }
+
+    private fun startLuaRuntime() {
+        try {
+            luaRuntime = LuaRuntime(
+                context = context,
+                appDir = appDir,
+                settingsProvider = { loadSettings() },
+                settingsSetter = { key, value ->
+                    val s = loadSettings()
+                    s.put(key, value ?: JSONObject.NULL)
+                    saveSettings(s)
+                },
+                logFn = { line -> addLog(line) },
+                logsFn = { logs.toList() },
+                vkTokenFn = { readVkToken() },
+                vpnRunningFn = { vpnConnected },
+            ).also { it.init() }
+        } catch (e: Exception) {
+            Log.e(TAG, "[LUA] init failed: ${e.message}", e)
+            addLog("[LUA] init failed: ${e.message}")
+            luaRuntime = null
+        }
     }
 
     private fun registerVpnReceiver() {
@@ -301,11 +328,6 @@ class Backend(private val context: Context) {
                     saveSettings(s); 200 to jsonOk("ok" to true)
                 }
 
-                path == "/device/id" && method == "GET" -> 200 to jsonOk("deviceId" to getDeviceId())
-                path == "/device/id/regenerate" && method == "POST" -> {
-                    val id = UUID.randomUUID().toString().replace("-", "")
-                    updateDeviceId(id); 200 to jsonOk("deviceId" to id)
-                }
                 path == "/device/info" && method == "GET" -> 200 to jsonOk(
                     "os" to "android", "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
                     "hostname" to android.os.Build.MODEL,
@@ -396,15 +418,34 @@ class Backend(private val context: Context) {
                     200 to jsonOk("callIds" to JSONArray(activeCallIds.toList()))
 
                 path == "/smarttunnel/status" && method == "GET" ->
-                    200 to jsonOk("running" to smarttunnelRunning)
+                    200 to jsonOk(
+                        "running" to smarttunnelRunning,
+                        "luaAvailable" to (luaRuntime != null),
+                        "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
+                    )
                 path == "/smarttunnel/start" && method == "POST" -> {
-                    smarttunnelRunning = true; 200 to jsonOk("ok" to true)
+                    smarttunnelRunning = true
+                    luaRuntime?.smarttunnelRunning = true
+                    luaRuntime?.onConnect()
+                    200 to jsonOk("ok" to true)
                 }
                 path == "/smarttunnel/stop" && method == "POST" -> {
-                    smarttunnelRunning = false; 200 to jsonOk("ok" to true)
+                    smarttunnelRunning = false
+                    luaRuntime?.smarttunnelRunning = false
+                    luaRuntime?.onDisconnect()
+                    200 to jsonOk("ok" to true)
                 }
-                path == "/smarttunnel/reload" && method == "POST" -> 200 to jsonOk("ok" to true)
-                path == "/smarttunnel/logs" && method == "GET" -> 200 to "[]"
+                path == "/smarttunnel/reload" && method == "POST" -> {
+                    luaRuntime?.destroy()
+                    startLuaRuntime()
+                    200 to jsonOk("ok" to true, "luaAvailable" to (luaRuntime != null))
+                }
+                path == "/smarttunnel/logs" && method == "GET" -> {
+                    val filtered = logs.filter {
+                        it.startsWith("[SMART-TUNNEL]") || it.startsWith("[LUA]")
+                    }
+                    200 to JSONArray(filtered).toString()
+                }
                 path == "/smarttunnel/args" && method == "GET" -> 200 to "[]"
                 path == "/smarttunnel/args" && method == "PUT" -> 200 to jsonOk("ok" to true)
 
@@ -430,7 +471,9 @@ class Backend(private val context: Context) {
 
                 path == "/debug/state" && method == "GET" -> 200 to jsonOk(
                     "logCount" to logs.size, "appDir" to appDir.absolutePath,
-                    "vpnConnected" to vpnConnected
+                    "vpnConnected" to vpnConnected,
+                    "luaAvailable" to (luaRuntime != null),
+                    "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
                 )
                 path == "/debug/echo" && method == "POST" -> 200 to body
                 path == "/debug/config" && method == "GET" -> 200 to jsonOk(
@@ -438,9 +481,16 @@ class Backend(private val context: Context) {
                     "configsPath" to configsJson.absolutePath,
                     "settingsPath" to settingsFile.absolutePath,
                     "logsPath" to logsFile.absolutePath,
-                    "tokenPath" to tokenFile.absolutePath
+                    "tokenPath" to tokenFile.absolutePath,
+                    "luaAvailable" to (luaRuntime != null),
+                    "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
                 )
                 path == "/debug/reload-config" && method == "POST" -> 200 to jsonOk("ok" to true)
+                path == "/debug/lua" && method == "GET" -> 200 to jsonOk(
+                    "available" to (luaRuntime != null),
+                    "smarttunnelRunning" to smarttunnelRunning,
+                    "csqttLinkAvailable" to CsqttLink.ensureLoaded(),
+                )
 
                 else -> 404 to jsonErr("route not found: $method $path")
             }
@@ -449,10 +499,6 @@ class Backend(private val context: Context) {
             return 500 to jsonErr(e.message ?: "internal error")
         }
     }
-
-    // ============================================================
-    //  Core per-protocol
-    // ============================================================
 
     private fun protocolsJson(): JSONArray = JSONArray().apply {
         put(JSONObject().apply {
@@ -511,7 +557,6 @@ class Backend(private val context: Context) {
                 cm.getCorePath(proto)?.let { File(it).delete() }
                 200 to jsonOk("ok" to true)
             }
-            // Алиасы (обратная совместимость)
             proto == "version" && tail == "" && method == "GET" ->
                 200 to jsonOk("version" to cm.readLatest(PROTO_CSQTT))
             proto == "latest" && tail == "" && method == "GET" ->
@@ -550,10 +595,6 @@ class Backend(private val context: Context) {
         }
     }
 
-    // ============================================================
-    //  Settings-for-proto
-    // ============================================================
-
     private fun settingsForProto(proto: String): JSONObject {
         val upper = proto.uppercase()
         return if (upper == PROTO_CSQTT.uppercase()) {
@@ -584,10 +625,6 @@ class Backend(private val context: Context) {
             }
         }
     }
-
-    // ============================================================
-    //  SSE
-    // ============================================================
 
     private inner class EventStream(val writer: OutputStreamWriter) {
         fun send(data: String) {
@@ -641,6 +678,7 @@ class Backend(private val context: Context) {
         if (logs.size > 2000) logs.removeAt(0)
         try { logsFile.appendText(line + "\n") } catch (_: Exception) {}
         emit("log", JSONObject().put("line", line).put("ts", System.currentTimeMillis() / 1000))
+        luaRuntime?.onLog(line)
     }
 
     private fun addCoreLog(line: String) {
@@ -649,11 +687,8 @@ class Backend(private val context: Context) {
         logs.add(tagged)
         if (logs.size > 2000) logs.removeAt(0)
         emit("log", JSONObject().put("line", tagged).put("ts", System.currentTimeMillis() / 1000))
+        luaRuntime?.onLog(tagged)
     }
-
-    // ============================================================
-    //  Файлы
-    // ============================================================
 
     private fun ensureDefaults() {
         if (!settingsFile.exists()) saveSettings(defaultSettings())
@@ -662,8 +697,6 @@ class Backend(private val context: Context) {
     }
 
     private fun defaultSettings(): JSONObject = JSONObject().apply {
-        val localDeviceId = UUID.randomUUID().toString().replace("-", "")
-        // CSQTT
         put("peer", "")
         put("vkHashes", "")
         put("vkJsToken", "")
@@ -673,7 +706,6 @@ class Backend(private val context: Context) {
         put("obfs", "video")
         put("fingerprint", "firefox")
         put("clientIds", "8202606,6287487")
-        put("deviceId", localDeviceId)
         put("authMode", "manual")
         put("turnTransport", "udp")
         put("turnHost", "")
@@ -682,7 +714,6 @@ class Backend(private val context: Context) {
         put("vkAuthMode", "vkcalls")
         put("allowHashRedistribution", false)
         put("validateVkHashes", false)
-        // PaperFlux
         put("pfTransport", "yandex")
         put("pfUrl", "")
         put("pfUrls", "")
@@ -705,7 +736,6 @@ class Backend(private val context: Context) {
         put("pfRelaySession", "")
         put("pfMaxToken", "")
         put("pfMaxUid", "")
-        // Общие
         put("enableSmartTunnel", false)
         put("showCoreLogs", false)
         put("shareVpn", false)
@@ -733,29 +763,6 @@ class Backend(private val context: Context) {
         patch.keys().forEach { k -> s.put(k, patch.get(k)) }
         saveSettings(s); 200 to jsonOk("ok" to true)
     } catch (e: Exception) { 400 to jsonErr(e.message ?: "bad json") }
-
-    private fun getDeviceId(): String {
-        if (settingsFile.exists()) {
-            try {
-                val s = JSONObject(settingsFile.readText())
-                val id = s.optString("deviceId", "")
-                if (id.isNotBlank()) return id
-                val newId = UUID.randomUUID().toString().replace("-", "")
-                s.put("deviceId", newId)
-                saveSettings(s)
-                return newId
-            } catch (_: Exception) {}
-        }
-        val newId = UUID.randomUUID().toString().replace("-", "")
-        val s = defaultSettings()
-        s.put("deviceId", newId)
-        saveSettings(s)
-        return newId
-    }
-
-    private fun updateDeviceId(newId: String) {
-        val s = loadSettings(); s.put("deviceId", newId); saveSettings(s)
-    }
 
     private fun readVkToken(): String? = try {
         if (!tokenFile.exists()) null
@@ -786,10 +793,6 @@ class Backend(private val context: Context) {
                 else if (vkLoginInProgress) vkLoginMessage else "")
         }
     }
-
-    // ============================================================
-    //  Конфиги
-    // ============================================================
 
     private fun loadConfigs(): JSONArray = try {
         if (configsJson.exists()) JSONArray(configsJson.readText()) else JSONArray()
@@ -872,7 +875,7 @@ class Backend(private val context: Context) {
     }
 
     // ============================================================
-    //  parseLink
+    //  parseLink — приоритет: csqtt-link → Lua → нативный
     // ============================================================
 
     private fun parseLink(link: String): JSONObject {
@@ -884,6 +887,58 @@ class Backend(private val context: Context) {
     }
 
     private fun parseCsqtt(link: String): JSONObject {
+        // 1. csqtt-link (libcsqtt_decode.so)
+        val json = CsqttLink.parse(link)
+        if (json != null) {
+            try {
+                val obj = JSONObject(json)
+                val host = obj.optString("host", "")
+                val port = obj.optInt("port", 0)
+                if (host.isNotEmpty() && port > 0) {
+                    val peer = "$host:$port"
+                    val hashesArr = obj.optJSONArray("hashes")
+                    val hashesStr = StringBuilder()
+                    if (hashesArr != null) {
+                        for (i in 0 until hashesArr.length()) {
+                            if (i > 0) hashesStr.append(',')
+                            hashesStr.append(hashesArr.getString(i))
+                        }
+                    }
+                    return JSONObject().apply {
+                        put("protocol", "CSQTT")
+                        put("peer", peer)
+                        put("password", obj.optString("password", ""))
+                        put("hashes", hashesStr.toString())
+                        put("name", peer)
+                        put("rawLink", link)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "csqtt-link json parse failed: ${e.message}")
+            }
+        }
+
+        // 2. Lua (csqtt_decode.lua)
+        val lua = luaRuntime
+        if (lua != null) {
+            val decoded = lua.decodeCsqttLink(link)
+            if (decoded != null) {
+                return JSONObject().apply {
+                    put("protocol", "CSQTT")
+                    put("peer", decoded.peer)
+                    put("password", decoded.password)
+                    put("hashes", decoded.hashes)
+                    put("name", if (decoded.name.isEmpty()) decoded.peer else decoded.name)
+                    put("rawLink", link)
+                }
+            }
+        }
+
+        // 3. Нативный fallback (plain v=2 / user:pass@host)
+        return parseCsqttNative(link)
+    }
+
+    private fun parseCsqttNative(link: String): JSONObject {
         val out = JSONObject().apply {
             put("protocol", PROTO_CSQTT); put("peer", ""); put("password", "")
             put("hashes", ""); put("name", "")
@@ -966,10 +1021,6 @@ class Backend(private val context: Context) {
         } catch (_: Exception) { s }
     }
 
-    // ============================================================
-    //  VPN
-    // ============================================================
-
     private fun vpnConnect(body: String): Pair<Int, String> {
         val settings = loadSettings()
         val sel = readSelectedConfig()
@@ -1002,10 +1053,10 @@ class Backend(private val context: Context) {
                 if (intent != null) act.startActivityForResult(intent, REQ_VPN)
                 else startVpnService()
             }
+            luaRuntime?.onConnect()
             return 200 to jsonOk("ok" to true, "status" to "connecting")
         }
 
-        // --- CSQTT ---
         val peer = sel?.optString("peer", "") ?: settings.optString("peer", "")
         if (peer.isNullOrEmpty()) return 400 to jsonErr("no config selected")
 
@@ -1030,10 +1081,10 @@ class Backend(private val context: Context) {
             if (intent != null) act.startActivityForResult(intent, REQ_VPN)
             else startVpnService()
         }
+        luaRuntime?.onConnect()
         return 200 to jsonOk("ok" to true, "status" to "connecting")
     }
 
-    /** Собирает аргументы PaperFlux. Всегда --client, --mode proxy. */
     private fun buildPaperFluxArgs(
         cfg: JSONObject?,
         settings: JSONObject,
@@ -1119,6 +1170,7 @@ class Backend(private val context: Context) {
         vpnConnected = false
         emit("status", JSONObject().put("connected", false))
         addLog("[VPN] disconnect")
+        luaRuntime?.onDisconnect()
         return 200 to jsonOk("ok" to true)
     }
 
@@ -1137,10 +1189,6 @@ class Backend(private val context: Context) {
         try { socks5Server?.stop() } catch (_: Exception) {}
         socks5Server = null
     }
-
-    // ============================================================
-    //  VK
-    // ============================================================
 
     private fun vkLogin(): Pair<Int, String> {
         if (vkLoginInProgress) return 200 to jsonOk(
@@ -1236,10 +1284,6 @@ class Backend(private val context: Context) {
             }
         } catch (_: Exception) { Triple("", "", -1) }
     }
-
-    // ============================================================
-    //  Helpers
-    // ============================================================
 
     private fun jsonOk(vararg pairs: Pair<String, Any?>): String {
         val o = JSONObject()

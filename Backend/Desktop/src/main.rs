@@ -6,6 +6,7 @@
 mod api;
 mod config;
 mod core_manager;
+mod csqtt_link_bridge;
 mod events;
 mod lua_runtime;
 mod protocol;
