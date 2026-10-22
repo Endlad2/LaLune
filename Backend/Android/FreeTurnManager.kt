@@ -9,6 +9,21 @@
 // Пакет Java: com.freeturn.core.mobile.Mobile
 //   (gomobile bind -javapkg com.freeturn.core ./mobile)
 //
+// ВАЖНО: gomobile генерирует Java-методы в lowerCamelCase,
+// а Go-интерфейсы — с теми же именами, что в Go, но в lowerCamelCase:
+//
+//   EventSink:
+//     onState(state: String, streams: Long, total: Long, errMsg: String)
+//     onLog(level: String, msg: String, unixMillis: Long)
+//     onCaptcha(url: String, manual: Boolean)
+//
+//   Protector:
+//     protect(fd: Long): Boolean
+//
+// Если компилятор ругается «'OnState' overrides nothing» — значит
+// AAR собран другой версией gomobile или переименовал методы иначе.
+// Проверь `unzip -l freeturn.aar | grep classes.jar` и `javap` по нему.
+//
 // API из /mobile/README.md upstream:
 //   Mobile.start(configJSON: String)                     — режим прокси (UDP-relay)
 //   Mobile.startTunnel(configJSON: String, tunFD: Long)  — прокси + WireGuard/AmneziaWG
@@ -365,33 +380,43 @@ class FreeTurnManager(
 
     // ============================================================
     //  EventSink — AAR зовёт из фоновых горутин
-    //  Go int -> Java long, поэтому streams/total — Long.
+    //
+    //  gomobile генерирует Java-методы в lowerCamelCase:
+    //    onState(state: String!, streams: Long, total: Long, errMsg: String!)
+    //    onLog(level: String!, msg: String!, unixMillis: Long)
+    //    onCaptcha(url: String!, manual: Boolean)
+    //
+    //  Go int -> Java long.
     // ============================================================
 
     private class EventSinkImpl(
         private val logFn: (String) -> Unit,
         private val stateFn: (Boolean, Int, Int) -> Unit,
     ) : EventSink {
-        override fun OnState(state: String, streams: Long, total: Long, errMsg: String) {
+        override fun onState(state: String?, streams: Long, total: Long, errMsg: String?) {
             val connected = state == "connected"
             stateFn(connected, streams.toInt(), total.toInt())
-            if (errMsg.isNotEmpty()) {
+            if (!errMsg.isNullOrEmpty()) {
                 logFn("[FREETURN] state=$state error=$errMsg")
             }
         }
 
-        override fun OnLog(level: String, msg: String, unixMillis: Long) {
-            logFn("[FREETURN:$level] $msg")
+        override fun onLog(level: String?, msg: String?, unixMillis: Long) {
+            logFn("[FREETURN:$level] ${msg ?: ""}")
         }
 
-        override fun OnCaptcha(url: String, manual: Boolean) {
-            logFn("[FREETURN] captcha ${if (manual) "manual" else "auto"}: $url")
+        override fun onCaptcha(url: String?, manual: Boolean) {
+            logFn("[FREETURN] captcha ${if (manual) "manual" else "auto"}: ${url ?: ""}")
         }
     }
+
+    // ============================================================
+    //  Protector — gomobile: protect(fd: Long): Boolean
+    // ============================================================
 
     private class ProtectorImpl(
         private val protect: (Long) -> Boolean,
     ) : Protector {
-        override fun Protect(fd: Long): Boolean = protect(fd)
+        override fun protect(fd: Long): Boolean = protect(fd)
     }
 }
