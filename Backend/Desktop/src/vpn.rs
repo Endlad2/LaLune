@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // VPN: TUN-интерфейс, UDP-мост к ядру, маршруты, DNS, bypass.
-// Для PaperFlux в режиме proxy TUN оборачивает SOCKS5: маршруты
-// отправляют трафик на локальный SOCKS-прокси через tun2socks-подобный мост.
-// Здесь упрощённый вариант — используется тот же UDP-мост, что и для CSQTT
-// (ядро PaperFlux в режиме raw умеет работать напрямую с пакетами).
 //
-// ВАЖНО: для PaperFlux --mode proxy мы подсовываем ОС маршруты через TUN,
-// а TUN-мост сам подключается к SOCKS5 127.0.0.1:{CORE_LISTEN_PORT}.
+// Мост — два потока: TUN <-> UDP 127.0.0.1:<CORE_LISTEN_PORT> <-> ядро.
+// Ядро (CSQTT / PaperFlux / FreeTurn) слушает этот UDP и гоняет трафик
+// через свой транспорт.
+//
+// Все три протокола используют один и тот же порт CORE_LISTEN_PORT = 5399.
+// Ядро получает --listen/-listen 127.0.0.1:5399 при спавне
+// (protocol::build_args → CORE_LISTEN_PORT).
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -17,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::events::{Event, EventBus};
 
-pub const CORE_LISTEN_PORT: u16 = 1080;
+pub const CORE_LISTEN_PORT: u16 = 5399;
 pub const TUN_MTU: u16 = 1400;
 pub const DEFAULT_TUN_IP: &str = "10.66.67.12";
 pub const DEFAULT_DNS: &str = "8.8.8.8,8.8.4.4";

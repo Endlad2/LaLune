@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// HTTP API Desktop-бэкенда (axum).
+//
+// Роуты: /ping, /version, /configs*, /settings*, /vpn/*, /logs*,
+//        /core/*, /vk/*, /smarttunnel/*, /deploy/*, /platform/*, /debug/*.
+//
+// FreeTurn поддержан на уровне config.rs/protocol.rs: parse_freeturn,
+// build_freeturn_args, download_freeturn. В vpn_connect добавлена
+// соответствующая ветка.
+
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -155,38 +165,128 @@ async fn configs_get(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
 
 #[derive(Deserialize)]
 struct ConfigCreateBody {
-    protocol: Option<String>, link: Option<String>, peer: Option<String>, password: Option<String>, hashes: Option<String>,
-    name: Option<String>, #[serde(rename = "profileId")] profile_id: Option<String>,
-    #[serde(rename = "profileToken")] profile_token: Option<String>, #[serde(rename = "clientIp")] client_ip: Option<String>,
-    transport: Option<String>, url: Option<String>, urls: Option<String>, #[serde(rename = "volgaUrl")] volga_url: Option<String>,
-    #[serde(rename = "relayUrl")] relay_url: Option<String>, #[serde(rename = "relayToken")] relay_token: Option<String>,
-    #[serde(rename = "maxToken")] max_token: Option<String>, #[serde(rename = "maxUid")] max_uid: Option<String>, server: Option<String>,
+    protocol: Option<String>,
+    link: Option<String>,
+    peer: Option<String>,
+    password: Option<String>,
+    hashes: Option<String>,
+    name: Option<String>,
+    #[serde(rename = "profileId")] profile_id: Option<String>,
+    #[serde(rename = "profileToken")] profile_token: Option<String>,
+    #[serde(rename = "clientIp")] client_ip: Option<String>,
+    transport: Option<String>,
+    url: Option<String>,
+    urls: Option<String>,
+    #[serde(rename = "volgaUrl")] volga_url: Option<String>,
+    #[serde(rename = "relayUrl")] relay_url: Option<String>,
+    #[serde(rename = "relayToken")] relay_token: Option<String>,
+    #[serde(rename = "maxToken")] max_token: Option<String>,
+    #[serde(rename = "maxUid")] max_uid: Option<String>,
+    server: Option<String>,
+    // FreeTurn
+    #[serde(rename = "obfProfile")] obf_profile: Option<String>,
+    #[serde(rename = "obfKey")] obf_key: Option<String>,
+    mode: Option<String>,
+    n: Option<i64>,
+    spc: Option<i64>,
+    #[serde(rename = "clientId")] client_id: Option<String>,
+    #[serde(rename = "dnsMode")] dns_mode: Option<String>,
+    #[serde(rename = "dnsServers")] dns_servers: Option<String>,
+    #[serde(rename = "vkLink")] vk_link: Option<String>,
+    #[serde(rename = "wgConf")] wg_conf: Option<String>,
+    #[serde(rename = "wgRelay")] wg_relay: Option<bool>,
 }
 
 fn body_to_item(body: ConfigCreateBody) -> Result<ConfigItem, String> {
     if let Some(link) = body.link.as_ref().filter(|l| !l.trim().is_empty()) {
-        return parse_link(link).map_err(|e| e.to_string());
+        log::info!("[API] body_to_item: has link, calling parse_link");
+        return parse_link(link).map_err(|e| {
+            log::warn!("[API] body_to_item: parse_link FAILED: {:#}", e);
+            e.to_string()
+        });
     }
+
+    log::info!("[API] body_to_item: no link, using raw fields");
     let mut c = ConfigItem::default();
     c.protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
-    c.peer = body.peer.unwrap_or_default(); c.password = body.password.unwrap_or_default(); c.hashes = body.hashes.unwrap_or_default();
-    c.name = body.name.unwrap_or_default(); c.profile_id = body.profile_id.unwrap_or_default(); c.profile_token = body.profile_token.unwrap_or_default();
-    c.client_ip = body.client_ip.unwrap_or_default(); c.transport = body.transport.unwrap_or_default(); c.url = body.url.unwrap_or_default();
-    c.urls = body.urls.unwrap_or_default(); c.volga_url = body.volga_url.unwrap_or_default(); c.relay_url = body.relay_url.unwrap_or_default();
-    c.relay_token = body.relay_token.unwrap_or_default(); c.max_token = body.max_token.unwrap_or_default(); c.max_uid = body.max_uid.unwrap_or_default();
+    c.peer = body.peer.unwrap_or_default();
+    c.password = body.password.unwrap_or_default();
+    c.hashes = body.hashes.unwrap_or_default();
+    c.name = body.name.unwrap_or_default();
+    c.profile_id = body.profile_id.unwrap_or_default();
+    c.profile_token = body.profile_token.unwrap_or_default();
+    c.client_ip = body.client_ip.unwrap_or_default();
+    c.transport = body.transport.unwrap_or_default();
+    c.url = body.url.unwrap_or_default();
+    c.urls = body.urls.unwrap_or_default();
+    c.volga_url = body.volga_url.unwrap_or_default();
+    c.relay_url = body.relay_url.unwrap_or_default();
+    c.relay_token = body.relay_token.unwrap_or_default();
+    c.max_token = body.max_token.unwrap_or_default();
+    c.max_uid = body.max_uid.unwrap_or_default();
     c.server = body.server.unwrap_or_default();
-    if c.name.is_empty() { c.name = if c.peer.is_empty() { c.server.clone() } else { c.peer.clone() }; }
+    // FreeTurn
+    c.obf_profile = body.obf_profile.unwrap_or_default();
+    c.obf_key = body.obf_key.unwrap_or_default();
+    c.mode = body.mode.unwrap_or_default();
+    c.n = body.n.unwrap_or(0);
+    c.spc = body.spc.unwrap_or(0);
+    c.client_id = body.client_id.unwrap_or_default();
+    c.dns_mode = body.dns_mode.unwrap_or_default();
+    c.dns_servers = body.dns_servers.unwrap_or_default();
+    c.vk_link = body.vk_link.unwrap_or_default();
+    c.wg_conf = body.wg_conf.unwrap_or_default();
+    c.wg_relay = body.wg_relay.unwrap_or(false);
+
+    if c.name.is_empty() {
+        c.name = if c.peer.is_empty() { c.server.clone() } else { c.peer.clone() };
+    }
     Ok(c)
 }
 
 async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
-    let config = match body_to_item(body) { Ok(c) => c, Err(e) => return err(400, e) };
-    match state.configs.insert(&config) { Ok(id) => Json(json!({"id": id})).into_response(), Err(e) => err(500, e.to_string()) }
+    log::info!(
+        "[API] POST /configs protocol={:?} link_len={}",
+        body.protocol,
+        body.link.as_deref().map(|s| s.len()).unwrap_or(0)
+    );
+
+    let config = match body_to_item(body) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[API] /configs body_to_item FAILED: {}", e);
+            return err(400, e);
+        }
+    };
+    log::info!(
+        "[API] /configs parsed: protocol={} peer={} name={} wg_relay={}",
+        config.protocol, config.peer, config.name, config.wg_relay
+    );
+
+    match state.configs.insert(&config) {
+        Ok(id) => {
+            log::info!("[API] /configs INSERTED id={}", id);
+            Json(json!({"id": id})).into_response()
+        }
+        Err(e) => {
+            log::error!("[API] /configs insert FAILED: {:#}", e);
+            err(500, e.to_string())
+        }
+    }
 }
 
 async fn configs_update(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
-    let config = match body_to_item(body) { Ok(c) => c, Err(e) => return err(400, e) };
-    match state.configs.update(id, &config) { Ok(_) => Json(json!({"ok": true})).into_response(), Err(e) => err(500, e.to_string()) }
+    let config = match body_to_item(body) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[API] /configs/{} body_to_item FAILED: {}", id, e);
+            return err(400, e);
+        }
+    };
+    match state.configs.update(id, &config) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(500, e.to_string()),
+    }
 }
 
 async fn configs_delete(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
@@ -197,7 +297,20 @@ async fn configs_delete(State(state): State<Arc<AppState>>, Path(id): Path<i64>)
 struct ParseBody { link: String }
 
 async fn configs_parse(Json(body): Json<ParseBody>) -> impl IntoResponse {
-    match parse_link(&body.link) { Ok(c) => Json(json!(c)).into_response(), Err(e) => err(400, e.to_string()) }
+    log::info!("[API] POST /configs/parse link_len={}", body.link.len());
+    match parse_link(&body.link) {
+        Ok(c) => {
+            log::info!(
+                "[API] /configs/parse OK: protocol={} peer={} name={} wg_relay={}",
+                c.protocol, c.peer, c.name, c.wg_relay
+            );
+            Json(json!(c)).into_response()
+        }
+        Err(e) => {
+            log::warn!("[API] /configs/parse FAILED: {:#}", e);
+            err(400, e.to_string())
+        }
+    }
 }
 
 async fn selected_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -293,7 +406,7 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     let core = match CoreProcess::spawn(&core_path, &args, &state.logs_path, state.events.clone()).await { Ok(c) => c, Err(e) => return err(500, format!("spawn failed: {}", e)) };
     *state.core.lock() = Some(core);
 
-    if kind == ProtocolKind::Csqtt && settings.share_vpn {
+    if matches!(kind, ProtocolKind::Csqtt | ProtocolKind::PaperFlux) && settings.share_vpn {
         if let Err(e) = crate::socks5::start(state.clone()) { state.log(format!("[PROXY] failed to start: {}", e)); }
     }
 
@@ -326,8 +439,11 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                 }
             }
             let ready = match kind_for_watchdog {
+                // FreeTurn/PaperFlux в relay-only не печатают TUNCONF и
+                // «Активных: N», как CSQTT. Считаем готовностью просто
+                // первый вывод процесса.
                 ProtocolKind::Csqtt => tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2,
-                ProtocolKind::PaperFlux | ProtocolKind::FreeTurn => consecutive_active_ticks >= 1 || last_size > 0,
+                ProtocolKind::PaperFlux | ProtocolKind::FreeTurn => last_size > 0 || consecutive_active_ticks >= 1,
             };
             if ready {
                 let ip = tun_ip.clone().unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
@@ -421,12 +537,29 @@ async fn core_download_async_p(State(state): State<Arc<AppState>>, Path(proto): 
         let dest = crate::state::core_path_for(&state2.app_dir, kind.id());
         let latest_file = state2.app_dir.join(format!("LATEST.{}", kind.id()));
         match kind {
-            ProtocolKind::Csqtt => { /* download logic */ }
-            ProtocolKind::PaperFlux => { /* download logic */ }
+            ProtocolKind::Csqtt => {
+                if let Some(version) = core_manager::fetch_latest_csqtt(&client, &state2.events).await {
+                    state2.events.emit(Event::progress("core_download", 20));
+                    if core_manager::download_csqtt(&client, &version, &dest, &state2.events).await.is_ok() {
+                        let _ = tokio::fs::write(&latest_file, &version).await;
+                        state2.events.emit(Event::progress("core_download", 100));
+                    }
+                }
+            }
+            ProtocolKind::PaperFlux => {
+                state2.events.emit(Event::progress("core_download", 20));
+                if core_manager::download_paperflux(&client, &dest, &state2.events).await.is_ok() {
+                    let _ = tokio::fs::write(&latest_file, "latest").await;
+                    state2.events.emit(Event::progress("core_download", 100));
+                }
+            }
             ProtocolKind::FreeTurn => {
                 state2.events.emit(Event::progress("core_download", 20));
                 match core_manager::download_freeturn(&client, &dest, &state2.events).await {
-                    Ok(_) => { let _ = tokio::fs::write(&latest_file, "latest").await; state2.events.emit(Event::progress("core_download", 100)); }
+                    Ok(_) => {
+                        let _ = tokio::fs::write(&latest_file, "latest").await;
+                        state2.events.emit(Event::progress("core_download", 100));
+                    }
                     Err(e) => { state2.events.emit(Event::error(e.to_string())); }
                 }
             }
@@ -443,13 +576,24 @@ async fn core_download_sync_p(State(state): State<Arc<AppState>>, Path(proto): P
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
     let dest = crate::state::core_path_for(&state.app_dir, kind.id());
     let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
-    let result = match kind {
-        ProtocolKind::Csqtt => { /* ... */ Ok("ok".to_string()) }
-        ProtocolKind::PaperFlux => { /* ... */ Ok("ok".to_string()) }
+    let result: Result<String, anyhow::Error> = match kind {
+        ProtocolKind::Csqtt => {
+            match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                Some(version) => match core_manager::download_csqtt(&client, &version, &dest, &state.events).await {
+                    Ok(_) => { let _ = tokio::fs::write(&latest_file, &version).await; Ok(version) }
+                    Err(e) => Err(e),
+                },
+                None => Err(anyhow::anyhow!("cannot fetch LATEST")),
+            }
+        }
+        ProtocolKind::PaperFlux => match core_manager::download_paperflux(&client, &dest, &state.events).await {
+            Ok(_) => { let _ = tokio::fs::write(&latest_file, "latest").await; Ok("latest".to_string()) }
+            Err(e) => Err(e),
+        },
         ProtocolKind::FreeTurn => match core_manager::download_freeturn(&client, &dest, &state.events).await {
             Ok(_) => { let _ = tokio::fs::write(&latest_file, "latest").await; Ok("latest".to_string()) }
             Err(e) => Err(e),
-        }
+        },
     };
     *state.core_downloading.lock() = false;
     match result { Ok(v) => Json(json!({"ok": true, "version": v})).into_response(), Err(e) => err(500, e.to_string()) }
