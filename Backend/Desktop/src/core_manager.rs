@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Ядро: скачивание, запуск, URL-ассеты.
+//
+// FreeTurn больше не запускается как отдельный бинарь: Desktop-бэкенд
+// запускает `freeturn-core` (client) в режиме relay-only, а TUN мостит
+// сам (Wintun / tun crate). Это тот же `client`, что и на Android,
+// но собранный под хост.
+
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use std::process::Stdio;
@@ -11,6 +19,11 @@ pub const LATEST_PAPERFLUX_URL: &str = "https://raw.githubusercontent.com/Endlad
 
 pub const CSQTT_URL_TEMPLATE: &str = "https://github.com/Endlad2/csqtt-core/releases/download/{VER}/{FILE}";
 pub const PAPERFLUX_URL_TEMPLATE: &str = "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/{FILE}";
+
+// FreeTurn upstream (hackdiaz-dev/free-turn-proxy) — релизные ассеты:
+//   client-<os>-<arch>    — CLI-клиент, годится как relay-only процесс.
+//   client-<os>-<arch>    — сервер, нам не нужен.
+// LATEST у них нет (release-please), поэтому качаем latest.
 pub const FREETURN_URL_TEMPLATE: &str = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/latest/download/{FILE}";
 
 pub const PROXY_URL: &str = "http://31.77.148.203:8855/?url=";
@@ -40,9 +53,16 @@ pub fn paperflux_local_filename() -> &'static str {
 }
 
 pub fn freeturn_asset_name() -> &'static str {
-    #[cfg(target_os = "windows")] { "client-windows-amd64.exe" }
-    #[cfg(target_os = "linux")] { "client-linux-amd64" }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))] { "client-unknown" }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))] { "client-windows-amd64.exe" }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))] { "client-windows-arm64.exe" }
+    #[cfg(all(target_os = "windows", target_arch = "x86"))] { "client-windows-386.exe" }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))] { "client-linux-amd64" }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))] { "client-linux-arm64" }
+    #[cfg(all(target_os = "linux", target_arch = "arm"))] { "client-linux-armv7" }
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "linux",
+    )))] { "client-unknown" }
 }
 
 pub fn freeturn_local_filename() -> &'static str {
