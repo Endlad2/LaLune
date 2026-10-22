@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// VpnService с TUN + UDP-мост к ядру CSQTT.
+// VpnService с TUN + UDP-мост к ядру.
 //
-// package = com.lalune.lalune — тот же, что у MainActivity и Backend.
+// Порты:
+//   CSQTT     → 127.0.0.1:5399  (CoreManager.buildCsqttArgs --listen)
+//   PaperFlux → 127.0.0.1:5399  (--socks5 127.0.0.1:5399, args from Backend)
+//   FreeTurn  → 127.0.0.1:9000  (AAR Mobile.start proxy.listen из JSON)
 //
-// Порядок (как в Desktop):
-//   1. Ядро запускается (уже запущено Backend'ом до startForegroundService).
-//   2. Ждём в logs.log "Активных: N>0" ДВА тика подряд.
-//   3. Только тогда поднимаем TUN + UDP-мост.
+// Для FreeTurn со встроенным WireGuard (tunnel.mode=wg) TUN не мостится:
+// AAR сам читает tun fd через Mobile.startTunnel(configJson, tunFd).
 
 package com.lalune.lalune
 
@@ -33,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -47,7 +49,11 @@ class LaLuneVpnService : VpnService() {
         private const val CHANNEL_ID = "lalune_vpn"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "com.lalune.lalune.STOP_FROM_NOTIFICATION"
-        private const val CORE_PORT = 52230
+
+        private const val CSQTT_PORT = 5399
+        private const val PAPERFLUX_PORT = 5399
+        private const val FREETURN_PORT = 9000
+
         private const val DEFAULT_TUN_IP = "10.66.67.12"
         private const val DEFAULT_DNS_1 = "8.8.8.8"
         private const val DEFAULT_DNS_2 = "8.8.4.4"
@@ -99,10 +105,40 @@ class LaLuneVpnService : VpnService() {
 
     private fun startFlow() {
         Log.d(TAG, "startFlow")
+        // Отдаём себя FreeTurn-протектору, чтобы VpnService.protect(fd)
+        // работал для сокетов AAR (иначе трафик до VK уходит в туннель).
+        try {
+            (application as? LaLuneApplication)?.backend?.attachVpnService(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "attachVpnService: ${e.message}")
+        }
+
         scope.launch {
             val logsFile = File(filesDir, "la-lune/logs.log")
             watchLogsAndEstablish(logsFile)
         }
+    }
+
+    private fun selectedProtocol(): String {
+        return try {
+            val f = File(filesDir, "la-lune/selected_config.json")
+            if (f.exists()) JSONObject(f.readText()).optString("protocol", "CSQTT")
+            else "CSQTT"
+        } catch (_: Exception) { "CSQTT" }
+    }
+
+    private fun selectedWgConf(): String {
+        return try {
+            val f = File(filesDir, "la-lune/settings.json")
+            if (f.exists()) JSONObject(f.readText()).optString("ftWgConf", "")
+            else ""
+        } catch (_: Exception) { "" }
+    }
+
+    private fun corePort(): Int = when (selectedProtocol().uppercase()) {
+        "PAPERFLUX" -> PAPERFLUX_PORT
+        "FREETURN" -> FREETURN_PORT
+        else -> CSQTT_PORT
     }
 
     private suspend fun watchLogsAndEstablish(logsFile: File) = withContext(Dispatchers.IO) {
@@ -153,12 +189,20 @@ class LaLuneVpnService : VpnService() {
             delay(500)
             waited += 500
         }
+
+        // FreeTurn relay-only: AAR слушает 127.0.0.1:9000, но лог с «Активных»
+        // пишет только CSQTT. Для FreeTurn TUN поднимаем сразу.
+        if (!tunEstablished && isRunning && selectedProtocol().equals("FreeTurn", ignoreCase = true)) {
+            Log.i(TAG, "FreeTurn detected, establishing TUN immediately")
+            withContext(Dispatchers.Main) { establishTun() }
+        }
+
         if (!tunEstablished) Log.w(TAG, "timeout waiting for TUNCONF + Активных>0")
     }
 
     private fun establishTun() {
         if (tunEstablished) return
-        Log.d(TAG, "establishTun")
+        Log.d(TAG, "establishTun (proto=${selectedProtocol()})")
 
         try { vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null
@@ -181,6 +225,8 @@ class LaLuneVpnService : VpnService() {
                 dnsList.forEach { builder.addDnsServer(it) }
             }
 
+            // Исключаем себя из туннеля — иначе приложение ходит в API через
+            // собственный VPN-туннель, и watchdog ловит таймауты.
             try {
                 builder.addDisallowedApplication(packageName)
             } catch (e: Exception) {
@@ -198,7 +244,62 @@ class LaLuneVpnService : VpnService() {
             tunEstablished = true
             Log.d(TAG, "establish() ok, fd=${iface.fd}")
 
-            scope.launch { setupSocketAndBridges(iface, tunIP) }
+            // FreeTurn со встроенным WireGuard: отдаём tun fd в AAR,
+            // сам мост не поднимаем.
+            if (selectedProtocol().equals("FreeTurn", ignoreCase = true) &&
+                selectedWgConf().isNotBlank()
+            ) {
+                val app = application as? LaLuneApplication
+                val mgr = app?.backend?.let { /* backend.freeTurnManager не торчит наружу */ null }
+                // Отдаём через LaLuneApplication: см. LaLuneApplication.kt.
+                val ftMgr = app?.freeTurnManager
+                if (ftMgr != null) {
+                    val appDir = File(filesDir, "la-lune")
+                    val settings = try {
+                        JSONObject(File(appDir, "settings.json").readText())
+                    } catch (_: Exception) { JSONObject() }
+                    val selected = try {
+                        JSONObject(File(appDir, "selected_config.json").readText())
+                    } catch (_: Exception) { JSONObject() }
+
+                    val peer = selected.optString("peer", "")
+                    val link = settings.optString("ftLink", "")
+                        .ifEmpty { selected.optString("vkLink", "") }
+                    val obfProfile = settings.optString("ftObf", "rtpopus3")
+                    val obfKey = settings.optString("ftKey", "")
+                        .ifEmpty { selected.optString("obfKey", "") }
+                    val clientId = settings.optString("ftCid", "")
+                        .ifEmpty { selected.optString("clientId", "") }
+                    val n = settings.optInt("ftN", 12)
+                    val dnsMode = settings.optString("ftDns", "auto")
+                    val dnsServers = settings.optString("ftDnss", "")
+                    val wgConf = selectedWgConf()
+
+                    val ok = ftMgr.startTunnelWithWg(
+                        peer = peer,
+                        link = link,
+                        obfProfile = obfProfile,
+                        obfKey = obfKey,
+                        clientId = clientId,
+                        n = n,
+                        dnsMode = dnsMode,
+                        dnsServers = dnsServers,
+                        wgText = wgConf,
+                        mtu = 1280,
+                        tunFd = iface.detachFd(),
+                    )
+                    if (!ok) {
+                        Log.e(TAG, "FreeTurn startTunnelWithWg failed")
+                        return
+                    }
+                    notifyStatus(this, true)
+                    return
+                }
+            }
+
+            // CSQTT / PaperFlux / FreeTurn-relay: обычный UDP-мост.
+            val port = corePort()
+            scope.launch { setupSocketAndBridges(iface, tunIP, port) }
             notifyStatus(this, true)
         } catch (e: Exception) {
             Log.e(TAG, "establishTun: ${e.message}", e)
@@ -206,26 +307,29 @@ class LaLuneVpnService : VpnService() {
         }
     }
 
-    private suspend fun setupSocketAndBridges(iface: ParcelFileDescriptor, tunIP: String) =
-        withContext(Dispatchers.IO) {
-            try {
-                val socket = DatagramSocket()
-                socket.connect(InetAddress.getByName("127.0.0.1"), CORE_PORT)
-                udpSocket = socket
+    private suspend fun setupSocketAndBridges(
+        iface: ParcelFileDescriptor,
+        tunIP: String,
+        port: Int,
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val socket = DatagramSocket()
+            socket.connect(InetAddress.getByName("127.0.0.1"), port)
+            udpSocket = socket
 
-                Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$CORE_PORT")
-                updateNotification()
+            Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$port (proto=${selectedProtocol()})")
+            updateNotification()
 
-                launch { tunToUdp(iface, socket) }
-                launch { udpToTun(iface, socket) }
-            } catch (e: Exception) {
-                Log.e(TAG, "setupSocket: ${e.message}", e)
-                tunEstablished = false
-                try { iface.close() } catch (_: Exception) {}
-                vpnInterface = null
-                notifyStatus(this@LaLuneVpnService, false)
-            }
+            launch { tunToUdp(iface, socket) }
+            launch { udpToTun(iface, socket) }
+        } catch (e: Exception) {
+            Log.e(TAG, "setupSocket: ${e.message}", e)
+            tunEstablished = false
+            try { iface.close() } catch (_: Exception) {}
+            vpnInterface = null
+            notifyStatus(this@LaLuneVpnService, false)
         }
+    }
 
     private suspend fun tunToUdp(iface: ParcelFileDescriptor, socket: DatagramSocket) {
         val input = FileInputStream(iface.fileDescriptor)

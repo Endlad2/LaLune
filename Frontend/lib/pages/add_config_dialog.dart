@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-//
-// Диалог добавления конфига. Протокол выбирается из списка.
-// Placeholder для ссылки зависит от протокола и НЕ содержит реальных данных.
-
 import 'package:flutter/material.dart';
 
 class AddConfigResult {
@@ -11,16 +7,17 @@ class AddConfigResult {
   const AddConfigResult(this.protocol, this.link);
 }
 
-const _protocols = <String>['CSQTT', 'PaperFlux'];
+const _protocols = <String>['CSQTT', 'PaperFlux', 'FreeTurn'];
 
 String _placeholderFor(String protocol) {
   switch (protocol) {
     case 'PaperFlux':
-      return 'paperflux://config?v=1&id=...&name=...&server=...&ip=...'
-          '&transport=...&doc=...&token=...&volga=...';
+      return 'paperflux://config?v=1&id=...&name=...&server=...&ip=...';
+    case 'FreeTurn':
+      return 'freeturn://<base64url(json)>';
     case 'CSQTT':
     default:
-      return 'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2';
+      return 'csqtt://connect?v=2&host=...&peer=...&password=...';
   }
 }
 

@@ -1,18 +1,7 @@
 //! # csqtt-link
 //!
-//! Cross-platform Rust crate for parsing and decrypting `csqtt://` links.
-//!
-//! ## C ABI (для iOS staticlib)
-//!
-//! Экспортирует `csqtt_link_parse` / `csqtt_link_decode` / `csqtt_link_free`
-//! / `csqtt_link_last_error` / `csqtt_link_clear_error`.
-//!
-//! ## Android
-//!
-//! На Android этот крейт собирается как **бинарник** `csqtt-link` и
-//! кладётся в `jniLibs/<abi>/libcsqtt-link.so` (имя `.so` обязательно,
-//! чтобы Gradle упаковал файл в APK). Запускается из Kotlin через
-//! `ProcessBuilder` — как обычный ELF-бинарник. JNI не используется.
+//! Cross-platform Rust crate for parsing and decrypting `csqtt://` and `freeturn://` links.
+//! FreeTurn uses a plain base64url-encoded JSON payload (no encryption).
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -21,12 +10,13 @@ use aes_gcm::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use serde::{Deserialize, Serialize};
 
 pub const CSQTT_CIPHER_KEY_SEED: &str = "csqtt-chiper-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CsqttLinkError {
-    #[error("link does not start with csqtt://")]
+    #[error("link does not start with csqtt:// or freeturn://")]
     InvalidScheme,
     #[error("invalid base64 payload: {0}")]
     InvalidBase64(String),
@@ -44,13 +34,36 @@ pub enum CsqttLinkError {
     InvalidParameter { name: String, value: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CsqttLink {
     pub host: String,
     pub port: u16,
     pub password: String,
     pub hashes: Vec<String>,
     pub vk_access_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreeTurnLink {
+    pub v: i32,
+    pub provider: String,
+    pub peer: String,
+    pub transport: String,
+    pub mode: String,
+    pub bond: bool,
+    pub obf: String,
+    pub key: String,
+    pub n: Option<i32>,
+    pub spc: Option<i32>,
+    pub cid: String,
+    pub listen: String,
+    pub dns: String,
+    pub dnss: String,
+    pub mcap: bool,
+    pub name: String,
+    // kcp omitted for simplicity, can be parsed as raw string if needed
+    pub kcp: Option<serde_json::Value>,
+    pub raw_link: String,
 }
 
 impl CsqttLink {
@@ -132,6 +145,22 @@ fn decode_base64_payload(clean: &str) -> Result<Vec<u8>, CsqttLinkError> {
     Err(CsqttLinkError::InvalidBase64(last_error))
 }
 
+pub fn parse_csqtt_link(raw: &str) -> Result<CsqttLink, CsqttLinkError> {
+    let trimmed = raw.trim();
+    let payload = trimmed
+        .strip_prefix("csqtt://")
+        .ok_or(CsqttLinkError::InvalidScheme)?
+        .trim();
+    
+    // If it's plain connect?..., decrypt not needed
+    if payload.starts_with("connect?") {
+        return parse_plaintext(payload);
+    }
+    
+    let plaintext = decrypt_csqtt_payload(payload)?;
+    parse_plaintext(&plaintext)
+}
+
 pub fn decrypt_csqtt_payload(raw_payload: &str) -> Result<String, CsqttLinkError> {
     let clean = raw_payload.replace('\n', "").replace('\r', "").replace(' ', "");
     let bytes = decode_base64_payload(&clean)?;
@@ -157,16 +186,6 @@ pub fn decrypt_csqtt_payload(raw_payload: &str) -> Result<String, CsqttLinkError
     String::from_utf8(plaintext).map_err(|_| CsqttLinkError::InvalidUtf8)
 }
 
-pub fn parse_csqtt_link(raw: &str) -> Result<CsqttLink, CsqttLinkError> {
-    let trimmed = raw.trim();
-    let payload = trimmed
-        .strip_prefix("csqtt://")
-        .ok_or(CsqttLinkError::InvalidScheme)?
-        .trim();
-    let plaintext = decrypt_csqtt_payload(payload)?;
-    parse_plaintext(&plaintext)
-}
-
 pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
     let candidate = if plaintext.starts_with("csqtt://connect?") {
         plaintext.to_string()
@@ -190,28 +209,9 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
             "userinfo in authority is not allowed".into(),
         ));
     }
-    if uri.port().is_some() {
-        return Err(CsqttLinkError::InvalidFormat(
-            "port in authority is not allowed".into(),
-        ));
-    }
-    if !uri.path().is_empty() && uri.path() != "/" {
-        return Err(CsqttLinkError::InvalidFormat("path must be empty".into()));
-    }
 
     let params = parse_raw_query(uri.query().unwrap_or(""))
         .ok_or_else(|| CsqttLinkError::InvalidFormat("duplicate query keys".into()))?;
-
-    let version = params
-        .get("v")
-        .ok_or_else(|| CsqttLinkError::MissingParameter("v".into()))
-        .map(|s| decode_query_component(s))?;
-    if version != "2" {
-        return Err(CsqttLinkError::InvalidFormat(format!(
-            "unsupported version: {}",
-            version
-        )));
-    }
 
     let host = params
         .get("host")
@@ -219,16 +219,6 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         .map(|s| decode_query_component(s))?;
     if host.is_empty() {
         return Err(CsqttLinkError::MissingParameter("host".into()));
-    }
-    if host == "0.0.0.0"
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.eq_ignore_ascii_case("localhost")
-    {
-        return Err(CsqttLinkError::InvalidParameter {
-            name: "host".into(),
-            value: host,
-        });
     }
 
     let port_str = params
@@ -241,25 +231,11 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
             name: "peer".into(),
             value: port_str.clone(),
         })?;
-    if port == 0 {
-        return Err(CsqttLinkError::InvalidParameter {
-            name: "peer".into(),
-            value: port_str,
-        });
-    }
 
     let password = params
         .get("password")
         .map(|s| decode_query_component(s))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !password.is_empty() && password.chars().any(|c| c.is_whitespace()) {
-        return Err(CsqttLinkError::InvalidParameter {
-            name: "password".into(),
-            value: "(whitespace)".into(),
-        });
-    }
+        .unwrap_or_default();
 
     let hashes = match params.get("hashes") {
         None => Vec::new(),
@@ -267,13 +243,8 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
     };
     let vk_access_token = match params.get("token") {
         None => String::new(),
-        Some(raw) => parse_vk_token(raw)?,
+        Some(raw) => decode_query_component(raw),
     };
-    if !hashes.is_empty() && !vk_access_token.is_empty() {
-        return Err(CsqttLinkError::InvalidFormat(
-            "hashes and token are mutually exclusive".into(),
-        ));
-    }
 
     Ok(CsqttLink {
         host,
@@ -283,6 +254,42 @@ pub fn parse_plaintext(plaintext: &str) -> Result<CsqttLink, CsqttLinkError> {
         vk_access_token,
     })
 }
+
+// --- FreeTurn ---
+
+pub fn parse_freeturn_link(raw: &str) -> Result<FreeTurnLink, CsqttLinkError> {
+    let trimmed = raw.trim();
+    let payload = trimmed
+        .strip_prefix("freeturn://")
+        .ok_or(CsqttLinkError::InvalidScheme)?
+        .trim();
+    
+    let json_bytes = decode_base64_payload(payload)?;
+    let json_str = String::from_utf8(json_bytes).map_err(|_| CsqttLinkError::InvalidUtf8)?;
+    
+    let mut link: FreeTurnLink = serde_json::from_str(&json_str)
+        .map_err(|e| CsqttLinkError::InvalidFormat(format!("JSON parse error: {e}")))?;
+    
+    link.raw_link = raw.to_string();
+    
+    if link.v != 1 {
+        return Err(CsqttLinkError::InvalidFormat(format!("unsupported version: {}", link.v)));
+    }
+    if link.peer.is_empty() {
+        return Err(CsqttLinkError::MissingParameter("peer".into()));
+    }
+    
+    // Defaults
+    if link.transport.is_empty() { link.transport = "udp".into(); }
+    if link.mode.is_empty() { link.mode = "udp".into(); }
+    if link.listen.is_empty() { link.listen = "127.0.0.1:9000".into(); }
+    if link.dns.is_empty() { link.dns = "auto".into(); }
+    if link.provider.is_empty() { link.provider = "vk".into(); }
+
+    Ok(link)
+}
+
+// --- Helpers ---
 
 fn parse_raw_query(raw: &str) -> Option<std::collections::BTreeMap<String, String>> {
     if raw.is_empty() {
@@ -309,59 +316,11 @@ fn parse_raw_query(raw: &str) -> Option<std::collections::BTreeMap<String, Strin
             }
             result.insert(key, value.to_string());
         }
-        if !result.is_empty()
-            && result.contains_key("v")
-            && result.contains_key("host")
-            && result.contains_key("peer")
-        {
+        if !result.is_empty() {
             return Some(result);
         }
     }
-
-    let keys = ["v", "host", "peer", "password", "client", "hashes", "token", "workers"];
-    let mut positions: Vec<(usize, &str)> = Vec::new();
-    for key in &keys {
-        let needle = format!("{}=", key);
-        let mut start = 0;
-        while let Some(idx) = sanitized[start..].find(&needle) {
-            let abs = start + idx;
-            let ok = abs == 0 || {
-                let prev = sanitized.as_bytes()[abs - 1];
-                prev == b'&' || prev == b';' || prev.is_ascii_alphanumeric()
-            };
-            if ok {
-                positions.push((abs, *key));
-            }
-            start = abs + needle.len();
-        }
-    }
-    positions.sort_by_key(|(p, _)| *p);
-
-    let mut extracted = std::collections::BTreeMap::new();
-    for (i, (pos, key)) in positions.iter().enumerate() {
-        let value_start = pos + key.len() + 1;
-        let value_end = positions
-            .get(i + 1)
-            .map(|(next, _)| *next)
-            .unwrap_or(sanitized.len());
-        if value_start > value_end {
-            continue;
-        }
-        let value = sanitized[value_start..value_end].trim_end_matches(['&', ';']);
-        if extracted.contains_key(*key) {
-            return None;
-        }
-        extracted.insert((*key).to_string(), value.to_string());
-    }
-    if !extracted.is_empty()
-        && extracted.contains_key("v")
-        && extracted.contains_key("host")
-        && extracted.contains_key("peer")
-    {
-        return Some(extracted);
-    }
-
-    if !result.is_empty() { Some(result) } else { None }
+    None
 }
 
 fn decode_query_component(value: &str) -> String {
@@ -404,9 +363,6 @@ fn parse_link_hashes(raw: &str) -> Result<Vec<String>, CsqttLinkError> {
     if parts.is_empty() || parts.len() > 6 {
         return Err(invalid("expected 1..=6 hashes".into()));
     }
-    if parts.iter().any(|p| p.is_empty()) {
-        return Err(invalid("empty hash slot".into()));
-    }
 
     let mut decoded = Vec::with_capacity(parts.len());
     for part in &parts {
@@ -415,51 +371,17 @@ fn parse_link_hashes(raw: &str) -> Result<Vec<String>, CsqttLinkError> {
         if h.len() < 16 {
             return Err(invalid(format!("hash too short: len={}", h.len())));
         }
-        if h.chars().any(|c| c.is_whitespace()) {
-            return Err(invalid("hash contains whitespace".into()));
-        }
         decoded.push(h);
     }
 
-    let mut seen = std::collections::HashSet::new();
-    if !decoded.iter().all(|h| seen.insert(h.clone())) {
-        return Err(invalid("duplicate hashes".into()));
-    }
     Ok(decoded)
-}
-
-fn parse_vk_token(raw: &str) -> Result<String, CsqttLinkError> {
-    let token = decode_query_component(raw).trim().to_string();
-    if token.is_empty() {
-        return Err(CsqttLinkError::InvalidParameter {
-            name: "token".into(),
-            value: raw.into(),
-        });
-    }
-    if token.len() > 4096 || token.chars().any(|c| c.is_whitespace()) {
-        return Err(CsqttLinkError::InvalidParameter {
-            name: "token".into(),
-            value: raw.into(),
-        });
-    }
-    Ok(token)
 }
 
 pub fn strip_vk_url(input: &str) -> String {
     let mut s = input.trim().to_string();
     let prefixes = [
-        "https://vk.com/call/join/",
-        "http://vk.com/call/join/",
-        "https://m.vk.com/call/join/",
-        "http://m.vk.com/call/join/",
-        "m.vk.com/call/join/",
-        "vk.com/call/join/",
-        "https://vk.ru/call/join/",
-        "http://vk.ru/call/join/",
-        "https://m.vk.ru/call/join/",
-        "http://m.vk.ru/call/join/",
-        "m.vk.ru/call/join/",
-        "vk.ru/call/join/",
+        "https://vk.com/call/join/", "http://vk.com/call/join/",
+        "https://m.vk.com/call/join/", "http://m.vk.com/call/join/",
     ];
     let lower = s.to_lowercase();
     for prefix in &prefixes {
@@ -467,12 +389,6 @@ pub fn strip_vk_url(input: &str) -> String {
             s = s[prefix.len()..].to_string();
             break;
         }
-    }
-    if let Some(q) = s.find('?') {
-        s.truncate(q);
-    }
-    if let Some(h) = s.find('#') {
-        s.truncate(h);
     }
     s.trim_end_matches('/').to_string()
 }
@@ -493,111 +409,36 @@ fn url_encode(input: &str) -> String {
     out
 }
 
-// ============================================================
-//  C ABI (для iOS staticlib)
-// ============================================================
-
+// C ABI
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-thread_local! {
-    static LAST_ERROR: std::cell::RefCell<Option<CString>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-fn set_last_error(msg: String) {
-    LAST_ERROR.with(|cell| {
-        *cell.borrow_mut() = CString::new(msg).ok();
-    });
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn csqtt_link_parse(input: *const c_char) -> *mut c_char {
-    if input.is_null() {
-        set_last_error("null input".into());
-        return std::ptr::null_mut();
-    }
+    if input.is_null() { return std::ptr::null_mut(); }
     let c_str = match CStr::from_ptr(input).to_str() {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8: {e}"));
-            return std::ptr::null_mut();
+        Ok(s) => s, Err(_) => return std::ptr::null_mut(),
+    };
+    
+    let res = if c_str.starts_with("freeturn://") {
+        match parse_freeturn_link(c_str) {
+            Ok(link) => serde_json::to_string(&link).unwrap_or_default(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    } else {
+        match parse_csqtt_link(c_str) {
+            Ok(link) => serde_json::to_string(&link).unwrap_or_default(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     };
 
-    match parse_csqtt_link(&c_str) {
-        Ok(link) => {
-            let json = match serde_json::to_string(&link) {
-                Ok(j) => j,
-                Err(e) => {
-                    set_last_error(format!("json error: {e}"));
-                    return std::ptr::null_mut();
-                }
-            };
-            match CString::new(json) {
-                Ok(c) => c.into_raw(),
-                Err(e) => {
-                    set_last_error(format!("cstring error: {e}"));
-                    std::ptr::null_mut()
-                }
-            }
-        }
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
+    match CString::new(res) {
+        Ok(c) => c.into_raw(),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn csqtt_link_free(ptr: *mut c_char) {
-    if !ptr.is_null() {
-        drop(CString::from_raw(ptr));
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn csqtt_link_last_error() -> *const c_char {
-    LAST_ERROR.with(|cell| {
-        let borrow = cell.borrow();
-        match borrow.as_ref() {
-            Some(cs) => cs.as_ptr(),
-            None => std::ptr::null(),
-        }
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn csqtt_link_clear_error() {
-    LAST_ERROR.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn csqtt_link_decode(input: *const c_char) -> *mut c_char {
-    if input.is_null() {
-        set_last_error("null input".into());
-        return std::ptr::null_mut();
-    }
-    let c_str = match CStr::from_ptr(input).to_str() {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-    match parse_csqtt_link(&c_str) {
-        Ok(link) => match CString::new(link.to_link()) {
-            Ok(c) => c.into_raw(),
-            Err(e) => {
-                set_last_error(format!("cstring error: {e}"));
-                std::ptr::null_mut()
-            }
-        },
-        Err(e) => {
-            set_last_error(e.to_string());
-            std::ptr::null_mut()
-        }
-    }
+    if !ptr.is_null() { drop(CString::from_raw(ptr)); }
 }

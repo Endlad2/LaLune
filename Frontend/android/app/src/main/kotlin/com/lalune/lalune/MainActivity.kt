@@ -3,8 +3,9 @@
 // MainActivity: поднимает Backend, подключает Flutter UI поверх,
 // следит за жизнью API (каждые 3 сек) и перезапускает при необходимости.
 //
-// ВАЖНО: Backend и LaLuneVpnService теперь в ТОМ ЖЕ package
-// (com.lalune.lalune) — импорты не нужны.
+// После создания Backend кладём ссылки на Backend и FreeTurnManager
+// в LaLuneApplication, чтобы LaLuneVpnService мог достать их
+// в onCreate() / establishTun() без глобальных синглтонов.
 
 package com.lalune.lalune
 
@@ -52,11 +53,17 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        backend = Backend(applicationContext).also {
+        val b = Backend(applicationContext).also {
             it.attachActivity(this)
             it.run()
         }
+        backend = b
         Log.i(TAG, "Backend.run() called")
+
+        // Делимся Backend/FreeTurnManager с LaLuneVpnService.
+        // b.freeTurn — публичный геттер на internal freeTurnManager (Backend.kt).
+        // null допустим: APK без AAR, FreeTurn-протокол тогда недоступен.
+        (application as? LaLuneApplication)?.setBackend(b, b.freeTurn)
 
         requestNotificationPermissionIfNeeded()
         startApiWatchdog()
@@ -147,10 +154,13 @@ class MainActivity : FlutterActivity() {
         try {
             backend?.stop()
         } catch (_: Exception) {}
-        backend = Backend(applicationContext).also {
+        val b = Backend(applicationContext).also {
             it.attachActivity(this)
             it.run()
         }
+        backend = b
+        // Обновляем ссылки в LaLuneApplication: новый Backend → новый FreeTurnManager.
+        (application as? LaLuneApplication)?.setBackend(b, b.freeTurn)
         Log.i(TAG, "Backend restarted")
     }
 

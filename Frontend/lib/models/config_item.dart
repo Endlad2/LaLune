@@ -2,12 +2,10 @@
 
 class ConfigItem {
   final int id;
-  final String protocol; // "CSQTT" | "PaperFlux"
-  // CSQTT
+  final String protocol; // "CSQTT" | "PaperFlux" | "FreeTurn"
   final String peer;
   final String password;
   final String hashes;
-  // PaperFlux
   final String profileId;
   final String profileToken;
   final String clientIp;
@@ -20,7 +18,6 @@ class ConfigItem {
   final String maxToken;
   final String maxUid;
   final String server;
-  // Общие
   final String name;
   final String rawLink;
 
@@ -47,6 +44,7 @@ class ConfigItem {
   });
 
   bool get isPaperFlux => protocol.toLowerCase() == 'paperflux';
+  bool get isFreeTurn => protocol.toLowerCase() == 'freeturn';
 
   factory ConfigItem.fromJson(Map<String, dynamic> j) => ConfigItem(
         id: (j['id'] as num?)?.toInt() ?? 0,

@@ -13,6 +13,9 @@ env:
   PYTHONUTF8: "1"
   FLUTTER_VERSION: "3.29.0"
   RUST_VERSION: "stable"
+  # Прямая ссылка на собранный AAR в релизе free-turn-proxy.
+  # gomobile bind -javapkg com.freeturn.core ./mobile
+  FREETURN_AAR_URL: "https://github.com/hackdiaz-dev/free-turn-proxy/releases/latest/download/freeturn.aar"
 
 jobs:
 
@@ -112,14 +115,6 @@ jobs:
         with:
           arch: x64
 
-      - name: Show MSVC paths
-        shell: pwsh
-        run: |
-          Write-Host "VCToolsInstallDir: $env:VCToolsInstallDir"
-          Write-Host "WindowsSdkDir: $env:WindowsSdkDir"
-          Write-Host "WindowsSDKVersion: $env:WindowsSDKVersion"
-          where.exe cl.exe
-          where.exe link.exe
       - name: Install Pillow (для make_icons.py)
         run: python -m pip install --upgrade pip Pillow
 
@@ -156,8 +151,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            curl zstd
+          sudo apt-get install -y curl zstd
       - name: Build OpenWRT backend
         working-directory: Backend/OpenWRT
         run: |
@@ -216,6 +210,32 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
           ls -la "$ANDROID_HOME/ndk/" || true
+
+      # ============================================================
+      #  FreeTurn AAR: прямая загрузка из релиза
+      #  https://github.com/hackdiaz-dev/free-turn-proxy/releases/latest/download/freeturn.aar
+      # ============================================================
+      - name: Download FreeTurn AAR
+        run: |
+          set -euo pipefail
+          mkdir -p Frontend/android/app/libs
+          curl -fL --retry 3 --retry-delay 2 \
+            -o Frontend/android/app/libs/freeturn.aar \
+            "$FREETURN_AAR_URL"
+          ls -la Frontend/android/app/libs/freeturn.aar
+          # AAR — это zip; проверяем, что скачался именно архив, а не HTML-ошибка.
+          if ! unzip -l Frontend/android/app/libs/freeturn.aar >/dev/null 2>&1; then
+            echo "::error::freeturn.aar is not a valid archive (download failed?)"
+            head -c 200 Frontend/android/app/libs/freeturn.aar || true
+            exit 1
+          fi
+          echo "=== AAR contents ==="
+          unzip -l Frontend/android/app/libs/freeturn.aar | head -40
+          echo "=== Java classes ==="
+          unzip -p Frontend/android/app/libs/freeturn.aar classes.jar > /tmp/ft-classes.jar 2>/dev/null || true
+          if [ -s /tmp/ft-classes.jar ]; then
+            unzip -l /tmp/ft-classes.jar | grep -iE 'Mobile|EventSink|Protector' | head -20 || true
+          fi
 
       # ============================================================
       #  csqtt-link: собрать как бинарник для Android (все ABI)
@@ -315,12 +335,12 @@ jobs:
         working-directory: Frontend
         run: flutter build apk --debug
 
-      - name: Verify csqtt-link in APK
+      - name: Verify APK contents
         run: |
           set -euo pipefail
           APK=$(find Frontend/build/app/outputs/flutter-apk -name "app-debug.apk" -type f | head -n 1)
           echo "APK: $APK"
-          unzip -l "$APK" | grep -E 'libcsqtt-link|libclient-android|libopenflux' || true
+          unzip -l "$APK" | grep -E 'libcsqtt-link|libclient-android|libopenflux|libfreeturn|freeturn' || true
 
       - name: Locate & rename APK
         id: find_apk
