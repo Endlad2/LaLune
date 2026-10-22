@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Корневой build.gradle. Flutter подключает плагины через settings.gradle
+// (dev.flutter.flutter-plugin-loader), отдельных buildscript-зависимостей нет.
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = "../build"
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

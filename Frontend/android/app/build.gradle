@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Android-приложение LaLune.
+// compileSdk 35 — требование shared_preferences_android (Flutter 3.29).
 
 plugins {
     id "com.android.application"
@@ -26,7 +29,7 @@ if (flutterVersionName == null) {
 
 android {
     namespace "com.lalune.lalune"
-    compileSdk 34
+    compileSdk 35
     ndkVersion "27.0.12077973"
 
     compileOptions {
@@ -52,6 +55,7 @@ android {
         multiDexEnabled true
 
         ndk {
+            // ABI, под которые есть нативные библиотеки в jniLibs и в AAR.
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
         }
     }

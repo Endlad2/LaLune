@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Настройки LaLune: CSQTT + PaperFlux + FreeTurn.
 // deviceId удалён — новый CSQTT его не использует.
 
 const int kDefaultWorkers = 9;
@@ -52,6 +54,24 @@ class Settings {
   final String pfMaxToken;
   final String pfMaxUid;
 
+  // FreeTurn
+  final String ftProvider;   // vk | direct
+  final String ftTransport;  // tcp | udp
+  final String ftMode;       // udp | tcp
+  final bool   ftBond;       // только для mode=tcp
+  final String ftObf;        // none | rtpopus | rtpopus2 | rtpopus3
+  final String ftKey;        // hex64
+  final int    ftN;          // TURN-потоков
+  final int    ftSpc;        // потоков на кеш учёток
+  final String ftCid;        // Client ID
+  final String ftListen;     // 127.0.0.1:9000
+  final String ftDns;        // plain | doh | auto
+  final String ftDnss;       // свои UDP/53 DNS через запятую
+  final bool   ftMcap;       // ручная captcha
+  final String ftKcp;        // сериализованные -kcp-* (только tcp)
+  final String ftLink;       // VK-ссылка на звонок (-link)
+  final String ftWgConf;     // WireGuard-конфиг (если есть — StartTunnel)
+
   // Экспериментальное
   final bool enableSmartTunnel;
   final bool showCoreLogs;
@@ -97,6 +117,22 @@ class Settings {
     this.pfRelaySession = '',
     this.pfMaxToken = '',
     this.pfMaxUid = '',
+    this.ftProvider = 'vk',
+    this.ftTransport = 'tcp',
+    this.ftMode = 'udp',
+    this.ftBond = false,
+    this.ftObf = 'rtpopus3',
+    this.ftKey = '',
+    this.ftN = 12,
+    this.ftSpc = 12,
+    this.ftCid = '',
+    this.ftListen = '127.0.0.1:9000',
+    this.ftDns = 'auto',
+    this.ftDnss = '',
+    this.ftMcap = false,
+    this.ftKcp = '',
+    this.ftLink = '',
+    this.ftWgConf = '',
     this.enableSmartTunnel = false,
     this.showCoreLogs = false,
     this.shareVpn = false,
@@ -151,6 +187,22 @@ class Settings {
       pfRelaySession: (j['pfRelaySession'] ?? '') as String,
       pfMaxToken: (j['pfMaxToken'] ?? '') as String,
       pfMaxUid: (j['pfMaxUid'] ?? '') as String,
+      ftProvider: (j['ftProvider'] ?? 'vk') as String,
+      ftTransport: (j['ftTransport'] ?? 'tcp') as String,
+      ftMode: (j['ftMode'] ?? 'udp') as String,
+      ftBond: (j['ftBond'] ?? false) as bool,
+      ftObf: (j['ftObf'] ?? 'rtpopus3') as String,
+      ftKey: (j['ftKey'] ?? '') as String,
+      ftN: ((j['ftN'] ?? 12) as num).toInt(),
+      ftSpc: ((j['ftSpc'] ?? 12) as num).toInt(),
+      ftCid: (j['ftCid'] ?? '') as String,
+      ftListen: (j['ftListen'] ?? '127.0.0.1:9000') as String,
+      ftDns: (j['ftDns'] ?? 'auto') as String,
+      ftDnss: (j['ftDnss'] ?? '') as String,
+      ftMcap: (j['ftMcap'] ?? false) as bool,
+      ftKcp: (j['ftKcp'] ?? '') as String,
+      ftLink: (j['ftLink'] ?? '') as String,
+      ftWgConf: (j['ftWgConf'] ?? '') as String,
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
       shareVpn: (j['shareVpn'] ?? false) as bool,
@@ -197,6 +249,22 @@ class Settings {
         'pfRelaySession': pfRelaySession,
         'pfMaxToken': pfMaxToken,
         'pfMaxUid': pfMaxUid,
+        'ftProvider': ftProvider,
+        'ftTransport': ftTransport,
+        'ftMode': ftMode,
+        'ftBond': ftBond,
+        'ftObf': ftObf,
+        'ftKey': ftKey,
+        'ftN': ftN,
+        'ftSpc': ftSpc,
+        'ftCid': ftCid,
+        'ftListen': ftListen,
+        'ftDns': ftDns,
+        'ftDnss': ftDnss,
+        'ftMcap': ftMcap,
+        'ftKcp': ftKcp,
+        'ftLink': ftLink,
+        'ftWgConf': ftWgConf,
         'enableSmartTunnel': enableSmartTunnel,
         'showCoreLogs': showCoreLogs,
         'shareVpn': shareVpn,
@@ -242,6 +310,22 @@ class Settings {
     String? pfRelaySession,
     String? pfMaxToken,
     String? pfMaxUid,
+    String? ftProvider,
+    String? ftTransport,
+    String? ftMode,
+    bool? ftBond,
+    String? ftObf,
+    String? ftKey,
+    int? ftN,
+    int? ftSpc,
+    String? ftCid,
+    String? ftListen,
+    String? ftDns,
+    String? ftDnss,
+    bool? ftMcap,
+    String? ftKcp,
+    String? ftLink,
+    String? ftWgConf,
     bool? enableSmartTunnel,
     bool? showCoreLogs,
     bool? shareVpn,
@@ -262,8 +346,7 @@ class Settings {
         turnPort: turnPort ?? this.turnPort,
         captchaMode: captchaMode ?? this.captchaMode,
         vkAuthMode: vkAuthMode ?? this.vkAuthMode,
-        allowHashRedistribution:
-            allowHashRedistribution ?? this.allowHashRedistribution,
+        allowHashRedistribution: allowHashRedistribution ?? this.allowHashRedistribution,
         validateVkHashes: validateVkHashes ?? this.validateVkHashes,
         pfTransport: pfTransport ?? this.pfTransport,
         pfUrl: pfUrl ?? this.pfUrl,
@@ -287,6 +370,22 @@ class Settings {
         pfRelaySession: pfRelaySession ?? this.pfRelaySession,
         pfMaxToken: pfMaxToken ?? this.pfMaxToken,
         pfMaxUid: pfMaxUid ?? this.pfMaxUid,
+        ftProvider: ftProvider ?? this.ftProvider,
+        ftTransport: ftTransport ?? this.ftTransport,
+        ftMode: ftMode ?? this.ftMode,
+        ftBond: ftBond ?? this.ftBond,
+        ftObf: ftObf ?? this.ftObf,
+        ftKey: ftKey ?? this.ftKey,
+        ftN: ftN ?? this.ftN,
+        ftSpc: ftSpc ?? this.ftSpc,
+        ftCid: ftCid ?? this.ftCid,
+        ftListen: ftListen ?? this.ftListen,
+        ftDns: ftDns ?? this.ftDns,
+        ftDnss: ftDnss ?? this.ftDnss,
+        ftMcap: ftMcap ?? this.ftMcap,
+        ftKcp: ftKcp ?? this.ftKcp,
+        ftLink: ftLink ?? this.ftLink,
+        ftWgConf: ftWgConf ?? this.ftWgConf,
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
         shareVpn: shareVpn ?? this.shareVpn,
