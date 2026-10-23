@@ -1,14 +1,18 @@
 [package]
 name = "csqtt-link"
-version = "1.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
-description = "CLI + library for parsing and decrypting csqtt:// and freeturn:// links"
+description = "CLI + library for parsing and decrypting csqtt:// links"
 license = "PolyForm-Noncommercial-1.0.0"
 
 [lib]
 name = "csqtt_link"
 path = "src/lib.rs"
+# lib для Desktop/OpenWRT (как зависимость),
+# staticlib для iOS (линкуется в tunnel-extension).
+# cdylib НЕ нужен: на Android запускается как ELF-бинарник через
+# ProcessBuilder, на musl cdylib не поддерживается.
 crate-type = ["lib", "staticlib"]
 
 [[bin]]

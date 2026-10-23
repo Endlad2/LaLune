@@ -49,9 +49,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Regex
 regex = "1"
 
-# base64: используется в config.rs для freeturn:// (base64url(json))
-base64 = "0.22"
-
 # Lua 5.4 (встроенный интерпретатор, без внешних .so)
 mlua = { version = "0.9", features = ["lua54", "vendored", "send"] }
 

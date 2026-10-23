@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Конфиги: SQLite-хранилище + парсинг csqtt://, paperflux://, freeturn://.
+// Конфиги: SQLite-хранилище + парсинг csqtt:// и paperflux:// ссылок.
 //
 // Приоритет парсеров для csqtt://:
 //   1. csqtt-link (Rust, AES-256-GCM) — основной
 //   2. Lua (csqtt_decode.lua) — если пользователь положил файл
 //   3. Нативный (plain v=2 / user:pass@host) — fallback
 //
-// freeturn:// — base64url(json), формат upstream docs/uri.md.
-// Поля: v, provider, peer, transport, mode, bond, obf, key, timing,
-//       n, spc, cid, listen, dns, dnss, mcap, name, vk, wg.
-//
 // Логирование: щедрое, на уровне INFO/WARN, чтобы всё было видно
 // в /logs/tail и в stderr бэкенда без RUST_LOG=debug.
 
 use anyhow::{anyhow, Result};
-use base64::engine::general_purpose::{URL_SAFE_NO_PAD, URL_SAFE};
-use base64::Engine as _;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::path::Path;
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -40,7 +33,6 @@ pub struct ConfigItem {
     pub hashes: String,
     #[serde(default)]
     pub name: String,
-    // PaperFlux
     #[serde(default)]
     pub profile_id: String,
     #[serde(default)]
@@ -65,31 +57,6 @@ pub struct ConfigItem {
     pub max_uid: String,
     #[serde(default)]
     pub server: String,
-    // FreeTurn
-    #[serde(default)]
-    pub obf_profile: String,
-    #[serde(default)]
-    pub obf_key: String,
-    #[serde(default)]
-    pub mode: String,
-    #[serde(default)]
-    pub n: i64,
-    #[serde(default)]
-    pub spc: i64,
-    #[serde(default)]
-    pub client_id: String,
-    #[serde(default)]
-    pub dns_mode: String,
-    #[serde(default)]
-    pub dns_servers: String,
-    #[serde(default)]
-    pub vk_link: String,
-    #[serde(default)]
-    pub wg_conf: String,
-    // true если wg.Endpoint == 127.0.0.1:9000 → relay-топология, встроенный WG не нужен
-    #[serde(default)]
-    pub wg_relay: bool,
-    // Метаданные
     #[serde(default)]
     pub raw_link: String,
 }
@@ -128,17 +95,6 @@ impl ConfigStore {
                 max_token TEXT DEFAULT '',
                 max_uid TEXT DEFAULT '',
                 server TEXT DEFAULT '',
-                obf_profile TEXT DEFAULT '',
-                obf_key TEXT DEFAULT '',
-                mode TEXT DEFAULT '',
-                n INTEGER DEFAULT 0,
-                spc INTEGER DEFAULT 0,
-                client_id TEXT DEFAULT '',
-                dns_mode TEXT DEFAULT '',
-                dns_servers TEXT DEFAULT '',
-                vk_link TEXT DEFAULT '',
-                wg_conf TEXT DEFAULT '',
-                wg_relay INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -165,17 +121,6 @@ impl ConfigStore {
             ("max_token", "TEXT DEFAULT ''"),
             ("max_uid", "TEXT DEFAULT ''"),
             ("server", "TEXT DEFAULT ''"),
-            ("obf_profile", "TEXT DEFAULT ''"),
-            ("obf_key", "TEXT DEFAULT ''"),
-            ("mode", "TEXT DEFAULT ''"),
-            ("n", "INTEGER DEFAULT 0"),
-            ("spc", "INTEGER DEFAULT 0"),
-            ("client_id", "TEXT DEFAULT ''"),
-            ("dns_mode", "TEXT DEFAULT ''"),
-            ("dns_servers", "TEXT DEFAULT ''"),
-            ("vk_link", "TEXT DEFAULT ''"),
-            ("wg_conf", "TEXT DEFAULT ''"),
-            ("wg_relay", "INTEGER DEFAULT 0"),
         ];
         for (col, def) in want {
             if !existing.iter().any(|c| c == col) {
@@ -209,26 +154,13 @@ impl ConfigStore {
             max_token: r.get::<_, String>(16).unwrap_or_default(),
             max_uid: r.get::<_, String>(17).unwrap_or_default(),
             server: r.get::<_, String>(18).unwrap_or_default(),
-            obf_profile: r.get::<_, String>(19).unwrap_or_default(),
-            obf_key: r.get::<_, String>(20).unwrap_or_default(),
-            mode: r.get::<_, String>(21).unwrap_or_default(),
-            n: r.get::<_, i64>(22).unwrap_or(0),
-            spc: r.get::<_, i64>(23).unwrap_or(0),
-            client_id: r.get::<_, String>(24).unwrap_or_default(),
-            dns_mode: r.get::<_, String>(25).unwrap_or_default(),
-            dns_servers: r.get::<_, String>(26).unwrap_or_default(),
-            vk_link: r.get::<_, String>(27).unwrap_or_default(),
-            wg_conf: r.get::<_, String>(28).unwrap_or_default(),
-            wg_relay: r.get::<_, i64>(29).unwrap_or(0) != 0,
         })
     }
 
     const SELECT_COLS: &'static str =
         "id, protocol, peer, password, hashes, name, raw_link, \
          profile_id, profile_token, client_ip, transport, url, urls, volga_url, \
-         relay_url, relay_token, max_token, max_uid, server, \
-         obf_profile, obf_key, mode, n, spc, client_id, dns_mode, dns_servers, \
-         vk_link, wg_conf, wg_relay";
+         relay_url, relay_token, max_token, max_uid, server";
 
     pub fn list(&self) -> Result<Vec<ConfigItem>> {
         let conn = self.conn.lock();
@@ -263,18 +195,13 @@ impl ConfigStore {
             "INSERT INTO configs (
                 protocol, peer, password, hashes, name, raw_link,
                 profile_id, profile_token, client_ip, transport, url, urls, volga_url,
-                relay_url, relay_token, max_token, max_uid, server,
-                obf_profile, obf_key, mode, n, spc, client_id, dns_mode, dns_servers,
-                vk_link, wg_conf, wg_relay
-             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                relay_url, relay_token, max_token, max_uid, server
+             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             params![
                 c.protocol, c.peer, c.password, c.hashes, c.name, c.raw_link,
                 c.profile_id, c.profile_token, c.client_ip, c.transport,
                 c.url, c.urls, c.volga_url,
                 c.relay_url, c.relay_token, c.max_token, c.max_uid, c.server,
-                c.obf_profile, c.obf_key, c.mode, c.n, c.spc, c.client_id,
-                c.dns_mode, c.dns_servers, c.vk_link, c.wg_conf,
-                if c.wg_relay { 1i64 } else { 0i64 },
             ],
         )?;
         let id = conn.last_insert_rowid();
@@ -291,8 +218,6 @@ impl ConfigStore {
                 profile_id=?, profile_token=?, client_ip=?, transport=?,
                 url=?, urls=?, volga_url=?,
                 relay_url=?, relay_token=?, max_token=?, max_uid=?, server=?,
-                obf_profile=?, obf_key=?, mode=?, n=?, spc=?, client_id=?,
-                dns_mode=?, dns_servers=?, vk_link=?, wg_conf=?, wg_relay=?,
                 updated_at=CURRENT_TIMESTAMP
              WHERE id=?",
             params![
@@ -300,9 +225,6 @@ impl ConfigStore {
                 c.profile_id, c.profile_token, c.client_ip, c.transport,
                 c.url, c.urls, c.volga_url,
                 c.relay_url, c.relay_token, c.max_token, c.max_uid, c.server,
-                c.obf_profile, c.obf_key, c.mode, c.n, c.spc, c.client_id,
-                c.dns_mode, c.dns_servers, c.vk_link, c.wg_conf,
-                if c.wg_relay { 1i64 } else { 0i64 },
                 id,
             ],
         )?;
@@ -345,8 +267,6 @@ pub fn parse_link(link: &str) -> Result<ConfigItem> {
         parse_csqtt(link)
     } else if lower.starts_with("paperflux://") {
         parse_paperflux(link)
-    } else if lower.starts_with("freeturn://") {
-        parse_freeturn(link)
     } else if lower.starts_with("olcrtc://") {
         parse_generic(link, "OLCRTC", "olcrtc://")
     } else if lower.starts_with("tots://") {
@@ -359,8 +279,8 @@ pub fn parse_link(link: &str) -> Result<ConfigItem> {
     }
 }
 
-// -------- CSQTT --------
-
+/// Парсит csqtt:// ссылку.
+/// Приоритет: csqtt-link → Lua → нативный.
 pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
     log::info!("[PARSE][CSQTT] === start ===");
     log::info!("[PARSE][CSQTT] raw link = {}", short_link(link));
@@ -507,8 +427,6 @@ fn parse_csqtt_native(link: &str) -> Result<ConfigItem> {
     ))
 }
 
-// -------- PaperFlux --------
-
 fn parse_paperflux(link: &str) -> Result<ConfigItem> {
     log::info!("[PARSE][PAPERFLUX] {}", short_link(link));
     let rest = link.trim_start_matches("paperflux://");
@@ -573,148 +491,6 @@ fn parse_paperflux(link: &str) -> Result<ConfigItem> {
     Ok(cfg)
 }
 
-// -------- FreeTurn --------
-
-/// Парсит freeturn://<base64url(json)>.
-///
-/// Формат upstream docs/uri.md:
-///   {
-///     "v": 1,
-///     "provider": "vk" | "direct",
-///     "peer": "1.2.3.4:56000",
-///     "transport": "tcp" | "udp",
-///     "mode": "udp" | "tcp",
-///     "bond": bool,
-///     "obf": "rtpopus3" | "rtpopus2" | "rtpopus" | "none",
-///     "key": "hex64",
-///     "timing": 20,
-///     "n": 12,
-///     "spc": 12,
-///     "cid": "...",
-///     "listen": "127.0.0.1:9000",
-///     "dns": "auto" | "plain" | "doh",
-///     "dnss": "8.8.8.8,1.1.1.1",
-///     "mcap": false,
-///     "name": "Server",
-///     "vk": "https://vk.ru/call/join/...",   // optional
-///     "wg": "[Interface]\n...",              // optional
-///   }
-///
-/// Ключ "vk" — VK-ссылка на звонок (-link).
-/// Ключ "wg" — WireGuard-конфиг для встроенного туннеля.
-///
-/// `wg_relay = true`, если внутри `wg` есть `Endpoint = 127.0.0.1:9000`
-/// (совпадает с proxy.listen) → relay-топология: AAR слушает этот порт,
-/// встроенный WG не нужен.
-pub fn parse_freeturn(link: &str) -> Result<ConfigItem> {
-    log::info!("[PARSE][FREETURN] === start ===");
-    log::info!("[PARSE][FREETURN] raw link = {}", short_link(link));
-
-    let payload = link
-        .trim()
-        .strip_prefix("freeturn://")
-        .ok_or_else(|| anyhow!("freeturn:// missing prefix"))?
-        .trim();
-
-    if payload.is_empty() {
-        return Err(anyhow!("freeturn:// empty payload"));
-    }
-
-    let bytes = decode_base64url(payload)
-        .map_err(|e| anyhow!("freeturn:// base64 decode: {e}"))?;
-
-    let json_str = String::from_utf8(bytes)
-        .map_err(|e| anyhow!("freeturn:// not UTF-8: {e}"))?;
-
-    log::debug!("[PARSE][FREETURN] json = {}", short_link(&json_str));
-
-    let json: JsonValue = serde_json::from_str(&json_str)
-        .map_err(|e| anyhow!("freeturn:// invalid json: {e}"))?;
-
-    let peer = json.get("peer").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if peer.is_empty() {
-        return Err(anyhow!("freeturn:// missing 'peer'"));
-    }
-
-    let wg_conf = json.get("wg").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let wg_relay = is_relay_topology(&wg_conf);
-
-    let name = json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| peer.clone());
-
-    let mut cfg = ConfigItem::default();
-    cfg.protocol = "FreeTurn".into();
-    cfg.peer = peer.clone();
-    cfg.name = name;
-    cfg.obf_profile = json.get("obf").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    cfg.obf_key = json.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    cfg.mode = json.get("mode").and_then(|v| v.as_str()).unwrap_or("udp").to_string();
-    cfg.transport = json.get("transport").and_then(|v| v.as_str()).unwrap_or("tcp").to_string();
-    cfg.n = json.get("n").and_then(|v| v.as_i64()).unwrap_or(12);
-    cfg.spc = json.get("spc").and_then(|v| v.as_i64()).unwrap_or(12);
-    cfg.client_id = json.get("cid").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    cfg.dns_mode = json.get("dns").and_then(|v| v.as_str()).unwrap_or("auto").to_string();
-    cfg.dns_servers = json.get("dnss").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    cfg.vk_link = json.get("vk").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    cfg.wg_conf = wg_conf;
-    cfg.wg_relay = wg_relay;
-    cfg.raw_link = link.to_string();
-
-    log::info!(
-        "[PARSE][FREETURN] === success === peer={} name={} mode={} transport={} n={} spc={} obf={} wg_relay={}",
-        cfg.peer, cfg.name, cfg.mode, cfg.transport, cfg.n, cfg.spc, cfg.obf_profile, cfg.wg_relay
-    );
-    Ok(cfg)
-}
-
-/// base64url без padding (Go base64.RawURLEncoding).
-/// Падает на стандартный base64 с padding — тогда пробуем URL_SAFE.
-fn decode_base64url(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    let cleaned: String = s.chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    match URL_SAFE_NO_PAD.decode(cleaned.as_bytes()) {
-        Ok(v) => Ok(v),
-        Err(_) => URL_SAFE.decode(cleaned.as_bytes()),
-    }
-}
-
-/// true, если в wg-конфиге `Endpoint = 127.0.0.1:9000` или `localhost:9000`.
-/// Это relay-топология: AAR слушает этот порт, встроенный WG не нужен.
-pub fn is_relay_topology(wg_conf: &str) -> bool {
-    if wg_conf.trim().is_empty() {
-        return false;
-    }
-    for line in wg_conf.lines() {
-        let t = line.trim();
-        if !t.to_ascii_lowercase().starts_with("endpoint") {
-            continue;
-        }
-        let Some((_, value)) = t.split_once('=') else { continue };
-        let value = value.trim();
-        return value == "127.0.0.1:9000" || value == "localhost:9000";
-    }
-    false
-}
-
-/// Удаляет строку `Endpoint = ...` из wg-конфига.
-/// Для `startTunnelWithWg` (Mobile.startTunnel) AAR сам подставит
-/// single-peer через UnguardedBind; Endpoint из конфига не нужен и
-/// ломает `parseTunnelConfig` в AAR.
-pub fn strip_wg_endpoint(wg_conf: &str) -> String {
-    wg_conf
-        .lines()
-        .filter(|line| !line.trim_start().to_ascii_lowercase().starts_with("endpoint"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-// -------- Generic (olcrtc, tots) --------
-
 fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem> {
     log::info!("[PARSE][{}] {}", protocol, short_link(link));
     let rest = link.trim_start_matches(prefix);
@@ -749,8 +525,6 @@ fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem>
     Ok(cfg)
 }
 
-// -------- URL helpers --------
-
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -781,57 +555,5 @@ fn hex_val(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn freeturn_parses_sample_from_ci() {
-        let link = "freeturn://eyJ2IjoxLCJwcm92aWRlciI6InZrIiwicGVlciI6IjMxLjc3LjE0OC4yMDM6NTczNzMiLCJ0cmFuc3BvcnQiOiJ1ZHAiLCJvYmYiOiJydHBvcHVzMyIsImtleSI6IjRhZjM4MWUzMDM0MGJiNTcxNmY5NjE0ZmU1ZDFkMmI1NGY5NDM4N2I2Yjc5YTZjZDM4NGQwMDE0NzMyZGM5ZjQiLCJuIjoxMiwic3BjIjoxMiwiY2lkIjoiMjVkMWQ2ZGUwNjM1ZTk0ZjZjM2U3YWZhOWRkMjhlZWEiLCJuYW1lIjoiVXNlcnMiLCJ3ZyI6IltJbnRlcmZhY2VdXG5Qcml2YXRlS2V5ID0gU0hTYURHRDhnT0VWK0h2dXBIc3BrRmg3YTVPKys3czM2ZGFlZHJ1OGNuaz1cbkFkZHJlc3MgPSAxMC4xMy4xMy4zLzMyXG5ETlMgPSAxLjEuMS4xLCAxLjAuMC4xXG5bUGVlcl1cblB1YmxpY0tleSA9IGF5MmI1TDNFT2NjTWNJcTJSQkp1ZUpmSVM3Vi96NmM0NytoTlB2VFlUQ0E9XG5BbGxvd2VkSVBzID0gMC4wLjAuMC8wLCA6Oi8wXG5FbmRwb2ludCA9IDEyNy4wLjAuMTo5MDAwXG5QZXJzaXN0ZW50S2VlcGFsaXZlID0gMjUifQ";
-        let cfg = parse_freeturn(link).expect("parse_freeturn");
-        assert_eq!(cfg.protocol, "FreeTurn");
-        assert_eq!(cfg.peer, "31.77.148.203:57373");
-        assert_eq!(cfg.name, "Users");
-        assert_eq!(cfg.obf_profile, "rtpopus3");
-        assert_eq!(cfg.obf_key, "4af381e30340bb5716f9614fe5d1d2b54f94387b6b79a6cd384d0014732dc9f4");
-        assert_eq!(cfg.mode, "udp");
-        assert_eq!(cfg.transport, "udp");
-        assert_eq!(cfg.n, 12);
-        assert_eq!(cfg.spc, 12);
-        assert_eq!(cfg.client_id, "25d1d6de0635e94f6c3e7afa9dd28eea");
-        assert!(!cfg.wg_conf.is_empty());
-        assert!(cfg.wg_relay, "wg.Endpoint = 127.0.0.1:9000 → relay");
-    }
-
-    #[test]
-    fn freeturn_missing_peer_rejected() {
-        // {"v":1,"provider":"vk"} → base64url
-        let payload = "eyJ2IjoxLCJwcm92aWRlciI6InZrIn0";
-        let link = format!("freeturn://{payload}");
-        let err = parse_freeturn(&link).unwrap_err();
-        assert!(format!("{err}").contains("missing 'peer'"), "got: {err}");
-    }
-
-    #[test]
-    fn is_relay_topology_examples() {
-        let relay = "[Peer]\nEndpoint = 127.0.0.1:9000\n";
-        assert!(is_relay_topology(relay));
-        let relay_localhost = "[Peer]\nEndpoint = localhost:9000\n";
-        assert!(is_relay_topology(relay_localhost));
-        let direct = "[Peer]\nEndpoint = 1.2.3.4:51820\n";
-        assert!(!is_relay_topology(direct));
-        assert!(!is_relay_topology(""));
-    }
-
-    #[test]
-    fn strip_wg_endpoint_removes_line() {
-        let wg = "[Interface]\nPrivateKey = X\n[Peer]\nPublicKey = Y\nEndpoint = 127.0.0.1:9000\nAllowedIPs = 0.0.0.0/0\n";
-        let stripped = strip_wg_endpoint(wg);
-        assert!(!stripped.contains("Endpoint"));
-        assert!(stripped.contains("AllowedIPs"));
-        assert!(stripped.contains("PublicKey"));
     }
 }

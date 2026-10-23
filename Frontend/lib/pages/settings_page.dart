@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки. Состав полей зависит от protocol выбранного конфига.
-//  * CSQTT     → peer / password / hashes / auth / obfs / fingerprint / ...
-//  * PaperFlux → транспорт (список) + поля из конфига или выбранного транспорта
-//  * FreeTurn  → provider / transport / obfs / key / dns / client-id / link
-//
-// Всегда поверх: shareVpn (SOCKS) + showCoreLogs.
+// Настройки. deviceId удалён — новый CSQTT его не использует.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -39,12 +34,6 @@ const _pfTransports = <String>[
 const _pfDocTransports = <String>{
   'yandex', 'vyandex', 'boards', 'mtslink', 'cupsonline', 'mailru', 'oneme',
 };
-
-const _ftProviders = <String>['vk', 'direct'];
-const _ftTransports = <String>['udp', 'tcp'];
-const _ftModes = <String>['udp', 'tcp'];
-const _ftObfProfiles = <String>['none', 'rtpopus', 'rtpopus2', 'rtpopus3'];
-const _ftDnsModes = <String>['auto', 'plain', 'doh'];
 
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({super.key});
@@ -81,30 +70,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   String _pfMode = 'proxy';
   String _pfTcpRecovery = 'auto';
 
-  // FreeTurn
-  final _ftLinkCtl = TextEditingController();
-  final _ftKeyCtl = TextEditingController();
-  final _ftDnssCtl = TextEditingController();
-  final _ftCidCtl = TextEditingController();
-  final _ftListenCtl = TextEditingController();
-  final _ftNcCtl = TextEditingController();
-  final _ftSpcCtl = TextEditingController();
-
-  String _ftProvider = 'vk';
-  String _ftTransport = 'udp';
-  String _ftMode = 'udp';
-  String _ftObf = 'rtpopus3';
-  String _ftDnsMode = 'auto';
-  bool _ftBond = false;
-  bool _ftMcap = false;
-
   String _authMode = 'manual';
   bool _enableSmartTunnel = false;
   bool _showCoreLogs = false;
   bool _shareVpn = false;
 
   bool get _isPaperFlux => _selectedConfig?.isPaperFlux == true;
-  bool get _isFreeTurn => _selectedConfig?.isFreeTurn == true;
 
   @override
   void initState() {
@@ -129,13 +100,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _pfRelaySessionCtl.dispose();
     _pfMaxTokenCtl.dispose();
     _pfMaxUidCtl.dispose();
-    _ftLinkCtl.dispose();
-    _ftKeyCtl.dispose();
-    _ftDnssCtl.dispose();
-    _ftCidCtl.dispose();
-    _ftListenCtl.dispose();
-    _ftNcCtl.dispose();
-    _ftSpcCtl.dispose();
     super.dispose();
   }
 
@@ -150,7 +114,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _s = s;
     _selectedConfig = cfg;
 
-    if (cfg != null && !cfg.isPaperFlux && !cfg.isFreeTurn) {
+    if (cfg != null && !cfg.isPaperFlux) {
       _peerCtl.text = cfg.peer;
       _passwordCtl.text = cfg.password;
       _vkHashesCtl.text = cfg.hashes;
@@ -183,24 +147,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _pfMaxTokenCtl.text = s.pfMaxToken;
     _pfMaxUidCtl.text = s.pfMaxUid;
 
-    _ftProvider = s.ftProvider.isEmpty ? 'vk' : s.ftProvider;
-    _ftTransport = s.ftTransport.isEmpty ? 'udp' : s.ftTransport;
-    _ftMode = s.ftMode.isEmpty ? 'udp' : s.ftMode;
-    _ftObf = s.ftObf.isEmpty ? 'rtpopus3' : s.ftObf;
-    _ftDnsMode = s.ftDns.isEmpty ? 'auto' : s.ftDns;
-    _ftBond = s.ftBond;
-    _ftMcap = s.ftMcap;
-
-    _ftLinkCtl.text = s.ftLink;
-    _ftKeyCtl.text = s.ftKey;
-    _ftDnssCtl.text = s.ftDnss;
-    _ftCidCtl.text = (cfg != null && cfg.isFreeTurn)
-        ? (cfg.rawLink.isNotEmpty ? '' : s.ftCid)
-        : s.ftCid;
-    _ftListenCtl.text = s.ftListen;
-    _ftNcCtl.text = s.ftN.toString();
-    _ftSpcCtl.text = s.ftSpc.toString();
-
     setState(() => _loading = false);
   }
 
@@ -225,13 +171,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _autoApiWorkersCtl.text = aw.toString();
 
     final s = _s.copyWith(
-      peer: (_selectedConfig != null && !_selectedConfig!.isPaperFlux && !_selectedConfig!.isFreeTurn)
+      peer: (_selectedConfig != null && !_selectedConfig!.isPaperFlux)
           ? _selectedConfig!.peer
           : _peerCtl.text.trim(),
-      vkHashes: (_selectedConfig != null && !_selectedConfig!.isPaperFlux && !_selectedConfig!.isFreeTurn)
+      vkHashes: (_selectedConfig != null && !_selectedConfig!.isPaperFlux)
           ? _selectedConfig!.hashes
           : _vkHashesCtl.text.trim(),
-      password: (_selectedConfig != null && !_selectedConfig!.isPaperFlux && !_selectedConfig!.isFreeTurn)
+      password: (_selectedConfig != null && !_selectedConfig!.isPaperFlux)
           ? _selectedConfig!.password
           : _passwordCtl.text,
       workers: w,
@@ -253,21 +199,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       pfRelaySession: _pfRelaySessionCtl.text.trim(),
       pfMaxToken: _pfMaxTokenCtl.text.trim(),
       pfMaxUid: _pfMaxUidCtl.text.trim(),
-      // FreeTurn
-      ftProvider: _ftProvider,
-      ftTransport: _ftTransport,
-      ftMode: _ftMode,
-      ftBond: _ftBond,
-      ftObf: _ftObf,
-      ftKey: _ftKeyCtl.text.trim(),
-      ftN: int.tryParse(_ftNcCtl.text) ?? 10,
-      ftSpc: int.tryParse(_ftSpcCtl.text) ?? 0,
-      ftCid: _ftCidCtl.text.trim(),
-      ftListen: _ftListenCtl.text.trim(),
-      ftDns: _ftDnsMode,
-      ftDnss: _ftDnssCtl.text.trim(),
-      ftMcap: _ftMcap,
-      ftLink: _ftLinkCtl.text.trim(),
     );
 
     final ok = await ref.read(settingsProvider.notifier).save(s);
@@ -365,25 +296,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               GlassCard(child: _buildMainBlock()),
               const SizedBox(height: 18),
 
-              if (!_isPaperFlux && !_isFreeTurn) ...[
+              if (!_isPaperFlux) ...[
                 _sectionTitle('Авторизация'),
                 _buildAuthBlock(vk),
                 const SizedBox(height: 18),
               ],
 
-              _sectionTitle(_isFreeTurn
-                  ? 'Настройки FreeTurn'
-                  : (_isPaperFlux
-                      ? 'Настройки PaperFlux'
-                      : 'Продвинутые настройки')),
-              if (_isFreeTurn)
-                GlassCard(child: _buildFreeTurnBlock())
-              else if (_isPaperFlux)
+              _sectionTitle(_isPaperFlux ? 'Настройки PaperFlux' : 'Продвинутые настройки'),
+              if (_isPaperFlux)
                 GlassCard(child: _buildPaperFluxBlock())
               else
                 GlassCard(child: _buildCsqttAdvancedBlock()),
 
               const SizedBox(height: 18),
+
               _sectionTitle('Экспериментальное'),
               GlassCard(
                   child: _buildExperimentalBlock(
@@ -435,39 +361,38 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ),
           ),
 
-        if (!_isPaperFlux && !_isFreeTurn) ...[
+        if (!_isPaperFlux) ...[
           InputRow(label: 'Peer', controller: _peerCtl, readOnly: true),
           InputRow(
               label: 'Password', controller: _passwordCtl, readOnly: true),
         ],
 
-        if (!_isFreeTurn)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 5),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 130,
-                  child: Text('Workers',
-                      style:
-                          TextStyle(color: Colors.white.withOpacity(0.7))),
-                ),
-                Expanded(
-                  child: TextField(
-                    controller: _workersCtl,
-                    keyboardType: TextInputType.number,
-                    style: const TextStyle(fontSize: 13.5),
-                    decoration: const InputDecoration(
-                      hintText: '9',
-                      helperText: 'От 1 до 127',
-                      helperStyle: TextStyle(fontSize: 10.5),
-                    ),
-                    onChanged: (_) => _markDirty(),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 130,
+                child: Text('Workers',
+                    style:
+                        TextStyle(color: Colors.white.withOpacity(0.7))),
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _workersCtl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 13.5),
+                  decoration: const InputDecoration(
+                    hintText: '9',
+                    helperText: 'От 1 до 127',
+                    helperStyle: TextStyle(fontSize: 10.5),
                   ),
+                  onChanged: (_) => _markDirty(),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
+        ),
       ],
     );
   }
@@ -607,72 +532,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               controller: _pfMaxUidCtl,
               onChanged: (_) => _markDirty()),
         ],
-      ],
-    );
-  }
-
-  Widget _buildFreeTurnBlock() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InputRow(
-            label: 'Link (Call URL)',
-            controller: _ftLinkCtl,
-            onChanged: (_) => _markDirty()),
-        _rowDropdown('Provider', _ftProvider, _ftProviders, (v) {
-          setState(() => _ftProvider = v);
-          _markDirty();
-        }),
-        _rowDropdown('Transport', _ftTransport, _ftTransports, (v) {
-          setState(() => _ftTransport = v);
-          _markDirty();
-        }),
-        _rowDropdown('Mode', _ftMode, _ftModes, (v) {
-          setState(() => _ftMode = v);
-          _markDirty();
-        }),
-        _toggleRow('Bond', _ftBond, (v) {
-          setState(() => _ftBond = v);
-          _markDirty();
-        }),
-        _rowDropdown('Obfuscation', _ftObf, _ftObfProfiles, (v) {
-          setState(() => _ftObf = v);
-          _markDirty();
-        }),
-        InputRow(
-            label: 'Obf Key',
-            controller: _ftKeyCtl,
-            onChanged: (_) => _markDirty()),
-        _rowDropdown('DNS Mode', _ftDnsMode, _ftDnsModes, (v) {
-          setState(() => _ftDnsMode = v);
-          _markDirty();
-        }),
-        InputRow(
-            label: 'DNS Servers',
-            controller: _ftDnssCtl,
-            onChanged: (_) => _markDirty()),
-        InputRow(
-            label: 'Client ID',
-            controller: _ftCidCtl,
-            onChanged: (_) => _markDirty()),
-        InputRow(
-            label: 'Listen IP',
-            controller: _ftListenCtl,
-            onChanged: (_) => _markDirty()),
-        InputRow(
-            label: 'Streams (N)',
-            controller: _ftNcCtl,
-            keyboardType: TextInputType.number,
-            onChanged: (_) => _markDirty()),
-        InputRow(
-            label: 'Streams/Cred',
-            controller: _ftSpcCtl,
-            keyboardType: TextInputType.number,
-            onChanged: (_) => _markDirty()),
-        _toggleRow('Manual Captcha', _ftMcap, (v) {
-          setState(() => _ftMcap = v);
-          _markDirty();
-        }),
       ],
     );
   }

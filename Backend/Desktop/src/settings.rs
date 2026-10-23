@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//
+// Настройки: CSQTT + PaperFlux. deviceId удалён — новый CSQTT его не использует.
+
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_WORKERS: i32 = 9;
@@ -11,6 +14,7 @@ pub const MAX_AUTO_API_WORKERS: i32 = 27;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    // -------- CSQTT --------
     pub peer: String,
     pub vk_hashes: String,
     pub vk_js_token: String,
@@ -27,10 +31,11 @@ pub struct Settings {
     pub allow_hash_redistribution: bool,
     pub validate_vk_hashes: bool,
 
+    // -------- Общие --------
     pub workers: i32,
     pub auto_api_workers: i32,
 
-    // PaperFlux
+    // -------- PaperFlux --------
     pub pf_transport: String,
     pub pf_url: String,
     pub pf_urls: String,
@@ -54,23 +59,7 @@ pub struct Settings {
     pub pf_max_token: String,
     pub pf_max_uid: String,
 
-    // FreeTurn
-    pub ft_provider: String,
-    pub ft_transport: String,
-    pub ft_mode: String,
-    pub ft_bond: bool,
-    pub ft_obf: String,
-    pub ft_key: String,
-    pub ft_n: i32,
-    pub ft_spc: i32,
-    pub ft_cid: String,
-    pub ft_listen: String,
-    pub ft_dns: String,
-    pub ft_dnss: String,
-    pub ft_mcap: bool,
-    pub ft_kcp: String,
-    pub ft_link: String, // The `-link` parameter (call url)
-
+    // -------- Экспериментальное --------
     pub enable_smart_tunnel: bool,
     pub show_core_logs: bool,
     pub share_vpn: bool,
@@ -79,30 +68,51 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            peer: String::new(), vk_hashes: String::new(), vk_js_token: String::new(),
-            password: String::new(), obfs: "video".into(), fingerprint: "firefox".into(),
-            client_ids: "8202606,6287487".into(), auth_mode: "manual".into(),
-            turn_transport: "udp".into(), turn_host: String::new(), turn_port: String::new(),
-            captcha_mode: "auto".into(), vk_auth_mode: "vkcalls".into(),
-            allow_hash_redistribution: false, validate_vk_hashes: false,
+            peer: String::new(),
+            vk_hashes: String::new(),
+            vk_js_token: String::new(),
+            password: String::new(),
+            obfs: "video".into(),
+            fingerprint: "firefox".into(),
+            client_ids: "8202606,6287487".into(),
+            auth_mode: "manual".into(),
+            turn_transport: "udp".into(),
+            turn_host: String::new(),
+            turn_port: String::new(),
+            captcha_mode: "auto".into(),
+            vk_auth_mode: "vkcalls".into(),
+            allow_hash_redistribution: false,
+            validate_vk_hashes: false,
 
-            workers: DEFAULT_WORKERS, auto_api_workers: DEFAULT_AUTO_API_WORKERS,
+            workers: DEFAULT_WORKERS,
+            auto_api_workers: DEFAULT_AUTO_API_WORKERS,
 
-            pf_transport: "yandex".into(), pf_url: String::new(), pf_urls: String::new(),
-            pf_volga_url: String::new(), pf_mode: "proxy".into(), pf_socks5: "127.0.0.1:1080".into(),
-            pf_tcp_recovery: "auto".into(), pf_session: false, pf_client_ip: "10.10.10.2".into(),
-            pf_auth_service: String::new(), pf_ipc_socket: String::new(), pf_tun_fd_sock: String::new(),
-            pf_packet_sock: String::new(), pf_exit_profiles: String::new(), pf_exit_stats: String::new(),
-            pf_exit_cookies: String::new(), pf_relay_url: String::new(), pf_relay_token: String::new(),
-            pf_relay_user: 0, pf_relay_session: String::new(), pf_max_token: String::new(), pf_max_uid: String::new(),
+            pf_transport: "yandex".into(),
+            pf_url: String::new(),
+            pf_urls: String::new(),
+            pf_volga_url: String::new(),
+            pf_mode: "proxy".into(),
+            pf_socks5: "127.0.0.1:1080".into(),
+            pf_tcp_recovery: "auto".into(),
+            pf_session: false,
+            pf_client_ip: "10.10.10.2".into(),
+            pf_auth_service: String::new(),
+            pf_ipc_socket: String::new(),
+            pf_tun_fd_sock: String::new(),
+            pf_packet_sock: String::new(),
+            pf_exit_profiles: String::new(),
+            pf_exit_stats: String::new(),
+            pf_exit_cookies: String::new(),
+            pf_relay_url: String::new(),
+            pf_relay_token: String::new(),
+            pf_relay_user: 0,
+            pf_relay_session: String::new(),
+            pf_max_token: String::new(),
+            pf_max_uid: String::new(),
 
-            ft_provider: "vk".into(), ft_transport: "udp".into(), ft_mode: "udp".into(),
-            ft_bond: false, ft_obf: "rtpopus3".into(), ft_key: String::new(),
-            ft_n: 10, ft_spc: 0, ft_cid: String::new(),
-            ft_listen: "127.0.0.1:9000".into(), ft_dns: "auto".into(),
-            ft_dnss: "8.8.8.8".into(), ft_mcap: false, ft_kcp: String::new(), ft_link: String::new(),
-
-            enable_smart_tunnel: false, show_core_logs: false, share_vpn: false,
+            enable_smart_tunnel: false,
+            show_core_logs: false,
+            share_vpn: false,
         }
     }
 }
@@ -111,6 +121,7 @@ impl Settings {
     pub fn normalize(&mut self) {
         if self.workers < MIN_WORKERS { self.workers = MIN_WORKERS; }
         if self.workers > MAX_WORKERS { self.workers = MAX_WORKERS; }
+
         if self.auto_api_workers < MIN_AUTO_API_WORKERS { self.auto_api_workers = MIN_AUTO_API_WORKERS; }
         if self.auto_api_workers > MAX_AUTO_API_WORKERS { self.auto_api_workers = MAX_AUTO_API_WORKERS; }
 
@@ -127,19 +138,14 @@ impl Settings {
         if self.pf_socks5.is_empty() { self.pf_socks5 = "127.0.0.1:1080".into(); }
         if self.pf_tcp_recovery.is_empty() { self.pf_tcp_recovery = "auto".into(); }
         if self.pf_client_ip.is_empty() { self.pf_client_ip = "10.10.10.2".into(); }
-
-        if self.ft_provider.is_empty() { self.ft_provider = "vk".into(); }
-        if self.ft_transport.is_empty() { self.ft_transport = "udp".into(); }
-        if self.ft_mode.is_empty() { self.ft_mode = "udp".into(); }
-        if self.ft_obf.is_empty() { self.ft_obf = "rtpopus3".into(); }
-        if self.ft_dns.is_empty() { self.ft_dns = "auto".into(); }
-        if self.ft_dnss.is_empty() { self.ft_dnss = "8.8.8.8".into(); }
     }
 
     pub fn merge_from_json(&mut self, value: serde_json::Value) -> anyhow::Result<()> {
         let mut base = serde_json::to_value(&*self)?;
         if let (Some(base_obj), Some(patch_obj)) = (base.as_object_mut(), value.as_object()) {
-            for (k, v) in patch_obj { base_obj.insert(k.clone(), v.clone()); }
+            for (k, v) in patch_obj {
+                base_obj.insert(k.clone(), v.clone());
+            }
         }
         let merged: Settings = serde_json::from_value(base)?;
         *self = merged;
@@ -154,7 +160,9 @@ impl Settings {
 
     pub fn set_field(&mut self, key: &str, value: serde_json::Value) -> anyhow::Result<()> {
         let mut v = serde_json::to_value(&*self)?;
-        if let Some(obj) = v.as_object_mut() { obj.insert(key.to_string(), value); }
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(key.to_string(), value);
+        }
         let new_settings: Settings = serde_json::from_value(v)?;
         *self = new_settings;
         self.normalize();
