@@ -288,10 +288,14 @@ async fn configs_delete(
 }
 
 #[derive(Deserialize)]
-struct ParseBody { link: String }
+struct ParseBody {
+    link: String,
+    protocol: Option<String>,
+}
 
 async fn configs_parse(Json(body): Json<ParseBody>) -> impl IntoResponse {
-    match parse_link(&body.link) {
+    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
+    match parse_link_for_protocol(&body.link, &protocol) {
         Ok(c) => Json(json!(c)).into_response(),
         Err(e) => err(400, e.to_string()),
     }
@@ -437,7 +441,7 @@ async fn vpn_connect(
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
-    let core_path = state::core_path_for(&state.app_dir, &proto);
+    let core_path = state::core_path_for(&state.app_dir, &config.protocol);
 
     if !core_path.exists() {
         state.log(format!("[VPN] {} core not found, downloading...", kind.id()));
