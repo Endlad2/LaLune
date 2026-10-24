@@ -728,6 +728,7 @@ async fn core_download_async_p(
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
+    let use_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let state2 = state.clone();
     tokio::spawn(async move {
@@ -740,11 +741,17 @@ async fn core_download_async_p(
             ProtocolKind::Csqtt => {
                 if let Some(version) = core_manager::fetch_latest_csqtt(&client, &state2.events).await {
                     state2.events.emit(Event::progress("core_download", 20));
-                    match core_manager::download_csqtt(&client, &version, &dest, &state2.events).await {
+                    let download = if use_csqtt_219 {
+                        core_manager::download_csqtt_219(&client, &dest, &state2.events).await
+                    } else {
+                        core_manager::download_csqtt(&client, &version, &dest, &state2.events).await
+                    };
+                    match download {
                         Ok(_) => {
-                            let _ = tokio::fs::write(&latest_file, &version).await;
+                            let saved_version = if use_csqtt_219 { core_manager::CSQTT_219_RELEASE } else { &version };
+                            let _ = tokio::fs::write(&latest_file, saved_version).await;
                             state2.events.emit(Event::progress("core_download", 100));
-                            state2.log(format!("[CORE] CSQTT updated to {}", version));
+                            state2.log(format!("[CORE] CSQTT updated to {}", saved_version));
                         }
                         Err(e) => {
                             state2.log(format!("[CORE] CSQTT download failed: {}", e));
@@ -781,6 +788,7 @@ async fn core_download_sync_p(
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
+    let use_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
     let dest = crate::state::core_path_for(&state.app_dir, kind.id());
@@ -792,10 +800,16 @@ async fn core_download_sync_p(
                 Some(v) => v,
                 None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
             };
-            match core_manager::download_csqtt(&client, &version, &dest, &state.events).await {
+            let download = if use_csqtt_219 {
+                core_manager::download_csqtt_219(&client, &dest, &state.events).await
+            } else {
+                core_manager::download_csqtt(&client, &version, &dest, &state.events).await
+            };
+            match download {
                 Ok(_) => {
-                    let _ = tokio::fs::write(&latest_file, &version).await;
-                    Ok(version)
+                    let saved_version = if use_csqtt_219 { core_manager::CSQTT_219_RELEASE.to_string() } else { version };
+                    let _ = tokio::fs::write(&latest_file, &saved_version).await;
+                    Ok(saved_version)
                 }
                 Err(e) => Err(e),
             }
