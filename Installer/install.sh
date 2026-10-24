@@ -145,6 +145,7 @@ main() {
     local icon_file="${TEMP_DIR}/icon.ico"
 
     if [ "$CI_MODE" = "1" ]; then
+        [ -f "$latest_csqtt219" ] || printf '%s' '2026.09.17.17.36' > "$latest_csqtt219"
         local missing=()
         for f in "$lalune_zip" "$backend_zip" "$csqtt_exe" "$csqtt219_exe" "$pf_exe" \
                  "$latest_csqtt" "$latest_csqtt219" "$latest_pf" "$icon_file"; do
