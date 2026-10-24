@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// deviceId удалён — новый CSQTT его не использует.
+// Device ID применяется только для CSQTT 2.1.9.
 
 const int kDefaultWorkers = 9;
 const int kMinWorkers = 1;
