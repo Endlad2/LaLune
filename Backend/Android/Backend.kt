@@ -518,11 +518,19 @@ class Backend(private val context: Context) {
 
     private fun protocolsJson(): JSONArray = JSONArray().apply {
         put(JSONObject().apply {
-            put("id", PROTO_CSQTT)
-            put("displayName", "CSQTT (VK Calls)")
+            put("id", "CSQTT 2.1.9")
+            put("displayName", "CSQTT 2.1.9")
             put("repo", "Endlad2/csqtt-core")
             put("realtime", true)
-            put("description", "Оригинальный протокол CSQTT")
+            put("description", "Plain links; pinned release 2026.09.17.17.36")
+            put("coreAsset", coreManager?.getCoreName("CSQTT 2.1.9") ?: "")
+        })
+        put(JSONObject().apply {
+            put("id", "CSQTT 2.5.1")
+            put("displayName", "CSQTT 2.5.1 ⚠")
+            put("repo", "Endlad2/csqtt-core")
+            put("realtime", true)
+            put("description", "Latest CSQTT core; DTLS compatibility warning")
             put("coreAsset", coreManager?.getCoreName(PROTO_CSQTT) ?: "")
         })
         put(JSONObject().apply {
