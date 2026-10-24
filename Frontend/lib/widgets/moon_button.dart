@@ -20,8 +20,8 @@ class _MoonButtonState extends State<MoonButton> {
   @override
   Widget build(BuildContext context) {
     final glow = widget.connected
-        ? const Color(0xFF7CFF9A).withOpacity(0.55)
-        : const Color(0xFFF7E84E).withOpacity(_hover ? 0.45 : 0.2);
+        ? const Color(0xFFB36AE2).withOpacity(0.55)
+        : const Color(0xFFFFB347).withOpacity(_hover ? 0.45 : 0.2);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
@@ -58,7 +58,7 @@ class _MoonButtonState extends State<MoonButton> {
                   color: Color(0xFF1A1A3E),
                 ),
                 child: const Icon(Icons.dark_mode,
-                    size: 72, color: Color(0xFFF7E84E)),
+                    size: 72, color: Color(0xFFFFB347)),
               ),
             ),
           ),
