@@ -24,9 +24,10 @@ class NavBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-      child: ClipRRect(
+    return RepaintBoundary(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+        child: ClipRRect(
         borderRadius: BorderRadius.circular(18),
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
@@ -49,6 +50,7 @@ class NavBar extends StatelessWidget {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -141,7 +143,7 @@ class _NavButtonState extends State<_NavButton> {
                       width: 26,
                       height: 26,
                       fit: BoxFit.contain,
-                      filterQuality: FilterQuality.high,
+                      filterQuality: FilterQuality.medium,
                       errorBuilder: (_, __, ___) => Icon(
                         Icons.circle_outlined,
                         size: 26,
