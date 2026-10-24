@@ -20,6 +20,7 @@ pub const LATEST_PAPERFLUX_URL: &str =
 
 pub const CSQTT_URL_TEMPLATE: &str =
     "https://github.com/Endlad2/csqtt-core/releases/download/{VER}/{FILE}";
+pub const CSQTT_219_RELEASE: &str = "2026.09.17.17.36";
 pub const PAPERFLUX_URL_TEMPLATE: &str =
     "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/{FILE}";
 
@@ -153,6 +154,18 @@ pub async fn download_csqtt(
     let url = CSQTT_URL_TEMPLATE
         .replace("{VER}", version)
         .replace("{FILE}", file);
+    download_binary(client, &url, dest, events).await
+}
+
+/// Скачивает CSQTT 2.1.9 строго из закреплённого релиза.
+pub async fn download_csqtt_219(
+    client: &reqwest::Client,
+    dest: &Path,
+    events: &EventBus,
+) -> Result<()> {
+    let url = CSQTT_URL_TEMPLATE
+        .replace("{VER}", CSQTT_219_RELEASE)
+        .replace("{FILE}", csqtt_asset_name());
     download_binary(client, &url, dest, events).await
 }
 
