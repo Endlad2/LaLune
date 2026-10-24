@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки: CSQTT + PaperFlux. deviceId удалён — новый CSQTT его не использует.
+// Настройки OpenWRT. Device ID хранится отдельно и прокидывается через API.
 
 use serde::{Deserialize, Serialize};
 
