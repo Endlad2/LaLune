@@ -21,7 +21,10 @@ class CoreManager(private val context: Context) {
         private const val TAG = "LaLune-Core"
 
         const val PROTO_CSQTT = "CSQTT"
+        const val PROTO_CSQTT_219 = "CSQTT 2.1.9"
+        const val PROTO_CSQTT_251 = "CSQTT 2.5.1"
         const val PROTO_PAPERFLUX = "PaperFlux"
+        const val CSQTT_219_RELEASE = "2026.09.17.17.36"
 
         const val LATEST_CSQTT_URL =
             "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
@@ -62,7 +65,14 @@ class CoreManager(private val context: Context) {
     fun getCoreName(protocol: String): String? {
         val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
         return when (protocol.uppercase()) {
-            PROTO_CSQTT.uppercase() -> when {
+            PROTO_CSQTT_219.uppercase() -> when {
+                abi.contains("arm64") -> "libclient-android-arm64-v8a-219.so"
+                abi.contains("armeabi-v7a") -> "libclient-android-armeabi-v7a-219.so"
+                abi.contains("arm") -> "libclient-android-armeabi-v7a-219.so"
+                abi.contains("x86_64") -> "libclient-android-x86_64-219.so"
+                else -> null
+            }
+            PROTO_CSQTT.uppercase(), PROTO_CSQTT_251.uppercase() -> when {
                 abi.contains("arm64") -> "libclient-android-arm64-v8a.so"
                 abi.contains("arm") -> "libclient-android-armeabi-v7a.so"
                 abi.contains("x86_64") -> "libclient-android-x86_64.so"
@@ -75,7 +85,7 @@ class CoreManager(private val context: Context) {
 
     private fun getRemoteAssetName(protocol: String): String? {
         return when (protocol.uppercase()) {
-            PROTO_CSQTT.uppercase() -> getCoreName(PROTO_CSQTT)
+            PROTO_CSQTT.uppercase(), PROTO_CSQTT_219.uppercase(), PROTO_CSQTT_251.uppercase() -> getCoreName(PROTO_CSQTT)
             PROTO_PAPERFLUX.uppercase() -> {
                 val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
                 when {
@@ -108,6 +118,7 @@ class CoreManager(private val context: Context) {
         if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true)) latestPaper else latestCsqtt
 
     fun fetchLatestVersion(protocol: String = PROTO_CSQTT): String? {
+        if (protocol.equals(PROTO_CSQTT_219, ignoreCase = true)) return CSQTT_219_RELEASE
         val baseUrl = if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true))
             LATEST_PAPERFLUX_URL else LATEST_CSQTT_URL
         for (level in 1..3) {
@@ -138,21 +149,31 @@ class CoreManager(private val context: Context) {
     }
 
     fun downloadCore(protocol: String = PROTO_CSQTT): Boolean {
-        return if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true)) {
-            downloadPaperFlux()
-        } else {
-            downloadCsqtt()
+        return when {
+            protocol.equals(PROTO_PAPERFLUX, ignoreCase = true) -> downloadPaperFlux()
+            protocol.equals(PROTO_CSQTT_219, ignoreCase = true) -> downloadCsqtt219()
+            else -> downloadCsqtt()
         }
     }
 
     private fun downloadCsqtt(): Boolean {
-        val name = getCoreName(PROTO_CSQTT) ?: return false
+        val name = getRemoteAssetName(PROTO_CSQTT) ?: return false
         val version = fetchLatestVersion(PROTO_CSQTT) ?: return false
         val url = String.format(CSQTT_URL_TEMPLATE, version, name)
-        Log.i(TAG, "[CORE] downloading CSQTT $url")
+        Log.i(TAG, "[CORE] downloading CSQTT 2.5.1/latest $url")
 
-        return downloadFrom(url, File(coreDir, name)).also { ok ->
+        return downloadFrom(url, File(coreDir, getCoreName(PROTO_CSQTT)!!)).also { ok ->
             if (ok) try { latestCsqtt.writeText(version) } catch (_: Exception) {}
+        }
+    }
+
+    private fun downloadCsqtt219(): Boolean {
+        val remoteName = getRemoteAssetName(PROTO_CSQTT) ?: return false
+        val localName = getCoreName(PROTO_CSQTT_219) ?: return false
+        val url = String.format(CSQTT_URL_TEMPLATE, CSQTT_219_RELEASE, remoteName)
+        Log.i(TAG, "[CORE] downloading CSQTT 2.1.9 pinned release $url")
+        return downloadFrom(url, File(coreDir, localName)).also { ok ->
+            if (ok) try { latestCsqtt.writeText(CSQTT_219_RELEASE) } catch (_: Exception) {}
         }
     }
 
