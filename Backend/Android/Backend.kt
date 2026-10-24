@@ -376,6 +376,7 @@ class Backend(private val context: Context) {
                 path == "/device/info" && method == "GET" -> 200 to jsonOk(
                     "os" to "android", "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
                     "hostname" to android.os.Build.MODEL,
+                    "deviceId" to ensureDeviceId(),
                     "cores" to Runtime.getRuntime().availableProcessors(),
                     "totalMemMb" to 0
                 )
@@ -774,7 +775,13 @@ class Backend(private val context: Context) {
     /** Stable UUIDv4 in app-private files; migrates a valid legacy settings ID. */
     private fun ensureDeviceId(): String {
         fun canonicalUuid(raw: String?): String? = try {
-            if (raw.isNullOrBlank()) null else java.util.UUID.fromString(raw.trim()).toString()
+            if (raw.isNullOrBlank()) null else {
+                val value = raw.trim()
+                val expanded = if (value.matches(Regex("[0-9a-fA-F]{32}"))) {
+                    "${value.substring(0, 8)}-${value.substring(8, 12)}-${value.substring(12, 16)}-${value.substring(16, 20)}-${value.substring(20)}"
+                } else value
+                java.util.UUID.fromString(expanded).toString()
+            }
         } catch (_: Exception) { null }
 
         val fromFile = try {
