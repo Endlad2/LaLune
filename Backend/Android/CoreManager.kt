@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Ядро: CSQTT + PaperFlux. deviceId удалён из аргументов CSQTT.
+// Device ID передаётся только ядру CSQTT 2.1.9.
 
 package com.lalune.lalune
 
