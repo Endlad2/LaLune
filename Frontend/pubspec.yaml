@@ -50,7 +50,7 @@ flutter_launcher_icons:
   image_path: "../Assets/icon.png"
 
   # Адаптивная иконка Android 8+
-  adaptive_icon_background: "#0A0E2A"
+  adaptive_icon_background: "#120D1C"
   adaptive_icon_foreground: "../Assets/icon_foreground.png"
 
   # Убрать alpha у iOS (App Store не принимает прозрачность)
