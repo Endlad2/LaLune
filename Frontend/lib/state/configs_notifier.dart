@@ -101,12 +101,21 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
     final api = _ref.read(apiClientProvider);
     try {
       await api.postJson('/configs', {'link': link, 'protocol': protocol});
-      await reload();
-      return true;
     } catch (e) {
+      // Some backends can persist the profile and then fail while building
+      // the response. Re-read the list before telling the user it failed.
+      await reload();
+      final normalizedLink = link.trim();
+      final persisted = state.items.any((item) =>
+          item.rawLink.trim() == normalizedLink);
+      if (persisted) return true;
       state = state.copyWith(error: '$e');
       return false;
     }
+
+    // A refresh failure must not turn a successful POST into a red error toast.
+    await reload();
+    return true;
   }
 
   Future<bool> delete(int id) async {

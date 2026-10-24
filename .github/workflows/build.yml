@@ -3,6 +3,8 @@ name: Build LaLune
 on:
   push:
     branches: [main, release]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       stable_version:
@@ -425,6 +427,7 @@ jobs:
   # ============================================================
   create-release:
     name: Create Release
+    if: ${{ github.event_name != 'pull_request' }}
     needs:
       - build-desktop-linux
       - build-desktop-windows
@@ -435,24 +438,71 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Download each named artifact to a deterministic path. Do not flatten with
+      # find/cp: that can silently select a stale duplicate with the same filename.
       - uses: actions/download-artifact@v4
         with:
-          path: release
+          name: Output-Windows
+          path: release/windows
 
-      - name: Flatten artifacts into release/
+      - uses: actions/download-artifact@v4
+        with:
+          name: Output-Linux
+          path: release/linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Output-Android
+          path: release/android
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Output-OpenWRT
+          path: release/openwrt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: LaLuneTokenFetcher-Windows
+          path: release/token-fetcher-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: LaLuneTokenFetcher-Linux
+          path: release/token-fetcher-linux
+
+      - name: Assemble and verify release files
+        shell: bash
         run: |
-          set -e
-          cd release
-          find . -name 'LaLune-Windows.zip' -exec cp {} ./ \;
-          find . -name 'Backend-Windows.zip' -exec cp {} ./ \;
-          find . -name 'Installer-Windows.zip' -exec cp {} ./ \;
-          find . -name 'LaLune-Linux.zip'   -exec cp {} ./ \;
-          find . -name 'Backend-Linux.zip'  -exec cp {} ./ \;
-          find . -name 'lalune-openwrt-backend' -exec cp {} ./ \;
-          find . -name 'LaLune-Android.apk' -exec cp {} ./ \;
-          find . -name 'LaLuneTokenFetcher_Windows.zip' -exec cp {} ./ \;
-          find . -name 'LaLuneTokenFetcher_Linux.zip'   -exec cp {} ./ \;
-          ls -la
+          set -euo pipefail
+          mkdir -p release/assets
+          cp release/windows/LaLune-Windows.zip release/assets/
+          cp release/windows/Backend-Windows.zip release/assets/
+          cp release/windows/Installer-Windows.zip release/assets/
+          cp release/linux/LaLune-Linux.zip release/assets/
+          cp release/linux/Backend-Linux.zip release/assets/
+          cp release/openwrt/lalune-openwrt-backend release/assets/
+          cp release/android/LaLune-Android.apk release/assets/
+          cp release/token-fetcher-windows/LaLuneTokenFetcher_Windows.zip release/assets/
+          cp release/token-fetcher-linux/LaLuneTokenFetcher_Linux.zip release/assets/
+
+          python - <<'PY'
+          import hashlib, zipfile
+          from pathlib import Path
+          root = Path("release/assets")
+          installer_zip = root / "Installer-Windows.zip"
+          with zipfile.ZipFile(installer_zip) as archive:
+              names = archive.namelist()
+              exe_names = [n for n in names if n.lower().endswith("lalune-installer.exe")]
+              if len(exe_names) != 1:
+                  raise SystemExit(f"Expected exactly one installer EXE in {installer_zip}, found: {exe_names}")
+              data = archive.read(exe_names[0])
+              marker = b"csqtt-219.exe"
+              if marker not in data:
+                  raise SystemExit("Installer EXE does not embed csqtt-219.exe; refusing to publish stale/broken installer")
+              print(f"Verified installer: {exe_names[0]}, {len(data)} bytes, sha256={hashlib.sha256(data).hexdigest()}")
+          for path in sorted(root.iterdir()):
+              print(f"{path.name}: {path.stat().st_size} bytes, sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
+          PY
       - name: Resolve release version
         id: version
         shell: bash
@@ -484,18 +534,37 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: LaLune ${{ steps.version.outputs.tag }}
           files: |
-            release/LaLune-Windows.zip
-            release/Backend-Windows.zip
-            release/Installer-Windows.zip
-            release/LaLune-Linux.zip
-            release/Backend-Linux.zip
-            release/lalune-openwrt-backend
-            release/LaLune-Android.apk
-            release/LaLuneTokenFetcher_Windows.zip
-            release/LaLuneTokenFetcher_Linux.zip
-          fail_on_unmatched_files: false
+            release/assets/LaLune-Windows.zip
+            release/assets/Backend-Windows.zip
+            release/assets/Installer-Windows.zip
+            release/assets/LaLune-Linux.zip
+            release/assets/Backend-Linux.zip
+            release/assets/lalune-openwrt-backend
+            release/assets/LaLune-Android.apk
+            release/assets/LaLuneTokenFetcher_Windows.zip
+            release/assets/LaLuneTokenFetcher_Linux.zip
+          fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update STABLE after manual release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.stable_version }}"
+          BRANCH="$GITHUB_REF_NAME"
+          CONTENT="$(printf '%s\n' "$VERSION" | base64 -w 0)"
+          SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/STABLE?ref=$BRANCH" --jq .sha)"
+          gh api "repos/$GITHUB_REPOSITORY/contents/STABLE" \
+            -X PUT \
+            -f message="chore: update STABLE to $VERSION [skip ci]" \
+            -f content="$CONTENT" \
+            -f sha="$SHA" \
+            -f branch="$BRANCH" >/dev/null
+          echo "STABLE updated to $VERSION on $BRANCH"

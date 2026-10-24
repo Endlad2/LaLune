@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// HTTP API. deviceId удалён. /smarttunnel/* реально дёргают Lua.
+// HTTP API. Device ID хранится отдельно; /smarttunnel/* реально дёргают Lua.
 
 use axum::{
     extract::{Path, Query, State},
@@ -49,6 +49,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/settings/reset", post(settings_reset))
         .route("/settings/:key", get(settings_get_key).put(settings_put_key))
         .route("/settings-for/:proto", get(settings_for_proto))
+        .route("/device/id", get(device_id))
+        .route("/device/id/regenerate", post(device_id_regenerate))
         .route("/device/info", get(device_info))
         .route("/vpn/connect", post(vpn_connect))
         .route("/vpn/disconnect", post(vpn_disconnect))
@@ -361,6 +363,8 @@ async fn settings_put(
         Err(e) => return err(400, e.to_string()),
     };
     s.normalize();
+    // Device identity is managed by device_id.json, never by settings form payloads.
+    s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
     if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
     Json(json!({"ok": true})).into_response()
@@ -372,6 +376,7 @@ async fn settings_patch(
 ) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.merge_from_json(body) { return err(400, e.to_string()); }
+    s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
     if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
     Json(json!({"ok": true})).into_response()
@@ -379,6 +384,7 @@ async fn settings_patch(
 
 async fn settings_reset(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut s = crate::settings::Settings::default();
+    s.device_id = state.settings.read().device_id.clone();
     s.normalize();
     *state.settings.write() = s;
     let _ = state.save_settings();
@@ -403,12 +409,34 @@ async fn settings_put_key(
 ) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.set_field(&key, body) { return err(400, e.to_string()); }
+    s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
     let _ = state.save_settings();
     Json(json!({"ok": true})).into_response()
 }
 
-async fn device_info() -> impl IntoResponse {
+
+async fn device_id(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(json!({ "deviceId": state.settings.read().device_id }))
+}
+
+async fn device_id_regenerate(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let path = state.app_dir.join("device_id.json");
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&json!({ "deviceId": new_id })).unwrap_or_default(),
+    ) {
+        return err(500, format!("cannot save device id: {e}"));
+    }
+    state.settings.write().device_id = new_id.clone();
+    if let Err(e) = state.save_settings() {
+        return err(500, format!("cannot save settings: {e}"));
+    }
+    Json(json!({ "deviceId": new_id })).into_response()
+}
+
+async fn device_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let hostname = hostname::get()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -419,6 +447,7 @@ async fn device_info() -> impl IntoResponse {
         "hostname": hostname,
         "cores": cores,
         "totalMemMb": 0,
+        "deviceId": state.settings.read().device_id,
     }))
 }
 

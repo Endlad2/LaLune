@@ -21,6 +21,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -42,6 +43,8 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import org.json.JSONArray
+import org.json.JSONObject
 
 class LaLuneVpnService : VpnService() {
 
@@ -180,6 +183,34 @@ class LaLuneVpnService : VpnService() {
         if (!tunEstablished) Log.w(TAG, "timeout waiting for TUNCONF + Активных>0")
     }
 
+    private fun readRoutingSettings(): JSONObject {
+        return try {
+            val file = File(filesDir, "la-lune/settings.json")
+            if (file.exists()) JSONObject(file.readText()) else JSONObject()
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to read routing settings: ${e.message}")
+            JSONObject()
+        }
+    }
+
+    private fun parseIpPrefix(entry: String): Pair<InetAddress, Int> {
+        val value = normalizeIpPrefix(entry)
+        val separator = value.lastIndexOf('/')
+        require(separator > 0 && separator < value.lastIndex) { "invalid IP/CIDR: $entry" }
+        val address = InetAddress.getByName(value.substring(0, separator))
+        val prefixLength = value.substring(separator + 1).toInt()
+        val maxPrefixLength = if (address.address.size == 4) 32 else 128
+        require(prefixLength in 0..maxPrefixLength) { "invalid prefix length: $entry" }
+        return address to prefixLength
+    }
+
+    private fun normalizeIpPrefix(entry: String): String {
+        val value = entry.trim()
+        require(value.isNotEmpty()) { "empty IP" }
+        if (value.contains('/')) return value
+        return value + if (value.contains(':')) "/128" else "/32"
+    }
+
     private fun establishTun() {
         if (tunEstablished) return
         Log.d(TAG, "establishTun")
@@ -192,11 +223,68 @@ class LaLuneVpnService : VpnService() {
             val dnsList = (detectedDNS ?: "$DEFAULT_DNS_1,$DEFAULT_DNS_2")
                 .split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
+            val routing = readRoutingSettings()
             val builder = Builder()
                 .setSession("LaLune")
                 .setMtu(MTU)
                 .addAddress(tunIP, 32)
-                .addRoute("0.0.0.0", 0)
+
+            val configuredIps = routing.optString("ipRoutingIps", "")
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .distinct()
+            val ipMode = routing.optString("ipRoutingMode", "blacklist")
+            if (ipMode == "whitelist") {
+                // White list: only explicitly listed destination networks enter the VPN.
+                configuredIps.forEach { entry ->
+                    try {
+                        val (address, prefixLength) = parseIpPrefix(entry)
+                        builder.addRoute(address, prefixLength)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Invalid whitelist IP/CIDR '$entry': ${e.message}")
+                    }
+                }
+                if (configuredIps.isEmpty()) {
+                    Log.w(TAG, "IP whitelist is empty: no destination IP routes will be added")
+                }
+            } else {
+                builder.addRoute(InetAddress.getByName("0.0.0.0"), 0)
+                configuredIps.forEach { entry ->
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            builder.excludeRoute(parseIpPrefix(entry).let { (address, prefixLength) -> IpPrefix(address, prefixLength) })
+                        } else {
+                            Log.w(TAG, "IP blacklist exclusions require Android 13+; cannot bypass '$entry' on this Android version")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Invalid blacklist IP/CIDR '$entry': ${e.message}")
+                    }
+                }
+            }
+
+            val appMode = routing.optString("androidAppRoutingMode", "blacklist")
+            val appArray = routing.optJSONArray("androidVpnApps") ?: JSONArray()
+            val selectedPackages = (0 until appArray.length())
+                .mapNotNull { appArray.optString(it).takeIf { name -> name.isNotBlank() } }
+                .distinct()
+            if (appMode == "whitelist") {
+                selectedPackages.forEach { packageName ->
+                    try {
+                        builder.addAllowedApplication(packageName)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Cannot allow app '$packageName': ${e.message}")
+                    }
+                }
+            } else {
+                selectedPackages.forEach { packageName ->
+                    try {
+                        builder.addDisallowedApplication(packageName)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Cannot bypass app '$packageName': ${e.message}")
+                    }
+                }
+            }
 
             if (dnsList.isEmpty()) {
                 builder.addDnsServer(DEFAULT_DNS_1)
@@ -205,10 +293,12 @@ class LaLuneVpnService : VpnService() {
                 dnsList.forEach { builder.addDnsServer(it) }
             }
 
-            try {
-                builder.addDisallowedApplication(packageName)
-            } catch (e: Exception) {
-                Log.w(TAG, "addDisallowedApplication failed: ${e.message}")
+            if (routing.optString("androidAppRoutingMode", "blacklist") != "whitelist") {
+                try {
+                    builder.addDisallowedApplication(packageName)
+                } catch (e: Exception) {
+                    Log.w(TAG, "addDisallowedApplication failed: ${e.message}")
+                }
             }
 
             builder.setBlocking(true)

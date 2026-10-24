@@ -9,6 +9,7 @@
 //   - При загрузке: если у выбранного конфига хеши непустые — берём их,
 //     иначе берём settings.vkHashes.
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -17,6 +18,7 @@ import '../models/router_info.dart';
 import '../models/settings.dart';
 import '../models/vk_token_state.dart';
 import '../state/configs_notifier.dart';
+import '../state/providers.dart';
 import '../state/router_notifier.dart';
 import '../state/settings_notifier.dart';
 import '../state/vk_notifier.dart';
@@ -73,6 +75,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _pfRelaySessionCtl = TextEditingController();
   final _pfMaxTokenCtl = TextEditingController();
   final _pfMaxUidCtl = TextEditingController();
+  final _ipRoutingIpsCtl = TextEditingController();
+  String _ipRoutingMode = 'blacklist';
+  String _androidAppRoutingMode = 'blacklist';
+  Set<String> _androidVpnApps = <String>{};
+  List<Map<String, dynamic>> _installedApps = [];
+  bool _loadingApps = false;
+  bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
 
   String _pfTransport = 'yandex';
   String _pfMode = 'proxy';
@@ -110,6 +119,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _pfRelaySessionCtl.dispose();
     _pfMaxTokenCtl.dispose();
     _pfMaxUidCtl.dispose();
+    _ipRoutingIpsCtl.dispose();
     super.dispose();
   }
 
@@ -143,6 +153,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _enableSmartTunnel = s.enableSmartTunnel;
     _showCoreLogs = s.showCoreLogs;
     _shareVpn = s.shareVpn;
+    _ipRoutingMode = s.ipRoutingMode;
+    _ipRoutingIpsCtl.text = s.ipRoutingIps;
+    _androidAppRoutingMode = s.androidAppRoutingMode;
+    _androidVpnApps = s.androidVpnApps.toSet();
+    if (_isAndroid) _loadInstalledApps();
 
     _pfTransport = s.pfTransport.isEmpty ? 'yandex' : s.pfTransport;
     _pfMode = s.pfMode.isEmpty ? 'proxy' : s.pfMode;
@@ -198,6 +213,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       enableSmartTunnel: _enableSmartTunnel,
       showCoreLogs: _showCoreLogs,
       shareVpn: _shareVpn,
+      ipRoutingMode: _ipRoutingMode,
+      ipRoutingIps: _ipRoutingIpsCtl.text.trim(),
+      androidAppRoutingMode: _androidAppRoutingMode,
+      androidVpnApps: _androidVpnApps.toList()..sort(),
       pfTransport: _pfTransport,
       pfUrl: _pfUrlCtl.text.trim(),
       pfUrls: _pfUrlsCtl.text.trim(),
@@ -313,6 +332,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 const SizedBox(height: 18),
               ],
 
+              _sectionTitle('Маршрутизация VPN'),
+              GlassCard(child: _buildRoutingBlock()),
+              const SizedBox(height: 18),
+
               _sectionTitle(_isPaperFlux ? 'Настройки PaperFlux' : 'Продвинутые настройки'),
               if (_isPaperFlux)
                 GlassCard(child: _buildPaperFluxBlock())
@@ -404,6 +427,145 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ],
           ),
         ),
+      ],
+    );
+  }
+
+  Future<void> _loadInstalledApps() async {
+    if (!_isAndroid || _loadingApps) return;
+    setState(() => _loadingApps = true);
+    try {
+      final result = await ref.read(apiClientProvider).getJsonList('/apps/installed');
+      if (!mounted) return;
+      setState(() {
+        _installedApps = result
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .where((item) => (item['packageName'] ?? '').toString().isNotEmpty)
+            .toList()
+          ..sort((a, b) => (a['label'] ?? a['packageName']).toString()
+              .toLowerCase().compareTo((b['label'] ?? b['packageName']).toString().toLowerCase()));
+      });
+    } catch (_) {
+      if (mounted) Toast.show(context, 'Не удалось получить список приложений Android', isError: true);
+    } finally {
+      if (mounted) setState(() => _loadingApps = false);
+    }
+  }
+
+  Future<void> _chooseAndroidApps() async {
+    if (_installedApps.isEmpty) {
+      await _loadInstalledApps();
+      if (_installedApps.isEmpty || !mounted) return;
+    }
+    final selected = Set<String>.from(_androidVpnApps);
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Приложения для маршрутизации'),
+          content: SizedBox(
+            width: 460,
+            height: 480,
+            child: ListView.builder(
+              itemCount: _installedApps.length,
+              itemBuilder: (context, index) {
+                final app = _installedApps[index];
+                final packageName = app['packageName'].toString();
+                final label = (app['label'] ?? packageName).toString();
+                return CheckboxListTile(
+                  value: selected.contains(packageName),
+                  title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(packageName, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  dense: true,
+                  onChanged: (checked) => setDialogState(() {
+                    if (checked == true) {
+                      selected.add(packageName);
+                    } else {
+                      selected.remove(packageName);
+                    }
+                  }),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Отмена')),
+            ElevatedButton(onPressed: () => Navigator.pop(dialogContext, selected), child: const Text('Применить')),
+          ],
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      setState(() => _androidVpnApps = result);
+      _markDirty();
+    }
+  }
+
+  Widget _buildRoutingBlock() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('IP-адреса', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
+            color: Colors.white.withOpacity(0.9))),
+        const SizedBox(height: 5),
+        Text('Настройка общая для CSQTT и PaperFlux. Можно указывать IPv4, IPv6 и CIDR — по одному на строку.',
+            style: TextStyle(fontSize: 11.5, height: 1.45, color: Colors.white.withOpacity(0.55))),
+        const SizedBox(height: 10),
+        _rowDropdown('Режим IP', _ipRoutingMode == 'whitelist' ? 'Белый список' : 'Чёрный список', const ['Чёрный список', 'Белый список'], (v) {
+          setState(() => _ipRoutingMode = v == 'Белый список' ? 'whitelist' : 'blacklist');
+          _markDirty();
+        }),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: TextField(
+            controller: _ipRoutingIpsCtl,
+            minLines: 3,
+            maxLines: 6,
+            keyboardType: TextInputType.multiline,
+            style: const TextStyle(fontSize: 12.5, fontFamily: 'monospace'),
+            decoration: InputDecoration(
+              labelText: 'IP / CIDR',
+              hintText: '192.168.1.10\n10.0.0.0/8\n2001:db8::/32',
+              helperText: _ipRoutingMode == 'whitelist'
+                  ? 'Белый список: только эти IP идут через VPN.'
+                  : 'Чёрный список: эти IP должны идти напрямую, остальные — через VPN. Исключение IP поддерживается на Android 13+.',
+              helperMaxLines: 3,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onChanged: (_) => _markDirty(),
+          ),
+        ),
+        if (_isAndroid) ...[
+          const SizedBox(height: 16),
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          Text('Приложения Android', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
+              color: Colors.white.withOpacity(0.9))),
+          const SizedBox(height: 5),
+          Text('Выберите приложения по установленному пакету. Изменения применятся при следующем подключении VPN.',
+              style: TextStyle(fontSize: 11.5, height: 1.45, color: Colors.white.withOpacity(0.55))),
+          const SizedBox(height: 8),
+          _rowDropdown('Режим приложений', _androidAppRoutingMode == 'whitelist' ? 'Белый список' : 'Чёрный список', const ['Чёрный список', 'Белый список'], (v) {
+            setState(() => _androidAppRoutingMode = v == 'Белый список' ? 'whitelist' : 'blacklist');
+            _markDirty();
+          }),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _loadingApps ? null : _chooseAndroidApps,
+              icon: _loadingApps
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.apps, size: 17),
+              label: Text(_loadingApps ? 'Загрузка приложений...' : 'Выбрать приложения (' + _androidVpnApps.length.toString() + ')'),
+            ),
+          ),
+          Text(_androidAppRoutingMode == 'whitelist'
+              ? 'Белый список: через VPN идут только выбранные приложения.'
+              : 'Чёрный список: выбранные приложения идут напрямую, остальные — через VPN.',
+              style: TextStyle(fontSize: 11.5, height: 1.45, color: Colors.white.withOpacity(0.55))),
+        ],
       ],
     );
   }

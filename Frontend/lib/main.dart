@@ -61,8 +61,6 @@ class RootShell extends ConsumerStatefulWidget {
 class _RootShellState extends ConsumerState<RootShell> {
   int _currentPage = 0;
 
-  int _connectionVersion = 0;
-  int _settingsVersion = 0;
 
   @override
   void initState() {
@@ -72,27 +70,24 @@ class _RootShellState extends ConsumerState<RootShell> {
     });
   }
 
-  void _reloadConnection() {
-    setState(() => _connectionVersion++);
-  }
+  // ConfigsNotifier already refreshes the list after add/delete. Avoid
+  // remounting the whole page, which caused visible flashes on Android.
+  void _reloadConnection() {}
 
   void _onNavSelect(int i) {
     if (i == _currentPage) return;
-    setState(() {
-      _currentPage = i;
-      if (i == 1) _settingsVersion++;
-    });
+    setState(() => _currentPage = i);
   }
 
   Widget _buildPage() {
     switch (_currentPage) {
       case 0:
         return ConnectionPage(
-          key: ValueKey('connection_$_connectionVersion'),
+          key: const ValueKey('connection'),
           onReload: _reloadConnection,
         );
       case 1:
-        return SettingsPage(key: ValueKey('settings_$_settingsVersion'));
+        return const SettingsPage(key: ValueKey('settings'));
       case 2:
         return const InfoPage();
       case 3:
@@ -122,25 +117,16 @@ class _RootShellState extends ConsumerState<RootShell> {
               if (backendStatus == BackendStatus.dead)
                 _BackendOfflineBanner(),
               Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 280),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  transitionBuilder: (child, animation) {
-                    return FadeTransition(
-                      opacity: animation,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.04),
-                          end: Offset.zero,
-                        ).animate(animation),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: KeyedSubtree(
-                    key: ValueKey('page_$_currentPage'),
-                    child: _buildPage(),
+                child: RepaintBoundary(
+                  child: AnimatedSwitcher(
+                    // Avoid cross-fading two translucent pages on top of each
+                    // other: this produced ghosting/artifacts on some Android GPUs.
+                    duration: Duration.zero,
+                    transitionBuilder: (child, animation) => child,
+                    child: KeyedSubtree(
+                      key: ValueKey('page_$_currentPage'),
+                      child: _buildPage(),
+                    ),
                   ),
                 ),
               ),

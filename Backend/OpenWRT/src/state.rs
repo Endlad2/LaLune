@@ -63,6 +63,29 @@ pub fn core_path_for(app_dir: &PathBuf, protocol_id: &str) -> PathBuf {
     app_dir.join(crate::core_manager::core_filename())
 }
 
+
+/// Loads or creates a stable UUIDv4 in ~/.la-lune/device_id.json.
+pub fn ensure_device_id(app_dir: &std::path::Path, preferred: &str) -> Result<String> {
+    use serde_json::Value;
+    use uuid::Uuid;
+
+    let path = app_dir.join("device_id.json");
+    let existing = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|json| json.get("deviceId").and_then(Value::as_str).map(str::to_owned));
+    let existing_uuid = existing.as_deref()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .filter(|id| id.get_version_num() == 4);
+    let preferred_uuid = Uuid::parse_str(preferred).ok()
+        .filter(|id| id.get_version_num() == 4);
+    let id = existing_uuid.or(preferred_uuid)
+        .unwrap_or_else(Uuid::new_v4)
+        .to_string();
+    std::fs::write(&path, serde_json::to_string_pretty(&serde_json::json!({ "deviceId": id }))?)?;
+    Ok(id)
+}
+
 impl AppState {
     pub async fn new() -> Result<Self> {
         let app_dir = app_dir()?;
@@ -81,6 +104,8 @@ impl AppState {
             Settings::default()
         };
         settings.normalize();
+        let device_id = ensure_device_id(&app_dir, &settings.device_id)?;
+        settings.device_id = device_id;
         std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
 
         let configs = ConfigStore::open(&configs_path)?;

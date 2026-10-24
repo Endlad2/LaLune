@@ -28,10 +28,15 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
 
   Future<void> _toggle() async {
     final vpn = ref.read(vpnProvider);
+    if (vpn.state == 'connecting' || vpn.state == 'disconnecting') return;
     if (vpn.connected) {
-      await ref.read(vpnProvider.notifier).disconnect();
+      final ok = await ref.read(vpnProvider.notifier).disconnect();
       if (!mounted) return;
-      Toast.show(context, 'Отключено');
+      Toast.show(
+        context,
+        ok ? 'Отключено' : 'Не удалось отключиться',
+        isError: !ok,
+      );
       return;
     }
     final sel = ref.read(configsProvider).selected;
@@ -115,18 +120,48 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
               children: [
                 MoonButton(connected: vpn.connected, onTap: _toggle),
                 const SizedBox(height: 20),
-                Text(
-                  vpn.connected
-                      ? 'Подключено'
-                      : (vpn.state == 'connecting'
-                          ? 'Подключение...'
-                          : 'Отключено'),
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: vpn.connected
-                        ? const Color(0xFFB36AE2)
-                        : Colors.white.withOpacity(0.6),
-                    fontWeight: FontWeight.w600,
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  child: Row(
+                    key: ValueKey(vpn.state),
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (vpn.state == 'connecting' ||
+                          vpn.state == 'disconnecting') ...[
+                        SizedBox(
+                          width: 13,
+                          height: 13,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              vpn.state == 'connecting'
+                                  ? const Color(0xFFFFB347)
+                                  : Colors.white70,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                      ],
+                      Text(
+                        vpn.connected
+                            ? 'Подключено'
+                            : (vpn.state == 'connecting'
+                                ? 'Подключение...'
+                                : (vpn.state == 'disconnecting'
+                                    ? 'Отключение...'
+                                    : 'Отключено')),
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: vpn.connected
+                              ? const Color(0xFFB36AE2)
+                              : Colors.white.withOpacity(0.6),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 22),

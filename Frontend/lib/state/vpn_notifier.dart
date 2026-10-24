@@ -14,6 +14,9 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
   Timer? _poll;
   SseClient? _sse;
   StreamSubscription<String>? _baseUrlSub;
+  bool _refreshInFlight = false;
+  DateTime? _connectingSince;
+  DateTime? _disconnectingSince;
 
   VpnNotifier(this._ref) : super(VpnStatus.empty) {
     _startPolling();
@@ -48,6 +51,10 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
     _sse!.stream.listen((ev) {
       if (ev.type == 'status') {
         final connected = (ev.data['connected'] ?? false) as bool;
+        // SSE can report a stale "disconnected" while the core is still starting.
+        if (!connected && _isTransitionPending(_connectingSince)) return;
+        if (connected) _connectingSince = null;
+        if (!connected) _disconnectingSince = null;
         state = VpnStatus(
           state: connected ? 'connected' : 'disconnected',
           connected: connected,
@@ -62,34 +69,97 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
     _sse!.connect();
   }
 
+  bool _isTransitionPending(DateTime? since) {
+    return since != null &&
+        DateTime.now().difference(since) < const Duration(seconds: 20);
+  }
+
   Future<void> _refresh() async {
+    if (_refreshInFlight) return;
+    _refreshInFlight = true;
     final api = _ref.read(apiClientProvider);
     try {
       final j = await api.getJson('/vpn/status');
-      state = VpnStatus.fromJson(j);
+      final next = VpnStatus.fromJson(j);
+
+      if (next.connected) {
+        _connectingSince = null;
+        _disconnectingSince = null;
+        state = next;
+      } else if (_isTransitionPending(_connectingSince)) {
+        // Keep the transitional UI until the backend confirms connection,
+        // rather than flashing "Отключено" during startup.
+        state = VpnStatus(
+          state: 'connecting',
+          connected: false,
+          uptimeSec: state.uptimeSec,
+          configId: state.configId,
+          message: next.message.isNotEmpty ? next.message : state.message,
+        );
+      } else if (_isTransitionPending(_disconnectingSince)) {
+        state = VpnStatus(
+          state: 'disconnecting',
+          connected: false,
+          uptimeSec: state.uptimeSec,
+          configId: state.configId,
+          message: state.message,
+        );
+      } else {
+        _connectingSince = null;
+        _disconnectingSince = null;
+        state = next;
+      }
     } catch (_) {
       // backend offline — оставляем как есть
+    } finally {
+      _refreshInFlight = false;
     }
   }
 
   Future<bool> connect(int configId) async {
     final api = _ref.read(apiClientProvider);
+    _connectingSince = DateTime.now();
+    _disconnectingSince = null;
+    state = VpnStatus(
+      state: 'connecting',
+      connected: false,
+      configId: configId,
+      message: 'Подключение...',
+    );
     try {
       await api.postJson('/vpn/connect', {'configId': configId});
-      state = VpnStatus(state: 'connecting', connected: false, configId: configId);
+      unawaited(_refresh());
       return true;
     } catch (_) {
+      _connectingSince = null;
+      state = VpnStatus(
+        state: 'error',
+        connected: false,
+        configId: configId,
+        message: 'Ошибка подключения',
+      );
       return false;
     }
   }
 
   Future<bool> disconnect() async {
     final api = _ref.read(apiClientProvider);
+    _disconnectingSince = DateTime.now();
+    _connectingSince = null;
+    state = VpnStatus(
+      state: 'disconnecting',
+      connected: false,
+      configId: state.configId,
+      message: 'Отключение...',
+    );
     try {
       await api.postJson('/vpn/disconnect', {});
+      _disconnectingSince = null;
       state = VpnStatus.empty;
       return true;
     } catch (_) {
+      _disconnectingSince = null;
+      unawaited(_refresh());
       return false;
     }
   }

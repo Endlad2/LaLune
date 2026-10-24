@@ -212,6 +212,11 @@ def build_installer() -> Optional[Path]:
         return None
 
     require_tool("cargo", "Install Rust: https://rustup.rs")
+
+    # build.rs downloads remote payloads into OUT_DIR. Always clean this crate
+    # first so a reused Cargo target directory cannot retain a stale embedded EXE.
+    run(["cargo", "clean"], cwd=INSTALLER,
+        label="cargo clean (Installer/launcher, fresh embedded payloads)")
     run(["cargo", "build", "--release"], cwd=INSTALLER,
         label="cargo build --release (Installer/launcher)")
 
@@ -221,6 +226,11 @@ def build_installer() -> Optional[Path]:
         exe = INSTALLER / "target" / "release" / "lalune-installer.exe"
     if not exe.exists():
         die(f"installer exe not found: {exe}")
+
+    # Fail the build before packaging if the embedded pinned CSQTT binary is missing.
+    if b"csqtt-219.exe" not in exe.read_bytes():
+        die(f"installer is missing embedded csqtt-219.exe: {exe}")
+    status("OK", f"verified embedded csqtt-219.exe in {exe.name}")
     return exe
 
 def build_frontend(target_os: str) -> Path:
