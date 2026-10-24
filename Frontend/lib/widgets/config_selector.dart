@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/config_item.dart';
 import 'glass_card.dart';
+import 'toast.dart';
 
 class ConfigSelector extends StatelessWidget {
   final List<ConfigItem> configs;
@@ -137,6 +138,35 @@ class _ConfigRowState extends State<_ConfigRow> {
                   ],
                 ),
               ),
+              if (widget.config.isCsqtt251)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Toast.show(
+                      context,
+                      'CSQTT 2.5.1: возможны проблемы с DTLS, совместимостью соединения и стабильностью туннеля. Если подключение не работает, попробуйте CSQTT 2.1.9.',
+                      duration: const Duration(seconds: 5),
+                    ),
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF7E84E),
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: const Text(
+                        '!',
+                        style: TextStyle(
+                          color: Color(0xFF302900),
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               if (widget.selected)
                 const Icon(Icons.check_circle,
                     size: 16, color: Color(0xFF7CFF9A)),
