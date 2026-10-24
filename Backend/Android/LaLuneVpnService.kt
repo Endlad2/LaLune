@@ -239,7 +239,7 @@ class LaLuneVpnService : VpnService() {
                     Log.w(TAG, "IP whitelist is empty: no destination IP routes will be added")
                 }
             } else {
-                builder.addRoute("0.0.0.0", 0)
+                builder.addRoute(InetAddress.getByName("0.0.0.0"), 0)
                 configuredIps.forEach { entry ->
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
