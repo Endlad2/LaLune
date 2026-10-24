@@ -1111,7 +1111,7 @@ class Backend(private val context: Context) {
                      else settings.optString("vkHashes", "")
 
         val started = cm.startCore(
-            protocol = PROTO_CSQTT,
+            protocol = protocol,
             peer = peer,
             password = password,
             hashes = hashes,
