@@ -37,8 +37,11 @@ class _LogsPageState extends ConsumerState<LogsPage> {
     final stats = _LogStats.fromLines(logs.lines);
 
     ref.listen(logsProvider, (prev, next) {
+      final previousLast =
+          prev != null && prev.lines.isNotEmpty ? prev.lines.last : null;
+      final nextLast = next.lines.isNotEmpty ? next.lines.last : null;
       if (prev?.lines.length != next.lines.length ||
-          prev?.lines.lastOrNull != next.lines.lastOrNull) {
+          previousLast != nextLast) {
         _scrollToBottom();
       }
     });
