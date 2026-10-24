@@ -780,7 +780,7 @@ class Backend(private val context: Context) {
                 val expanded = if (value.matches(Regex("[0-9a-fA-F]{32}"))) {
                     "${value.substring(0, 8)}-${value.substring(8, 12)}-${value.substring(12, 16)}-${value.substring(16, 20)}-${value.substring(20)}"
                 } else value
-                java.util.UUID.fromString(expanded).toString()
+                java.util.UUID.fromString(expanded).let { uuid -> if (uuid.version() == 4) uuid.toString() else null }
             }
         } catch (_: Exception) { null }
 
