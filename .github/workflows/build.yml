@@ -3,6 +3,8 @@ name: Build LaLune
 on:
   push:
     branches: [main, release]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       stable_version:
@@ -425,6 +427,7 @@ jobs:
   # ============================================================
   create-release:
     name: Create Release
+    if: ${{ github.event_name != 'pull_request' }}
     needs:
       - build-desktop-linux
       - build-desktop-windows
