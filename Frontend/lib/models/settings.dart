@@ -58,6 +58,12 @@ class Settings {
   final bool showCoreLogs;
   final bool shareVpn;
 
+  // Global split tunneling (shared by all protocols).
+  final String ipRoutingMode; // blacklist: listed IPs bypass VPN; whitelist: only listed IPs use VPN.
+  final String ipRoutingIps; // one IPv4/IPv6 address or CIDR per line.
+  final String androidAppRoutingMode; // blacklist: selected apps bypass VPN; whitelist: only selected apps use VPN.
+  final List<String> androidVpnApps;
+
   Settings({
     this.peer = '',
     this.vkHashes = '',
@@ -102,6 +108,10 @@ class Settings {
     this.enableSmartTunnel = false,
     this.showCoreLogs = false,
     this.shareVpn = false,
+    this.ipRoutingMode = 'blacklist',
+    this.ipRoutingIps = '',
+    this.androidAppRoutingMode = 'blacklist',
+    this.androidVpnApps = const [],
   });
 
   factory Settings.fromJson(Map<String, dynamic> j) {
@@ -157,6 +167,10 @@ class Settings {
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
       shareVpn: (j['shareVpn'] ?? false) as bool,
+      ipRoutingMode: (j['ipRoutingMode'] ?? 'blacklist') as String,
+      ipRoutingIps: (j['ipRoutingIps'] ?? '') as String,
+      androidAppRoutingMode: (j['androidAppRoutingMode'] ?? 'blacklist') as String,
+      androidVpnApps: ((j['androidVpnApps'] ?? const []) as List).map((v) => v.toString()).toList(),
     );
   }
 
@@ -204,6 +218,10 @@ class Settings {
         'enableSmartTunnel': enableSmartTunnel,
         'showCoreLogs': showCoreLogs,
         'shareVpn': shareVpn,
+        'ipRoutingMode': ipRoutingMode,
+        'ipRoutingIps': ipRoutingIps,
+        'androidAppRoutingMode': androidAppRoutingMode,
+        'androidVpnApps': androidVpnApps,
       };
 
   Settings copyWith({
@@ -250,6 +268,10 @@ class Settings {
     bool? enableSmartTunnel,
     bool? showCoreLogs,
     bool? shareVpn,
+    String? ipRoutingMode,
+    String? ipRoutingIps,
+    String? androidAppRoutingMode,
+    List<String>? androidVpnApps,
   }) =>
       Settings(
         peer: peer ?? this.peer,
@@ -296,5 +318,9 @@ class Settings {
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
         shareVpn: shareVpn ?? this.shareVpn,
+        ipRoutingMode: ipRoutingMode ?? this.ipRoutingMode,
+        ipRoutingIps: ipRoutingIps ?? this.ipRoutingIps,
+        androidAppRoutingMode: androidAppRoutingMode ?? this.androidAppRoutingMode,
+        androidVpnApps: androidVpnApps ?? this.androidVpnApps,
       );
 }

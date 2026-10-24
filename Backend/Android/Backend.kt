@@ -319,6 +319,29 @@ class Backend(private val context: Context) {
                     deleteConfig(id)
                 }
 
+                path == "/apps/installed" && method == "GET" -> {
+                    val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                    val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        context.packageManager.queryIntentActivities(
+                            launcherIntent,
+                            android.content.pm.PackageManager.ResolveInfoFlags.of(0)
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        context.packageManager.queryIntentActivities(launcherIntent, 0)
+                    }
+                    val apps = JSONArray()
+                    activities
+                        .mapNotNull { info ->
+                            val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
+                            val label = info.loadLabel(context.packageManager)?.toString() ?: packageName
+                            JSONObject().put("packageName", packageName).put("label", label)
+                        }
+                        .distinctBy { it.optString("packageName") }
+                        .sortedBy { it.optString("label").lowercase(Locale.ROOT) }
+                        .forEach { apps.put(it) }
+                    200 to apps.toString()
+                }
                 path == "/settings" && method == "GET" -> 200 to loadSettings().toString()
                 path == "/settings" && method == "PUT" -> replaceSettings(body)
                 path == "/settings" && method == "PATCH" -> patchSettings(body)
