@@ -123,7 +123,16 @@ fn build_csqtt_args(
     settings: &Settings,
     listen_port: u16,
 ) -> Vec<String> {
-    let normalized = config.hashes.replace([' ', '\t', '\n', '\r'], ",");
+    // Fallback: если в конфиге хешей нет — берём из settings.vk_hashes.
+    // Это позволяет UI сохранять хеши в settings.vkHashes и не привязывать
+    // их к конкретному ConfigItem.
+    let source_hashes = if config.hashes.trim().is_empty() {
+        settings.vk_hashes.as_str()
+    } else {
+        config.hashes.as_str()
+    };
+
+    let normalized = source_hashes.replace([' ', '\t', '\n', '\r'], ",");
     let clean: Vec<String> = normalized
         .split(',')
         .map(|s| s.trim().to_string())
@@ -154,7 +163,6 @@ fn build_csqtt_args(
         crate::settings::MAX_WORKERS,
     );
 
-    // device-id больше не передаётся.
     let mut args: Vec<String> = vec![
         "--peer".into(), config.peer.clone(),
         "--password".into(), config.password.clone(),

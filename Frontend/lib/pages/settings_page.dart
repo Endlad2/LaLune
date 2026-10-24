@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // Настройки. deviceId удалён — новый CSQTT его не использует.
+//
+// ВАЖНО (исправление):
+//   - vkHashes теперь ВСЕГДА берётся из `_vkHashesCtl.text` при сохранении,
+//     а не подменяется на _selectedConfig.hashes. Иначе введённые вручную
+//     хеши не сохранялись при переходе на другую вкладку.
+//   - При загрузке: если у выбранного конфига хеши непустые — берём их,
+//     иначе берём settings.vkHashes.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -117,7 +124,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (cfg != null && !cfg.isPaperFlux) {
       _peerCtl.text = cfg.peer;
       _passwordCtl.text = cfg.password;
-      _vkHashesCtl.text = cfg.hashes;
+      // Показываем хеши из конфига, если они есть; иначе — из settings.
+      _vkHashesCtl.text = cfg.hashes.isNotEmpty ? cfg.hashes : s.vkHashes;
     } else {
       _peerCtl.text = s.peer;
       _passwordCtl.text = s.password;
@@ -170,16 +178,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _workersCtl.text = w.toString();
     _autoApiWorkersCtl.text = aw.toString();
 
+    // ВАЖНО: vkHashes всегда из контроллера — не подменяем на конфиг.
+    // Это позволяет пользователю ввести хеши вручную и сохранить их
+    // в settings.vkHashes. Backend fallback'ом возьмёт их, если у конфига
+    // hashes пустые.
     final s = _s.copyWith(
-      peer: (_selectedConfig != null && !_selectedConfig!.isPaperFlux)
-          ? _selectedConfig!.peer
-          : _peerCtl.text.trim(),
-      vkHashes: (_selectedConfig != null && !_selectedConfig!.isPaperFlux)
-          ? _selectedConfig!.hashes
-          : _vkHashesCtl.text.trim(),
-      password: (_selectedConfig != null && !_selectedConfig!.isPaperFlux)
-          ? _selectedConfig!.password
-          : _passwordCtl.text,
+      peer: _peerCtl.text.trim(),
+      vkHashes: _vkHashesCtl.text.trim(),
+      password: _passwordCtl.text,
       workers: w,
       autoApiWorkers: aw,
       clientIds: _clientIdsCtl.text.trim(),
@@ -656,7 +662,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         Padding(
           padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
           child: Text(
-            'Открывает SOCKS5-прокси на 0.0.0.0:1080.',
+            'Открывает SOCKS5-прокси на случайном свободном порту '
+            '(не 1080). Порт виден в /vpn/status как socks5Port.',
             style: TextStyle(
                 fontSize: 11.5,
                 height: 1.5,

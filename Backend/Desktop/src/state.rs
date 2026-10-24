@@ -38,6 +38,8 @@ pub struct AppState {
     pub smarttunnel_running: Mutex<bool>,
 
     pub socks5: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Порт, который реально слушает SOCKS5 (0 = не запущен).
+    pub socks5_port: RwLock<u16>,
 
     pub lua: Mutex<Option<Arc<LuaRuntime>>>,
 
@@ -114,13 +116,12 @@ impl AppState {
             deploy_log: Mutex::new(String::new()),
             smarttunnel_running: Mutex::new(false),
             socks5: Mutex::new(None),
+            socks5_port: RwLock::new(0),
             lua: Mutex::new(None),
             shutdown: Notify::new(),
         })
     }
 
-    /// Инициализирует Lua-рантайм. Вызывать один раз после new().
-    /// Также регистрирует рантайм как глобальный singleton (для config.rs).
     pub fn init_lua(self: &Arc<Self>) -> Result<()> {
         let runtime = Arc::new(LuaRuntime::new(self.clone())?);
         runtime.clone().install_global();
@@ -180,6 +181,7 @@ impl AppState {
             let handle = { self.socks5.lock().take() };
             if let Some(h) = handle { h.abort(); }
         }
+        *self.socks5_port.write() = 0;
 
         self.vpn.stop();
 

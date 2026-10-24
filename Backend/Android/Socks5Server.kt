@@ -4,19 +4,20 @@
 //
 // package = com.lalune.lalune — тот же, что у MainActivity и Backend.
 //
-// Слушает 0.0.0.0:1080. Все входящие CONNECT-запросы проксирует
-// через TUN (default route уже указывает на VPN).
+// Порт выбирается автоматически (ServerSocket(0)), если передано 0.
+// start() возвращает реальный порт.
 //
-// Логирует "[PROXY] Listening socks5 on <real-ip>:1080" в общий лог
-// бэкенда — фронт показывает его во вкладке Логи.
+// Логирует "[PROXY] Listening socks5 on <real-ip>:<port>".
 
 package com.lalune.lalune
 
 import android.util.Log
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
+import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
 import java.util.concurrent.ExecutorService
@@ -24,7 +25,7 @@ import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 class Socks5Server(
-    private val port: Int,
+    private val requestedPort: Int,
     private val log: (String) -> Unit,
 ) {
     companion object {
@@ -32,17 +33,24 @@ class Socks5Server(
     }
 
     @Volatile private var running = false
-    private var serverSocket: java.net.ServerSocket? = null
+    private var serverSocket: ServerSocket? = null
     private val executor: ExecutorService = Executors.newCachedThreadPool()
 
-    fun start() {
+    /**
+     * Запускает сервер. Если [requestedPort] == 0 — ОС выберет свободный.
+     * Возвращает фактический порт.
+     */
+    fun start(): Int {
         running = true
+        var actualPort = requestedPort
+
         thread(name = "socks5-accept", isDaemon = true) {
             try {
-                val ss = java.net.ServerSocket(port, 50, java.net.InetAddress.getByName("0.0.0.0"))
+                val ss = ServerSocket(requestedPort, 50, InetAddress.getByName("0.0.0.0"))
                 serverSocket = ss
+                actualPort = ss.localPort
                 val realIp = localIpAddress() ?: "0.0.0.0"
-                log("[PROXY] Listening socks5 on $realIp:$port")
+                log("[PROXY] Listening socks5 on $realIp:$actualPort")
                 while (running) {
                     try {
                         val client = ss.accept()
@@ -52,10 +60,18 @@ class Socks5Server(
                     }
                 }
             } catch (e: Exception) {
-                log("[PROXY] failed to bind :$port — ${e.message}")
+                log("[PROXY] failed to bind :$requestedPort — ${e.message}")
                 Log.e(TAG, "bind failed", e)
             }
         }
+
+        // Даём потоку шанс забиндиться, чтобы вернуть реальный порт.
+        val deadline = System.currentTimeMillis() + 1500
+        while (System.currentTimeMillis() < deadline) {
+            serverSocket?.let { return it.localPort }
+            Thread.sleep(20)
+        }
+        return actualPort
     }
 
     fun stop() {
@@ -115,7 +131,6 @@ class Socks5Server(
                     }
                     0x04 -> {
                         val addr = ByteArray(16); readFully(input, addr)
-                        // Простейшее разворачивание IPv6
                         val sb = StringBuilder()
                         for (i in 0 until 8) {
                             if (i > 0) sb.append(':')

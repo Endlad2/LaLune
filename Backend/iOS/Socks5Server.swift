@@ -2,14 +2,13 @@
 //
 // SOCKS5-сервер для раздачи VPN на iOS.
 //
-// ВАЖНО: этот файл — ИСТОЧНИК для CI. Workflow build-ios.yml копирует
-// его из Backend/iOS/ в Frontend/ios/Runner/ перед xcodegen generate.
-// Xcode видит только то, что лежит в Frontend/ios/Runner/.
+// Порт выбирается автоматически (NWListener без явного порта).
+// start() возвращает фактический порт (ждёт .ready).
 //
-// Слушает 0.0.0.0:1080. Все CONNECT-запросы идут через TUN
+// Слушает 0.0.0.0:1080 → рандом. Все CONNECT-запросы идут через TUN
 // (default route уже указывает на VPN-туннель).
 //
-// Логирует "[PROXY] Listening socks5 on <real-ip>:1080".
+// Логирует "[PROXY] Listening socks5 on <real-ip>:<port>".
 
 import Foundation
 import Network
@@ -17,46 +16,75 @@ import Network
 @available(iOS 17.0, *)
 final class Socks5Server {
 
-    private let port: UInt16
+    private let requestedPort: UInt16
     private let log: (String) -> Void
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "lalune.socks5", attributes: .concurrent)
 
+    /// Порт, который реально слушается (0 пока не готов).
+    private(set) var boundPort: UInt16 = 0
+
     init(port: UInt16, log: @escaping (String) -> Void) {
-        self.port = port
+        self.requestedPort = port
         self.log = log
     }
 
-    func start() throws {
+    /// Запускает сервер. Если requestedPort == 0 — ОС выберет свободный.
+    /// Синхронно ждёт .ready (с таймаутом 2 сек) и возвращает порт.
+    @discardableResult
+    func start() throws -> UInt16 {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw NSError(domain: "Socks5", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "invalid port"])
+
+        let listener: NWListener
+        if requestedPort == 0 {
+            // Без явного порта — ОС выберет.
+            listener = try NWListener(using: params)
+        } else {
+            guard let nwPort = NWEndpoint.Port(rawValue: requestedPort) else {
+                throw NSError(domain: "Socks5", code: -1,
+                              userInfo: [NSLocalizedDescriptionKey: "invalid port"])
+            }
+            listener = try NWListener(using: params, on: nwPort)
         }
-        let listener = try NWListener(using: params, on: nwPort)
-        listener.newConnectionHandler = { [weak self] conn in
-            self?.handle(conn)
-        }
+
+        let sem = DispatchSemaphore(value: 0)
+        var bound: UInt16 = 0
+        var boundRealIp: String = "0.0.0.0"
+
         listener.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
             case .ready:
-                let ip = self.localIpAddress() ?? "0.0.0.0"
-                self.log("[PROXY] Listening socks5 on \(ip):\(self.port)")
+                let port = listener.port?.rawValue ?? 0
+                bound = port
+                self.boundPort = port
+                boundRealIp = self.localIpAddress() ?? "0.0.0.0"
+                self.log("[PROXY] Listening socks5 on \(boundRealIp):\(port)")
+                sem.signal()
             case .failed(let e):
                 self.log("[PROXY] listener failed: \(e.localizedDescription)")
+                sem.signal()
             default:
                 break
             }
         }
+
+        listener.newConnectionHandler = { [weak self] conn in
+            self?.handle(conn)
+        }
+
         listener.start(queue: queue)
         self.listener = listener
+
+        _ = sem.wait(timeout: .now() + 2.0)
+        return bound
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+        boundPort = 0
         log("[PROXY] stopped")
     }
 

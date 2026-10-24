@@ -373,8 +373,9 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     *state.core.lock() = Some(core);
 
     if settings.share_vpn {
-        if let Err(e) = crate::socks5::start(state.clone()) {
-            state.log(format!("[PROXY] failed to start: {}", e));
+        match crate::socks5::start(state.clone()) {
+            Ok(port) => state.log(format!("[PROXY] socks5 on port {}", port)),
+            Err(e) => state.log(format!("[PROXY] failed to start: {}", e)),
         }
     }
 
@@ -442,7 +443,6 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
 async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.log("[VPN] disconnecting...");
     state.vpn.stop();
-    // ВАЖНО: cleanup_routes на OpenWRT принимает только events (не runtime).
     vpn::cleanup_routes(&state.events);
 
     crate::socks5::stop(&state);
@@ -462,7 +462,16 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
 async fn vpn_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cfg_id = state.selected_config.read().as_ref().map(|c| c.id).unwrap_or(0);
     let s = state.vpn.status(cfg_id);
-    Json(json!(s))
+    let socks5_port = *state.socks5_port.read();
+    Json(json!({
+        "state": s.state,
+        "connected": s.connected,
+        "uptimeSec": s.uptime_sec,
+        "configId": s.config_id,
+        "message": s.message,
+        "since": s.since,
+        "socks5Port": socks5_port,
+    }))
 }
 
 async fn vpn_reconnect(state: State<Arc<AppState>>) -> impl IntoResponse {
@@ -474,7 +483,15 @@ async fn vpn_reconnect(state: State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn vpn_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let s = state.vpn.stats();
-    Json(json!(s))
+    let socks5_port = *state.socks5_port.read();
+    Json(json!({
+        "rxBytes": s.rx_bytes,
+        "txBytes": s.tx_bytes,
+        "rxRate": s.rx_rate,
+        "txRate": s.tx_rate,
+        "activeSessions": s.active_sessions,
+        "socks5Port": socks5_port,
+    }))
 }
 
 async fn vpn_tunconf(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -757,7 +774,8 @@ async fn deploy_status_stub() -> impl IntoResponse { Json(json!({"busy": false, 
 async fn deploy_log_stub() -> impl IntoResponse { Json(json!({"log": "", "stub": true})) }
 async fn deploy_protocols_stub() -> impl IntoResponse { Json(json!({"protocols": [], "stub": true})) }
 
-async fn platform_caps() -> impl IntoResponse {
+async fn platform_caps(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let socks5_port = *state.socks5_port.read();
     Json(json!({
         "canShowWebView": false,
         "canRunTun": true,
@@ -767,6 +785,7 @@ async fn platform_caps() -> impl IntoResponse {
         "canOpenExternalUrl": false,
         "os": "linux",
         "platform": "openwrt",
+        "socks5Port": socks5_port,
     }))
 }
 async fn platform_open_url() -> impl IntoResponse { Json(json!({"ok": true})) }
@@ -779,6 +798,7 @@ async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let settings = state.settings.read().clone();
     let selected = state.selected_config.read().clone();
     let vpn_status = state.vpn.status(selected.as_ref().map(|c| c.id).unwrap_or(0));
+    let socks5_port = *state.socks5_port.read();
     Json(json!({
         "settings": settings,
         "selectedConfig": selected,
@@ -786,6 +806,7 @@ async fn debug_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "logCount": logs.len(),
         "appDir": state.app_dir.to_string_lossy(),
         "luaAvailable": state.lua().is_some(),
+        "socks5Port": socks5_port,
     }))
 }
 

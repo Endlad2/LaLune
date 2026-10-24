@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// SOCKS5-прокси на 0.0.0.0:1080 для раздачи VPN.
+// SOCKS5-прокси. Порт выбирается автоматически (bind на :0).
 //
 // Логика: если включена настройка share_vpn, бэкенд поднимает
 // SOCKS5-сервер. Все входящие соединения идут через TUN-интерфейс
@@ -15,38 +15,49 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::events::Event;
 use crate::state::AppState;
 
-pub const SOCKS5_PORT: u16 = 1080;
-
-pub fn start(state: Arc<AppState>) -> Result<()> {
+/// Запускает SOCKS5-сервер на свободном порту.
+/// Возвращает выбранный порт. Если сервер уже запущен — возвращает
+/// текущий `state.socks5_port`.
+pub fn start(state: Arc<AppState>) -> Result<u16> {
     {
         let guard = state.socks5.lock();
         if guard.is_some() {
             state.log("[PROXY] already running");
-            return Ok(());
+            return Ok(*state.socks5_port.read());
         }
     }
 
+    // Bind на порт 0 — ОС даст свободный.
+    let std_listener = std::net::TcpListener::bind("0.0.0.0:0")
+        .map_err(|e| anyhow!("socks5 bind: {}", e))?;
+    std_listener
+        .set_nonblocking(true)
+        .map_err(|e| anyhow!("socks5 set_nonblocking: {}", e))?;
+    let port = std_listener
+        .local_addr()
+        .map_err(|e| anyhow!("socks5 local_addr: {}", e))?
+        .port();
+
+    let tokio_listener = TcpListener::from_std(std_listener)
+        .map_err(|e| anyhow!("socks5 from_std: {}", e))?;
+
+    *state.socks5_port.write() = port;
+    state.log(format!("[PROXY] Listening socks5 on 0.0.0.0:{}", port));
+    state.events.emit(Event::log(format!(
+        "[PROXY] Listening socks5 on 0.0.0.0:{}", port
+    )));
+    state.events.emit(Event::named(
+        "socks5_ready",
+        serde_json::json!({ "port": port }),
+    ));
+
     let real_ip = local_ip_address().unwrap_or_else(|| "0.0.0.0".to_string());
+    state.log(format!("[PROXY] LAN address: {}:{}", real_ip, port));
 
     let state2 = state.clone();
     let handle = tokio::spawn(async move {
-        let addr = SocketAddr::from(([0, 0, 0, 0], SOCKS5_PORT));
-        let listener = match TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                state2.log(format!("[PROXY] bind failed: {}", e));
-                return;
-            }
-        };
-
-        state2.log(format!("[PROXY] Listening socks5 on {}:{}", real_ip, SOCKS5_PORT));
-        state2.events.emit(Event::log(format!(
-            "[PROXY] Listening socks5 on {}:{}",
-            real_ip, SOCKS5_PORT
-        )));
-
         loop {
-            match listener.accept().await {
+            match tokio_listener.accept().await {
                 Ok((client, peer)) => {
                     let st = state2.clone();
                     tokio::spawn(async move {
@@ -64,7 +75,7 @@ pub fn start(state: Arc<AppState>) -> Result<()> {
     });
 
     *state.socks5.lock() = Some(handle);
-    Ok(())
+    Ok(port)
 }
 
 pub fn stop(state: &Arc<AppState>) {
@@ -73,6 +84,7 @@ pub fn stop(state: &Arc<AppState>) {
         h.abort();
         state.log("[PROXY] stopped");
     }
+    *state.socks5_port.write() = 0;
 }
 
 fn local_ip_address() -> Option<String> {
@@ -141,7 +153,6 @@ async fn handle_client(mut client: TcpStream) -> Result<()> {
         }
     };
 
-    // ВАЖНО: remote объявлен mut — TcpStream::split() требует &mut self.
     let mut remote = match TcpStream::connect(target).await {
         Ok(s) => s,
         Err(e) => {

@@ -4,6 +4,7 @@
 //
 // deviceId удалён.
 // csqtt:// парсится: csqtt-link (ProcessBuilder) → Lua → нативный.
+// SOCKS5 слушает рандомный свободный порт (не 1080).
 
 package com.lalune.lalune
 
@@ -83,6 +84,10 @@ class Backend(private val context: Context) {
     @Volatile private var vkLoginInProgress = false
     @Volatile private var vkLoginMessage = ""
 
+    /** Порт SOCKS5 (0 = не запущен). */
+    @Volatile var socks5Port: Int = 0
+        private set
+
     private var activity: Activity? = null
     private var currentVkFetcher: VkWebViewFetcher? = null
     private var coreManager: CoreManager? = null
@@ -112,7 +117,6 @@ class Backend(private val context: Context) {
         registerVpnReceiver()
         startLuaRuntime()
 
-        // Прогреваем поиск csqtt-link бинарника (если нет — лог в /debug/lua).
         CsqttLink.ensureAvailable(context)
 
         startHttpServer()
@@ -267,7 +271,8 @@ class Backend(private val context: Context) {
                     "arch" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
                     "hostname" to android.os.Build.MODEL,
                     "platform" to "android",
-                    "uptime" to 0
+                    "uptime" to 0,
+                    "socks5Port" to socks5Port
                 )
                 path == "/version" && method == "GET" -> 200 to jsonOk(
                     "api" to 1, "backend" to VERSION,
@@ -345,14 +350,16 @@ class Backend(private val context: Context) {
                 path == "/vpn/status" && method == "GET" -> 200 to jsonOk(
                     "state" to if (vpnConnected) "connected" else "disconnected",
                     "connected" to vpnConnected, "uptimeSec" to 0,
-                    "configId" to 0, "message" to "", "since" to ""
+                    "configId" to 0, "message" to "", "since" to "",
+                    "socks5Port" to socks5Port
                 )
                 path == "/vpn/reconnect" && method == "POST" -> {
                     vpnDisconnect(); Thread.sleep(300); vpnConnect("{}")
                 }
                 path == "/vpn/stats" && method == "GET" -> 200 to jsonOk(
                     "rxBytes" to 0, "txBytes" to 0, "rxRate" to 0, "txRate" to 0,
-                    "activeSessions" to if (vpnConnected) 1 else 0
+                    "activeSessions" to if (vpnConnected) 1 else 0,
+                    "socks5Port" to socks5Port
                 )
                 path == "/vpn/tunconf" && method == "GET" -> 200 to "{}"
 
@@ -468,7 +475,8 @@ class Backend(private val context: Context) {
                     "canShowWebView" to true, "canRunTun" to true, "canDeploy" to false,
                     "canAutoUpdate" to false, "canSendNotifications" to true,
                     "canOpenExternalUrl" to true,
-                    "os" to "android", "platform" to "mobile"
+                    "os" to "android", "platform" to "mobile",
+                    "socks5Port" to socks5Port
                 )
                 path == "/platform/open-url" && method == "POST" -> 200 to jsonOk("ok" to true)
                 path == "/platform/notify" && method == "POST" -> 200 to jsonOk("ok" to true)
@@ -480,6 +488,7 @@ class Backend(private val context: Context) {
                     "vpnConnected" to vpnConnected,
                     "luaAvailable" to (luaRuntime != null),
                     "csqttLinkAvailable" to (CsqttLink.ensureAvailable(context) != null),
+                    "socks5Port" to socks5Port,
                 )
                 path == "/debug/echo" && method == "POST" -> 200 to body
                 path == "/debug/config" && method == "GET" -> 200 to jsonOk(
@@ -1086,7 +1095,11 @@ class Backend(private val context: Context) {
         if (peer.isNullOrEmpty()) return 400 to jsonErr("no config selected")
 
         val password = sel?.optString("password", "") ?: settings.optString("password", "")
-        val hashes = sel?.optString("hashes", "") ?: settings.optString("vkHashes", "")
+
+        // Fallback: если в конфиге хешей нет — берём из settings.vkHashes.
+        val cfgHashes = sel?.optString("hashes", "") ?: ""
+        val hashes = if (cfgHashes.isNotEmpty()) cfgHashes
+                     else settings.optString("vkHashes", "")
 
         val started = cm.startCore(
             protocol = PROTO_CSQTT,
@@ -1199,12 +1212,15 @@ class Backend(private val context: Context) {
         return 200 to jsonOk("ok" to true)
     }
 
+    /** Запускает SOCKS5 на свободном порту. */
     private fun startSocks5() {
         if (socks5Server != null) { addLog("[PROXY] already running"); return }
         try {
-            val server = Socks5Server(1080) { line -> addLog(line) }
-            server.start()
+            val server = Socks5Server(0) { line -> addLog(line) }
+            val port = server.start()
             socks5Server = server
+            socks5Port = port
+            addLog("[PROXY] SOCKS5 listening on 0.0.0.0:$port")
         } catch (e: Exception) {
             addLog("[PROXY] failed to start: ${e.message}")
         }
@@ -1213,6 +1229,7 @@ class Backend(private val context: Context) {
     private fun stopSocks5() {
         try { socks5Server?.stop() } catch (_: Exception) {}
         socks5Server = null
+        socks5Port = 0
     }
 
     private fun vkLogin(): Pair<Int, String> {

@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // LaLune backend для iOS 17+.
-// deviceId удалён.
-// csqtt:// парсится через csqtt-link (staticlib), fallback — нативный.
+// HTTP-сервер на 127.0.0.1:1062, NETunnelProviderManager, VK через
+// собственный WKWebView (VkWebViewController).
+//
+// Точка входа: Backend.shared.attach(window:).run()
+//
+// SOCKS5 слушает рандомный свободный порт (не 1080).
 
 import Foundation
 import Network
@@ -62,17 +66,27 @@ public final class Backend {
     private var coreDownloading = false
     private var activeCallIds: [String] = []
 
+    /// Порт SOCKS5 (0 = не запущен).
+    private var socks5Port: UInt16 = 0
+
     private var vkWebVC: VkWebViewController?
     private var vkLoginInProgress = false
     private var vkLoginMessage = ""
 
     private var socks5Server: Socks5Server?
 
-    public func attach(window: UIWindow?) { self.window = window }
+    // ============================================================
+    //  Public API
+    // ============================================================
+
+    public func attach(window: UIWindow?) {
+        self.window = window
+    }
 
     public func run() {
         guard !running else { log("[BACKEND] already running"); return }
         running = true
+
         ensureDefaults()
         observeVpnStatus()
 
@@ -82,11 +96,15 @@ public final class Backend {
         } onSseOpen: { [weak self] send in
             guard let self = self else { return UUID() }
             let id = UUID()
-            self.stateQueue.async(flags: .barrier) { self.eventSubscribers[id] = send }
+            self.stateQueue.async(flags: .barrier) {
+                self.eventSubscribers[id] = send
+            }
             return id
         } onSseClose: { [weak self] id in
             guard let self = self else { return }
-            self.stateQueue.async(flags: .barrier) { self.eventSubscribers.removeValue(forKey: id) }
+            self.stateQueue.async(flags: .barrier) {
+                self.eventSubscribers.removeValue(forKey: id)
+            }
         }
 
         self.httpServer = server
@@ -118,6 +136,10 @@ public final class Backend {
         }
     }
 
+    // ============================================================
+    //  Router
+    // ============================================================
+
     private func route(method: String, rawPath: String, body: String) -> (Int, String) {
         let qIdx = rawPath.firstIndex(of: "?")
         let path = qIdx.map { String(rawPath[..<$0]) } ?? rawPath
@@ -129,7 +151,8 @@ public final class Backend {
             switch (method, path) {
             case ("GET", "/ping"):
                 return (200, json(["ok": true, "version": VERSION,
-                                   "os": "ios", "arch": "arm64", "uptime": 0]))
+                                   "os": "ios", "arch": "arm64", "uptime": 0,
+                                   "socks5Port": Int(socks5Port)]))
             case ("GET", "/version"):
                 return (200, json(["api": 1, "backend": VERSION,
                                    "core": CoreManager.shared.readLatest(),
@@ -172,6 +195,12 @@ public final class Backend {
                 saveSettings(defaultSettings())
                 return (200, json(["ok": true]))
 
+            case ("GET", "/device/id"):
+                return (200, json(["deviceId": getDeviceId()]))
+            case ("POST", "/device/id/regenerate"):
+                let new = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                updateDeviceId(new)
+                return (200, json(["deviceId": new]))
             case ("GET", "/device/info"):
                 return (200, json(["os": "ios", "arch": "arm64",
                                    "hostname": UIDevice.current.name,
@@ -186,7 +215,8 @@ public final class Backend {
                 return (200, json([
                     "state": vpnConnected ? "connected" : "disconnected",
                     "connected": vpnConnected,
-                    "uptimeSec": 0, "configId": 0, "message": "", "since": ""
+                    "uptimeSec": 0, "configId": 0, "message": "", "since": "",
+                    "socks5Port": Int(socks5Port),
                 ]))
             case ("POST", "/vpn/reconnect"):
                 _ = vpnDisconnect()
@@ -195,7 +225,8 @@ public final class Backend {
             case ("GET", "/vpn/stats"):
                 return (200, json(["rxBytes": 0, "txBytes": 0,
                                    "rxRate": 0, "txRate": 0,
-                                   "activeSessions": vpnConnected ? 1 : 0]))
+                                   "activeSessions": vpnConnected ? 1 : 0,
+                                   "socks5Port": Int(socks5Port)]))
             case ("GET", "/vpn/tunconf"):
                 return (200, "{}")
 
@@ -276,11 +307,7 @@ public final class Backend {
                 return (200, json(["callIds": activeCallIds]))
 
             case ("GET", "/smarttunnel/status"):
-                return (200, json([
-                    "running": smarttunnelRunning,
-                    "luaAvailable": false,
-                    "csqttLinkAvailable": true,
-                ]))
+                return (200, json(["running": smarttunnelRunning]))
             case ("POST", "/smarttunnel/start"):
                 smarttunnelRunning = true
                 return (200, json(["ok": true]))
@@ -288,7 +315,7 @@ public final class Backend {
                 smarttunnelRunning = false
                 return (200, json(["ok": true]))
             case ("POST", "/smarttunnel/reload"):
-                return (200, json(["ok": true, "luaAvailable": false, "csqttLinkAvailable": true]))
+                return (200, json(["ok": true]))
             case ("GET", "/smarttunnel/logs"):
                 return (200, "[]")
             case ("GET", "/smarttunnel/args"):
@@ -311,7 +338,8 @@ public final class Backend {
                 return (200, json([
                     "canShowWebView": true, "canRunTun": true, "canDeploy": false,
                     "canAutoUpdate": false, "canSendNotifications": true,
-                    "canOpenExternalUrl": true, "os": "ios", "platform": "mobile"
+                    "canOpenExternalUrl": true, "os": "ios", "platform": "mobile",
+                    "socks5Port": Int(socks5Port),
                 ]))
             case ("POST", "/platform/open-url"):
                 if let data = body.data(using: .utf8),
@@ -342,8 +370,7 @@ public final class Backend {
                     "logCount": currentLogs().count,
                     "appDir": appDir.path,
                     "vpnConnected": vpnConnected,
-                    "luaAvailable": false,
-                    "csqttLinkAvailable": true,
+                    "socks5Port": Int(socks5Port),
                 ]))
             case ("POST", "/debug/echo"):
                 return (200, body)
@@ -352,16 +379,10 @@ public final class Backend {
                     "appDir": appDir.path, "configsPath": configsURL.path,
                     "settingsPath": settingsURL.path, "logsPath": logsURL.path,
                     "tokenPath": tokenURL.path,
-                    "corePath": CoreManager.shared.corePath() ?? "",
-                    "luaAvailable": false,
-                    "csqttLinkAvailable": true,
+                    "corePath": CoreManager.shared.corePath() ?? ""
                 ]))
             case ("POST", "/debug/reload-config"):
                 return (200, json(["ok": true]))
-            case ("GET", "/debug/lua"):
-                return (200, json(["available": false,
-                                   "smarttunnelRunning": smarttunnelRunning,
-                                   "csqttLinkAvailable": true]))
 
             default:
                 return (404, err("route not found: \(method) \(path)"))
@@ -370,6 +391,10 @@ public final class Backend {
             return (500, err(error.localizedDescription))
         }
     }
+
+    // ============================================================
+    //  Файлы
+    // ============================================================
 
     private func ensureDefaults() {
         if !FileManager.default.fileExists(atPath: settingsURL.path) {
@@ -385,7 +410,7 @@ public final class Backend {
             "peer": "", "vkHashes": "", "vkJsToken": "",
             "workers": DEFAULT_WORKERS, "autoApiWorkers": DEFAULT_AUTO_API_WORKERS,
             "password": "", "obfs": "video", "fingerprint": "firefox",
-            "clientIds": "8202606,6287487",
+            "clientIds": "8202606,6287487", "deviceId": getDeviceId(),
             "authMode": "manual", "turnTransport": "udp",
             "turnHost": "", "turnPort": "",
             "captchaMode": "auto", "vkAuthMode": "vkcalls",
@@ -437,6 +462,23 @@ public final class Backend {
         return (200, json(["ok": true]))
     }
 
+    private func getDeviceId() -> String {
+        var s = loadSettings()
+        var id = s["deviceId"] as? String ?? ""
+        if id.isEmpty {
+            id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            s["deviceId"] = id
+            saveSettings(s)
+        }
+        return id
+    }
+
+    private func updateDeviceId(_ new: String) {
+        var s = loadSettings()
+        s["deviceId"] = new
+        saveSettings(s)
+    }
+
     private func readVkToken() -> String? {
         guard let data = try? Data(contentsOf: tokenURL),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -464,6 +506,10 @@ public final class Backend {
                 : (vkLoginInProgress ? vkLoginMessage : "")
         ])
     }
+
+    // ============================================================
+    //  Логи
+    // ============================================================
 
     private func currentLogs() -> [String] {
         var out: [String] = []
@@ -501,6 +547,10 @@ public final class Backend {
            let s = String(data: data, encoding: .utf8) { return s }
         return "[]"
     }
+
+    // ============================================================
+    //  Конфиги
+    // ============================================================
 
     private func loadConfigs() -> [[String: Any]] {
         guard let data = try? Data(contentsOf: configsURL),
@@ -564,34 +614,14 @@ public final class Backend {
         try? FileManager.default.removeItem(at: selectedConfigURL)
     }
 
-    /// Парсит csqtt:// через csqtt-link (staticlib), fallback — нативный.
     private func parseLink(_ link: String) -> [String: Any] {
-        let lower = link.lowercased()
-        guard lower.hasPrefix("csqtt://") else {
-            var out: [String: Any] = [
-                "protocol": "CSQTT", "peer": "", "password": "", "hashes": "", "name": ""
-            ]
-            out["peer"] = link
-            return out
-        }
-
-        // 1. csqtt-link
-        if let info = CsqttLink.parse(link) {
-            let peer = "\(info.host):\(info.port)"
-            return [
-                "protocol": "CSQTT",
-                "peer": peer,
-                "password": info.password,
-                "hashes": info.hashes.joined(separator: ","),
-                "name": peer,
-                "rawLink": link,
-            ]
-        }
-
-        // 2. Нативный fallback (plain v=2)
         var out: [String: Any] = [
             "protocol": "CSQTT", "peer": "", "password": "", "hashes": "", "name": ""
         ]
+        guard link.lowercased().hasPrefix("csqtt://") else {
+            out["peer"] = link
+            return out
+        }
         let rest = String(link.dropFirst("csqtt://".count))
         if rest.hasPrefix("connect?") {
             let query = String(rest.dropFirst("connect?".count))
@@ -615,11 +645,15 @@ public final class Backend {
         return out
     }
 
+    // ============================================================
+    //  VPN
+    // ============================================================
+
     private func vpnConnect(body: String) -> (Int, String) {
         let settings = loadSettings()
         var peer = settings["peer"] as? String ?? ""
         var password = settings["password"] as? String ?? ""
-        var hashes = settings["vkHashes"] as? String ?? ""
+        var cfgHashes = settings["vkHashes"] as? String ?? ""
 
         if let data = body.data(using: .utf8),
            let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -627,16 +661,21 @@ public final class Backend {
            let c = findConfig(id: configId) {
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
-            hashes = c["hashes"] as? String ?? hashes
+            let h = c["hashes"] as? String ?? ""
+            if !h.isEmpty { cfgHashes = h }
         } else if let sel = readSelectedConfigJson(),
                   let data = sel.data(using: .utf8),
                   let c = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
-            hashes = c["hashes"] as? String ?? hashes
+            let h = c["hashes"] as? String ?? ""
+            if !h.isEmpty { cfgHashes = h }
         }
 
         if peer.isEmpty { return (400, err("no config selected")) }
+
+        // Fallback: если в конфиге хешей нет — берём из settings.vkHashes.
+        let hashes = cfgHashes
 
         CoreManager.shared.writeSharedSettings(
             from: settings, peer: peer, password: password, hashes: hashes
@@ -704,17 +743,23 @@ public final class Backend {
         return (200, json(["ok": true]))
     }
 
+    // ============================================================
+    //  SOCKS5 (раздача VPN) — рандомный порт
+    // ============================================================
+
     private func startSocks5() {
         if socks5Server != nil {
             log("[PROXY] already running")
             return
         }
-        let server = Socks5Server(port: 1080) { [weak self] line in
+        let server = Socks5Server(port: 0) { [weak self] line in
             self?.log(line)
         }
         do {
-            try server.start()
+            let port = try server.start()
             socks5Server = server
+            socks5Port = port
+            log("[PROXY] SOCKS5 listening on 0.0.0.0:\(port)")
         } catch {
             log("[PROXY] failed to start: \(error.localizedDescription)")
         }
@@ -723,7 +768,12 @@ public final class Backend {
     private func stopSocks5() {
         socks5Server?.stop()
         socks5Server = nil
+        socks5Port = 0
     }
+
+    // ============================================================
+    //  VK — свой WKWebView
+    // ============================================================
 
     private func vkLogin() -> (Int, String) {
         if vkLoginInProgress {
@@ -776,6 +826,10 @@ public final class Backend {
         }
         return vc
     }
+
+    // ============================================================
+    //  VK Calls
+    // ============================================================
 
     private func vkCallsStart(body: String) -> (Int, String) {
         guard let token = readVkToken() else { return (400, err("no VK token")) }
@@ -849,6 +903,10 @@ public final class Backend {
         sem.wait()
         return result
     }
+
+    // ============================================================
+    //  Helpers
+    // ============================================================
 
     private func json(_ dict: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),

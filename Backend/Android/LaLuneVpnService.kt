@@ -8,6 +8,9 @@
 //   1. Ядро запускается (уже запущено Backend'ом до startForegroundService).
 //   2. Ждём в logs.log "Активных: N>0" ДВА тика подряд.
 //   3. Только тогда поднимаем TUN + UDP-мост.
+//
+// Уведомление: отдельный тикер каждые 2 сек обновляет notification,
+// чтобы статистика (Активных / Трафик) не "застывала".
 
 package com.lalune.lalune
 
@@ -53,6 +56,9 @@ class LaLuneVpnService : VpnService() {
         private const val DEFAULT_DNS_2 = "8.8.4.4"
         private const val MTU = 1300
 
+        /** Периодичность обновления уведомления (2 сек). */
+        private const val NOTIFICATION_TICK_MS = 2_000L
+
         const val ACTION_STATUS = "com.lalune.lalune.VPN_STATUS"
         const val EXTRA_CONNECTED = "connected"
 
@@ -79,6 +85,7 @@ class LaLuneVpnService : VpnService() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var coreManager: CoreManager
+    private var notificationTickerJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -102,6 +109,23 @@ class LaLuneVpnService : VpnService() {
         scope.launch {
             val logsFile = File(filesDir, "la-lune/logs.log")
             watchLogsAndEstablish(logsFile)
+        }
+        startNotificationTicker()
+    }
+
+    /**
+     * Периодически обновляет уведомление — чтобы статистика
+     * (Активных / Трафик) не застывала в одном значении.
+     */
+    private fun startNotificationTicker() {
+        notificationTickerJob?.cancel()
+        notificationTickerJob = scope.launch {
+            while (isActive && isRunning) {
+                delay(NOTIFICATION_TICK_MS)
+                if (tunEstablished) {
+                    updateNotification()
+                }
+            }
         }
     }
 
@@ -200,6 +224,7 @@ class LaLuneVpnService : VpnService() {
 
             scope.launch { setupSocketAndBridges(iface, tunIP) }
             notifyStatus(this, true)
+            updateNotification()
         } catch (e: Exception) {
             Log.e(TAG, "establishTun: ${e.message}", e)
             tunEstablished = false
@@ -259,6 +284,9 @@ class LaLuneVpnService : VpnService() {
         isRunning = false
         tunEstablished = false
         establishing = false
+
+        notificationTickerJob?.cancel()
+        notificationTickerJob = null
 
         try { udpSocket?.close() } catch (_: Exception) {}
         udpSocket = null

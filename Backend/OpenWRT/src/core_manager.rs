@@ -4,9 +4,6 @@
 //
 // Отличие от Desktop: имя бинарника фиксировано —
 // ~/.la-lune/csqtt-client-aarch64
-//
-// Универсальный парсинг аргументов (build_args) — в этом файле,
-// без ссылок на crate::protocol (которого на OpenWRT нет).
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
@@ -231,13 +228,19 @@ impl CoreProcess {
 }
 
 /// Сборка аргументов ядра CSQTT для OpenWRT.
-/// Не ссылается на crate::protocol (его на OpenWRT нет).
 pub fn build_args(
     config: &crate::config::ConfigItem,
     settings: &crate::settings::Settings,
     listen_port: u16,
 ) -> Vec<String> {
-    let normalized = config.hashes.replace([' ', '\t', '\n', '\r'], ",");
+    // Fallback: если в конфиге хешей нет — берём из settings.vk_hashes.
+    let source_hashes = if config.hashes.trim().is_empty() {
+        settings.vk_hashes.as_str()
+    } else {
+        config.hashes.as_str()
+    };
+
+    let normalized = source_hashes.replace([' ', '\t', '\n', '\r'], ",");
     let clean: Vec<String> = normalized
         .split(',')
         .map(|s| s.trim().to_string())

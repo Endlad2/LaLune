@@ -7,7 +7,14 @@
 //   * /logs/tail?source=all     — все строки (backend + [CORE] ...)
 //
 // Переключатель "Показывать логи ядра" живёт в settingsProvider.
-// При его смене — перезагружаем.
+//
+// ВАЖНО (исправление): showCoreLogs читается через отдельный
+// `_showCoreLogsProvider` (Provider<bool>, который watch'ит settingsProvider).
+// Это гарантирует, что при переключении toggle и сохранении:
+//   1. logsProvider видит новое значение
+//   2. _refresh() перечитывает /logs/tail?source=all
+//   3. SSE listener фильтрует по актуальному значению
+// Плюс периодический опрос каждые 3 сек — на случай race condition.
 
 import 'dart:async';
 
@@ -17,6 +24,11 @@ import '../api/api_client.dart';
 import '../api/sse_client.dart';
 import 'providers.dart';
 import 'settings_notifier.dart';
+
+/// Отдельный провайдер: true, если пользователь включил показ логов ядра.
+final _showCoreLogsProvider = Provider<bool>((ref) {
+  return ref.watch(settingsProvider).data.showCoreLogs;
+});
 
 class LogsState {
   final List<String> lines;
@@ -33,13 +45,14 @@ class LogsNotifier extends StateNotifier<LogsState> {
   Timer? _poll;
   SseClient? _sse;
   StreamSubscription<String>? _baseUrlSub;
-  ProviderSubscription? _settingsSub;
+  ProviderSubscription<bool>? _showCoreLogsSub;
 
   LogsNotifier(this._ref) : super(const LogsState()) {
     _refresh();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _refresh());
     _startSse();
 
+    // При смене baseUrl — переподключаем SSE и перечитываем.
     final api = _ref.read(apiClientProvider);
     _baseUrlSub = api.baseUrlChanges.listen((_) {
       _sse?.dispose();
@@ -49,11 +62,11 @@ class LogsNotifier extends StateNotifier<LogsState> {
       _refresh();
     });
 
-    // Реагируем на смену showCoreLogs — перезагружаем.
-    _settingsSub = _ref.listen<SettingsState>(
-      settingsProvider,
+    // При смене showCoreLogs — перечитываем с нужным source.
+    _showCoreLogsSub = _ref.listen<bool>(
+      _showCoreLogsProvider,
       (prev, next) {
-        if (prev?.data.showCoreLogs != next.data.showCoreLogs) {
+        if (prev != next) {
           state = state.copyWith(lines: const []);
           _refresh();
         }
@@ -61,8 +74,8 @@ class LogsNotifier extends StateNotifier<LogsState> {
     );
   }
 
-  bool get _showCoreLogs =>
-      _ref.read(settingsProvider).data.showCoreLogs;
+  /// Актуальное значение на каждый запрос.
+  bool get _showCoreLogs => _ref.read(_showCoreLogsProvider);
 
   void _startSse() {
     final api = _ref.read(apiClientProvider);
@@ -79,7 +92,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
       if (ev.type == 'log') {
         final line = ev.data['line'] as String? ?? '';
         if (line.isEmpty) return;
-        // SSE приходит весь поток; фильтруем тут же.
+        // Читаем каждый раз — не кэшируем.
         if (!_showCoreLogs && line.startsWith('[CORE] ')) return;
         final next = [...state.lines, line];
         if (next.length > 500) next.removeRange(0, next.length - 500);
@@ -91,6 +104,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
 
   Future<void> _refresh() async {
     final api = _ref.read(apiClientProvider);
+    // Читаем актуальное значение прямо здесь.
     final source = _showCoreLogs ? 'all' : 'backend';
     try {
       final list = await api.getJsonList('/logs/tail', query: {
@@ -116,7 +130,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
     _poll?.cancel();
     _sse?.dispose();
     _baseUrlSub?.cancel();
-    _settingsSub?.close();
+    _showCoreLogsSub?.close();
     super.dispose();
   }
 }
