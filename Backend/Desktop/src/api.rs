@@ -698,9 +698,13 @@ async fn core_latest_p(
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let v = match kind {
-        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
-        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
+    let v = if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+        Some(core_manager::CSQTT_219_RELEASE.to_string())
+    } else {
+        match kind {
+            ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
+            ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
+        }
     };
     match v {
         Some(v) => Json(json!({"version": v})).into_response(),
@@ -714,9 +718,13 @@ async fn core_check_p(
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let remote = match kind {
-        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
-        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
+    let remote = if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+        core_manager::CSQTT_219_RELEASE.to_string()
+    } else {
+        match kind {
+            ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
+            ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
+        }
     };
     let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
     let local = tokio::fs::read_to_string(&latest_file)
@@ -746,7 +754,12 @@ async fn core_download_async_p(
 
         match kind {
             ProtocolKind::Csqtt => {
-                if let Some(version) = core_manager::fetch_latest_csqtt(&client, &state2.events).await {
+                let version = if use_csqtt_219 {
+                    Some(core_manager::CSQTT_219_RELEASE.to_string())
+                } else {
+                    core_manager::fetch_latest_csqtt(&client, &state2.events).await
+                };
+                if let Some(version) = version {
                     state2.events.emit(Event::progress("core_download", 20));
                     let download = if use_csqtt_219 {
                         core_manager::download_csqtt_219(&client, &dest, &state2.events).await
@@ -803,9 +816,13 @@ async fn core_download_sync_p(
 
     let result = match kind {
         ProtocolKind::Csqtt => {
-            let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
-                Some(v) => v,
-                None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+            let version = if use_csqtt_219 {
+                core_manager::CSQTT_219_RELEASE.to_string()
+            } else {
+                match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                    Some(v) => v,
+                    None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+                }
             };
             let download = if use_csqtt_219 {
                 core_manager::download_csqtt_219(&client, &dest, &state.events).await
@@ -814,7 +831,7 @@ async fn core_download_sync_p(
             };
             match download {
                 Ok(_) => {
-                    let saved_version = if use_csqtt_219 { core_manager::CSQTT_219_RELEASE.to_string() } else { version };
+                    let saved_version = version;
                     let _ = tokio::fs::write(&latest_file, &saved_version).await;
                     Ok(saved_version)
                 }
