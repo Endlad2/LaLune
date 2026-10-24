@@ -479,7 +479,9 @@ public final class Backend {
                 expanded = raw
             }
             guard let uuid = UUID(uuidString: expanded) else { return nil }
-            return uuid.uuidString.lowercased()
+            let canonical = uuid.uuidString.lowercased()
+            guard canonical.dropFirst(14).first == "4" else { return nil }
+            return canonical
         }
 
         let fromFile: String? = {
