@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::config::{parse_link, ConfigItem};
+use crate::config::{parse_link_for_protocol, ConfigItem};
 use crate::core_manager::{self, CoreProcess};
 use crate::events::Event;
 use crate::protocol::{self, ProtocolKind};
@@ -220,11 +220,12 @@ struct ConfigCreateBody {
 }
 
 fn body_to_item(body: ConfigCreateBody) -> Result<ConfigItem, String> {
+    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
     if let Some(link) = body.link.as_ref().filter(|l| !l.trim().is_empty()) {
-        return parse_link(link).map_err(|e| e.to_string());
+        return parse_link_for_protocol(link, &protocol).map_err(|e| e.to_string());
     }
     let mut c = ConfigItem::default();
-    c.protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
+    c.protocol = protocol;
     c.peer = body.peer.unwrap_or_default();
     c.password = body.password.unwrap_or_default();
     c.hashes = body.hashes.unwrap_or_default();
