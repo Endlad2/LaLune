@@ -913,7 +913,11 @@ class Backend(private val context: Context) {
         if (lower.startsWith("paperflux://") || lower.startsWith("openflux://")) {
             return parsePaperFlux(link)
         }
-        return parseCsqtt(link, protocol)
+        return parseCsqtt(link, protocol).apply {
+            if (protocol.equals("CSQTT 2.5.1", ignoreCase = true)) {
+                put("protocol", "CSQTT 2.5.1")
+            }
+        }
     }
 
     private fun parseCsqtt(link: String, protocol: String = PROTO_CSQTT): JSONObject {
