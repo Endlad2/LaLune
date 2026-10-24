@@ -137,7 +137,7 @@ main() {
     local backend_zip="${TEMP_DIR}/Backend-Linux.zip"
     local csqtt_exe="${TEMP_DIR}/${csqtt_asset}"
     local csqtt219_asset="${csqtt_asset}"
-    local csqtt219_exe="${TEMP_DIR}/${csqtt219_asset}-2.1.9"
+    local csqtt219_exe="${TEMP_DIR}/csqtt-219"
     local latest_csqtt219="${TEMP_DIR}/LATEST.CSQTT-2.1.9"
     local pf_exe="${TEMP_DIR}/${pf_asset}"
     local latest_csqtt="${TEMP_DIR}/LATEST.Csqtt"
@@ -188,7 +188,7 @@ main() {
     step "Кладу CSQTT core"
     cp -f "$csqtt_exe" "${APPDATA_DIR}/csqtt-core"
     chmod +x "${APPDATA_DIR}/csqtt-core"
-    cp -f "$csqtt219_exe" "${APPDATA_DIR}/csqtt-core-2.1.9"
+    cp -f "$csqtt219_exe" "${APPDATA_DIR}/csqtt-219"
     chmod +x "${APPDATA_DIR}/csqtt-core-2.1.9"
 
     step "Кладу PaperFlux core"
