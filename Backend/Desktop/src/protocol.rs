@@ -20,7 +20,7 @@ pub enum ProtocolKind {
 impl ProtocolKind {
     pub fn from_id(s: &str) -> Option<Self> {
         match s.trim().to_ascii_uppercase().as_str() {
-            "CSQTT" => Some(Self::Csqtt),
+            "CSQTT" | "CSQTT 2.1.9" | "CSQTT 2.5.1" => Some(Self::Csqtt),
             "PAPERFLUX" | "OPENFLUX" => Some(Self::PaperFlux),
             _ => None,
         }
