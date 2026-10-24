@@ -683,7 +683,7 @@ async fn core_version_p(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
-    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
     let version = tokio::fs::read_to_string(&latest_file)
         .await
         .unwrap_or_default()
@@ -726,7 +726,7 @@ async fn core_check_p(
             ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
         }
     };
-    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
     let local = tokio::fs::read_to_string(&latest_file)
         .await
         .unwrap_or_default()
@@ -749,8 +749,8 @@ async fn core_download_async_p(
     tokio::spawn(async move {
         state2.events.emit(Event::progress("core_download", 0));
         let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-        let dest = crate::state::core_path_for(&state2.app_dir, kind.id());
-        let latest_file = state2.app_dir.join(format!("LATEST.{}", kind.id()));
+        let dest = crate::state::core_path_for(&state2.app_dir, &proto);
+        let latest_file = state2.app_dir.join(if use_csqtt_219 { "LATEST.CSQTT-2.1.9" } else if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" });
 
         match kind {
             ProtocolKind::Csqtt => {
@@ -812,7 +812,7 @@ async fn core_download_sync_p(
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
     let dest = crate::state::core_path_for(&state.app_dir, &proto);
-    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
 
     let result = match kind {
         ProtocolKind::Csqtt => {
