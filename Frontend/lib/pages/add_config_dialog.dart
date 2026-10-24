@@ -5,19 +5,23 @@
 
 import 'package:flutter/material.dart';
 
+import '../widgets/toast.dart';
+
 class AddConfigResult {
   final String protocol;
   final String link;
   const AddConfigResult(this.protocol, this.link);
 }
 
-const _protocols = <String>['CSQTT', 'PaperFlux'];
+const _protocols = <String>['CSQTT 2.1.9', 'CSQTT 2.5.1', 'PaperFlux'];
 
 String _placeholderFor(String protocol) {
   switch (protocol) {
     case 'PaperFlux':
       return 'paperflux://config?v=1&id=...&name=...&server=...&ip=...'
           '&transport=...&doc=...&token=...&volga=...';
+    case 'CSQTT 2.1.9':
+    case 'CSQTT 2.5.1':
     case 'CSQTT':
     default:
       return 'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2';
@@ -26,7 +30,7 @@ String _placeholderFor(String protocol) {
 
 Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
   final linkCtrl = TextEditingController();
-  String protocol = 'CSQTT';
+  String protocol = 'CSQTT 2.1.9';
 
   final result = await showDialog<AddConfigResult>(
     context: context,
@@ -61,10 +65,46 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
                         isDense: true,
                         border: OutlineInputBorder(),
                       ),
-                      items: _protocols
-                          .map((p) =>
-                              DropdownMenuItem(value: p, child: Text(p)))
-                          .toList(),
+                      items: _protocols.map((p) {
+                        final isRisky = p == 'CSQTT 2.5.1';
+                        return DropdownMenuItem<String>(
+                          value: p,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(p),
+                              if (isRisky) ...[
+                                const SizedBox(width: 8),
+                                GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => Toast.show(
+                                    ctx,
+                                    'CSQTT 2.5.1: возможны проблемы с DTLS, совместимостью соединения и стабильностью туннеля. Если подключение не работает, попробуйте CSQTT 2.1.9.',
+                                    duration: const Duration(seconds: 5),
+                                  ),
+                                  child: Container(
+                                    width: 20,
+                                    height: 20,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF7E84E),
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: const Text(
+                                      '!',
+                                      style: TextStyle(
+                                        color: Color(0xFF302900),
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+                      }).toList(),
                       onChanged: (v) {
                         if (v == null) return;
                         setLocal(() => protocol = v);
