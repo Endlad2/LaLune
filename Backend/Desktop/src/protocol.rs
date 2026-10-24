@@ -205,7 +205,7 @@ fn build_csqtt_args(
     if config.protocol.trim().eq_ignore_ascii_case("CSQTT 2.1.9")
         && !settings.device_id.trim().is_empty()
     {
-        args.push("-device-id".into());
+        args.push("--device-id".into());
         args.push(settings.device_id.trim().to_string());
     }
 
