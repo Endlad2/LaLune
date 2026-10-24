@@ -150,35 +150,29 @@ class _LogsPageState extends ConsumerState<LogsPage> {
                       Expanded(
                         child: Scrollbar(
                           controller: _scroll,
-                          child: SingleChildScrollView(
-                            controller: _scroll,
-                            padding: const EdgeInsets.all(12),
-                            child: logs.lines.isEmpty
-                                ? Padding(
+                          child: logs.lines.isEmpty
+                              ? Center(
+                                  child: Padding(
                                     padding: const EdgeInsets.symmetric(
                                         vertical: 30),
-                                    child: Center(
-                                      child: Text('Логи пусты',
-                                          style: TextStyle(
-                                              color: Colors.white
-                                                  .withOpacity(0.45))),
-                                    ),
-                                  )
-                                : SelectionArea(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.stretch,
-                                      children: [
-                                        for (final line in logs.lines)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                bottom: 7),
-                                            child: _LogLine(line: line),
-                                          ),
-                                      ],
+                                    child: Text('Логи пусты',
+                                        style: TextStyle(
+                                            color: Colors.white
+                                                .withOpacity(0.45))),
+                                  ),
+                                )
+                              : SelectionArea(
+                                  child: ListView.builder(
+                                    controller: _scroll,
+                                    padding: const EdgeInsets.all(12),
+                                    itemCount: logs.lines.length,
+                                    itemBuilder: (context, index) => Padding(
+                                      padding:
+                                          const EdgeInsets.only(bottom: 7),
+                                      child: _LogLine(line: logs.lines[index]),
                                     ),
                                   ),
-                          ),
+                                ),
                         ),
                       ),
                     ],
