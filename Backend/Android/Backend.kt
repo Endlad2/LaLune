@@ -798,8 +798,9 @@ class Backend(private val context: Context) {
     }
 
     private fun writeDeviceId(id: String) {
-        deviceIdFile.parentFile?.mkdirs()
-        val tmp = File(deviceIdFile.parentFile, deviceIdFile.name + ".tmp")
+        val parent = deviceIdFile.parentFile ?: return
+        parent.mkdirs()
+        val tmp = File(parent, deviceIdFile.name + ".tmp")
         tmp.writeText(JSONObject().put("deviceId", id).toString(2))
         if (deviceIdFile.exists()) deviceIdFile.delete()
         if (!tmp.renameTo(deviceIdFile)) {
