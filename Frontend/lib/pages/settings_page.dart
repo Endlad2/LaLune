@@ -61,6 +61,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _workersCtl = TextEditingController();
   final _autoApiWorkersCtl = TextEditingController();
   final _clientIdsCtl = TextEditingController();
+  final _deviceIdCtl = TextEditingController();
 
   // PaperFlux
   final _pfUrlCtl = TextEditingController();
@@ -83,6 +84,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _shareVpn = false;
 
   bool get _isPaperFlux => _selectedConfig?.isPaperFlux == true;
+  bool get _isCsqtt219 => _selectedConfig?.isCsqtt219 == true;
 
   @override
   void initState() {
@@ -98,6 +100,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _workersCtl.dispose();
     _autoApiWorkersCtl.dispose();
     _clientIdsCtl.dispose();
+    _deviceIdCtl.dispose();
     _pfUrlCtl.dispose();
     _pfUrlsCtl.dispose();
     _pfVolgaCtl.dispose();
@@ -135,6 +138,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _workersCtl.text = s.workers.toString();
     _autoApiWorkersCtl.text = s.autoApiWorkers.toString();
     _clientIdsCtl.text = s.clientIds;
+    _deviceIdCtl.text = s.deviceId;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
     _enableSmartTunnel = s.enableSmartTunnel;
     _showCoreLogs = s.showCoreLogs;
@@ -189,6 +193,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       workers: w,
       autoApiWorkers: aw,
       clientIds: _clientIdsCtl.text.trim(),
+      deviceId: _deviceIdCtl.text.trim(),
       authMode: _authMode,
       enableSmartTunnel: _enableSmartTunnel,
       showCoreLogs: _showCoreLogs,
@@ -438,6 +443,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           setState(() => _s = _s.copyWith(validateVkHashes: v));
           _markDirty();
         }),
+        if (_isCsqtt219) ...[
+          const SizedBox(height: 10),
+          const _SubHeader('CSQTT 2.1.9'),
+          InputRow(
+            label: 'Device ID',
+            controller: _deviceIdCtl,
+            onChanged: (_) => _markDirty(),
+          ),
+        ],
       ],
     );
   }
