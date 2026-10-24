@@ -724,6 +724,7 @@ class Backend(private val context: Context) {
         put("peer", "")
         put("vkHashes", "")
         put("vkJsToken", "")
+        put("deviceId", "unknown")
         put("workers", DEFAULT_WORKERS)
         put("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
         put("password", "")
