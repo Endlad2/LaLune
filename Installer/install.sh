@@ -136,15 +136,19 @@ main() {
     local lalune_zip="${TEMP_DIR}/LaLune-Linux.zip"
     local backend_zip="${TEMP_DIR}/Backend-Linux.zip"
     local csqtt_exe="${TEMP_DIR}/${csqtt_asset}"
+    local csqtt219_asset="${csqtt_asset}"
+    local csqtt219_exe="${TEMP_DIR}/csqtt-219"
+    local latest_csqtt219="${TEMP_DIR}/LATEST.CSQTT-2.1.9"
     local pf_exe="${TEMP_DIR}/${pf_asset}"
     local latest_csqtt="${TEMP_DIR}/LATEST.Csqtt"
     local latest_pf="${TEMP_DIR}/LATEST.PaperFlux"
     local icon_file="${TEMP_DIR}/icon.ico"
 
     if [ "$CI_MODE" = "1" ]; then
+        [ -f "$latest_csqtt219" ] || printf '%s' '2026.09.17.17.36' > "$latest_csqtt219"
         local missing=()
-        for f in "$lalune_zip" "$backend_zip" "$csqtt_exe" "$pf_exe" \
-                 "$latest_csqtt" "$latest_pf" "$icon_file"; do
+        for f in "$lalune_zip" "$backend_zip" "$csqtt_exe" "$csqtt219_exe" "$pf_exe" \
+                 "$latest_csqtt" "$latest_csqtt219" "$latest_pf" "$icon_file"; do
             [ -f "$f" ] || missing+=("$f")
         done
         if [ "${#missing[@]}" -gt 0 ]; then
@@ -152,6 +156,8 @@ main() {
         fi
     else
         download "https://github.com/${REPO_CSQTT}/releases/latest/download/${csqtt_asset}" "$csqtt_exe"
+        download "https://github.com/${REPO_CSQTT}/releases/download/2026.09.17.17.36/${csqtt_asset}" "$csqtt219_exe"
+        printf '%s' '2026.09.17.17.36' > "$latest_csqtt219"
         download "https://github.com/${REPO_PAPERFLUX}/releases/latest/download/${pf_asset}" "$pf_exe"
         download "$URL_LALUNE_ZIP"  "$lalune_zip"
         download "$URL_BACKEND_ZIP" "$backend_zip"
@@ -182,6 +188,8 @@ main() {
     step "Кладу CSQTT core"
     cp -f "$csqtt_exe" "${APPDATA_DIR}/csqtt-core"
     chmod +x "${APPDATA_DIR}/csqtt-core"
+    cp -f "$csqtt219_exe" "${APPDATA_DIR}/csqtt-219"
+    chmod +x "${APPDATA_DIR}/csqtt-219"
 
     step "Кладу PaperFlux core"
     cp -f "$pf_exe" "${APPDATA_DIR}/paperflux-core"
@@ -189,6 +197,7 @@ main() {
 
     step "Кладу LATEST-файлы"
     cp -f "$latest_csqtt" "${APPDATA_DIR}/LATEST.Csqtt"
+    cp -f "$latest_csqtt219" "${APPDATA_DIR}/LATEST.CSQTT-2.1.9"
     cp -f "$latest_pf"    "${APPDATA_DIR}/LATEST.PaperFlux"
 
     step "Создаю ярлык в меню"

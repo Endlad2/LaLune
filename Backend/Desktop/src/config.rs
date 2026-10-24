@@ -258,13 +258,31 @@ fn short_link(link: &str) -> String {
 }
 
 pub fn parse_link(link: &str) -> Result<ConfigItem> {
+    parse_link_for_protocol(link, "CSQTT")
+}
+
+/// CSQTT 2.1.9 uses a plain, unencrypted link format; do not send it through csqtt-link.
+pub fn parse_link_for_protocol(link: &str, protocol: &str) -> Result<ConfigItem> {
     let link = link.trim();
+    if protocol.trim().eq_ignore_ascii_case("CSQTT 2.1.9")
+        && link.to_ascii_lowercase().starts_with("csqtt://")
+    {
+        let mut config = parse_csqtt_native(link)?;
+        config.protocol = "CSQTT 2.1.9".into();
+        config.raw_link = link.to_string();
+        log::info!("[PARSE][CSQTT 2.1.9] parsed plain link without csqtt-link");
+        return Ok(config);
+    }
     let lower = link.to_ascii_lowercase();
 
     log::info!("[PARSE] scheme-detect link={}", short_link(link));
 
     if lower.starts_with("csqtt://") {
-        parse_csqtt(link)
+        let mut config = parse_csqtt(link)?;
+        if protocol.trim().eq_ignore_ascii_case("CSQTT 2.5.1") {
+            config.protocol = "CSQTT 2.5.1".into();
+        }
+        Ok(config)
     } else if lower.starts_with("paperflux://") {
         parse_paperflux(link)
     } else if lower.starts_with("olcrtc://") {
@@ -555,5 +573,32 @@ fn hex_val(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+
+#[cfg(test)]
+mod csqtt_219_plain_link_tests {
+    use super::parse_link_for_protocol;
+
+    #[test]
+    fn csqtt_219_plain_link_skips_encrypted_link_parser() {
+        let link = "csqtt://connect?v=2&host=127.0.0.1&peer=46000&password=secret&hashes=h1+h2";
+        let config = parse_link_for_protocol(link, "CSQTT 2.1.9").expect("plain link parses");
+
+        assert_eq!(config.protocol, "CSQTT 2.1.9");
+        assert_eq!(config.peer, "127.0.0.1:46000");
+        assert_eq!(config.password, "secret");
+        assert_eq!(config.hashes, "h1,h2");
+        assert_eq!(config.raw_link, link);
+    }
+
+    #[test]
+    fn csqtt_251_keeps_existing_parser_selection() {
+        let link = "csqtt://connect?v=2&host=127.0.0.1&peer=46000&password=secret&hashes=h1+h2";
+        let config = parse_link_for_protocol(link, "CSQTT 2.5.1").expect("native fallback parses");
+
+        assert_eq!(config.protocol, "CSQTT 2.5.1");
+        assert_eq!(config.peer, "127.0.0.1:46000");
     }
 }

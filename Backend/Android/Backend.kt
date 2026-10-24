@@ -2,7 +2,7 @@
 //
 // LaLune backend для Android.
 //
-// deviceId удалён.
+// Device ID используется только для выбранного ядра CSQTT 2.1.9.
 // csqtt:// парсится: csqtt-link (ProcessBuilder) → Lua → нативный.
 // SOCKS5 слушает рандомный свободный порт (не 1080).
 
@@ -284,8 +284,9 @@ class Backend(private val context: Context) {
                 path == "/configs/parse" && method == "POST" -> {
                     val b = JSONObject(body)
                     val link = b.optString("link", "")
-                    Log.i(TAG, "[API] POST /configs/parse link_len=${link.length}")
-                    val parsed = parseLink(link)
+                    val protocol = b.optString("protocol", PROTO_CSQTT)
+                    Log.i(TAG, "[API] POST /configs/parse link_len=${link.length} protocol=$protocol")
+                    val parsed = parseLink(link, protocol)
                     Log.i(TAG, "[API] /configs/parse OK: peer=${parsed.optString("peer")}")
                     200 to parsed.toString()
                 }
@@ -517,11 +518,19 @@ class Backend(private val context: Context) {
 
     private fun protocolsJson(): JSONArray = JSONArray().apply {
         put(JSONObject().apply {
-            put("id", PROTO_CSQTT)
-            put("displayName", "CSQTT (VK Calls)")
+            put("id", "CSQTT 2.1.9")
+            put("displayName", "CSQTT 2.1.9")
             put("repo", "Endlad2/csqtt-core")
             put("realtime", true)
-            put("description", "Оригинальный протокол CSQTT")
+            put("description", "Plain links; pinned release 2026.09.17.17.36")
+            put("coreAsset", coreManager?.getCoreName("CSQTT 2.1.9") ?: "")
+        })
+        put(JSONObject().apply {
+            put("id", "CSQTT 2.5.1")
+            put("displayName", "CSQTT 2.5.1 ⚠")
+            put("repo", "Endlad2/csqtt-core")
+            put("realtime", true)
+            put("description", "Latest CSQTT core; DTLS compatibility warning")
             put("coreAsset", coreManager?.getCoreName(PROTO_CSQTT) ?: "")
         })
         put(JSONObject().apply {
@@ -536,7 +545,8 @@ class Backend(private val context: Context) {
 
     private fun routeCore(method: String, rest: String): Pair<Int, String> {
         val slash = rest.indexOf('/')
-        val proto = if (slash > 0) rest.substring(0, slash) else rest
+        val protoRaw = if (slash > 0) rest.substring(0, slash) else rest
+        val proto = URLDecoder.decode(protoRaw, "UTF-8")
         val tail = if (slash > 0) rest.substring(slash + 1) else ""
 
         val cm = coreManager ?: return 500 to jsonErr("coreManager not ready")
@@ -612,16 +622,26 @@ class Backend(private val context: Context) {
 
     private fun settingsForProto(proto: String): JSONObject {
         val upper = proto.uppercase()
-        return if (upper == PROTO_CSQTT.uppercase()) {
+        return if (
+            upper == PROTO_CSQTT.uppercase() ||
+            upper == PROTO_CSQTT_219.uppercase() ||
+            upper == PROTO_CSQTT_251.uppercase()
+        ) {
             JSONObject().apply {
-                put("protocol", PROTO_CSQTT)
-                put("keys", JSONArray(listOf(
+                put("protocol", when {
+                    upper == PROTO_CSQTT_219.uppercase() -> PROTO_CSQTT_219
+                    upper == PROTO_CSQTT_251.uppercase() -> PROTO_CSQTT_251
+                    else -> PROTO_CSQTT
+                })
+                val keys = JSONArray(listOf(
                     "peer", "vkHashes", "password", "workers", "autoApiWorkers",
                     "authMode", "obfs", "fingerprint", "clientIds",
                     "captchaMode", "vkAuthMode", "turnTransport",
                     "allowHashRedistribution", "validateVkHashes",
                     "shareVpn", "showCoreLogs"
-                )))
+                ))
+                if (upper == PROTO_CSQTT_219.uppercase()) keys.put("deviceId")
+                put("keys", keys)
                 put("linkPlaceholder",
                     "csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2")
             }
@@ -715,6 +735,7 @@ class Backend(private val context: Context) {
         put("peer", "")
         put("vkHashes", "")
         put("vkJsToken", "")
+        put("deviceId", "unknown")
         put("workers", DEFAULT_WORKERS)
         put("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
         put("password", "")
@@ -829,9 +850,10 @@ class Backend(private val context: Context) {
     private fun createConfig(body: String): Pair<Int, String> = try {
         val b = JSONObject(body)
         val link = b.optString("link", "")
-        Log.i(TAG, "[API] POST /configs link_len=${link.length} protocol=${b.optString("protocol", "CSQTT")}")
-        val parsed = if (link.isNotEmpty()) parseLink(link) else JSONObject().apply {
-            put("protocol", b.optString("protocol", PROTO_CSQTT))
+        val protocol = b.optString("protocol", PROTO_CSQTT)
+        Log.i(TAG, "[API] POST /configs link_len=${link.length} protocol=$protocol")
+        val parsed = if (link.isNotEmpty()) parseLink(link, protocol) else JSONObject().apply {
+            put("protocol", protocol)
             put("peer", b.optString("peer", ""))
             put("password", b.optString("password", ""))
             put("hashes", b.optString("hashes", ""))
@@ -898,15 +920,26 @@ class Backend(private val context: Context) {
     //  parseLink — csqtt-link (ProcessBuilder) → Lua → нативный
     // ============================================================
 
-    private fun parseLink(link: String): JSONObject {
+    private fun parseLink(link: String, protocol: String = PROTO_CSQTT): JSONObject {
         val lower = link.trim().lowercase()
         if (lower.startsWith("paperflux://") || lower.startsWith("openflux://")) {
             return parsePaperFlux(link)
         }
-        return parseCsqtt(link)
+        return parseCsqtt(link, protocol).apply {
+            if (protocol.equals("CSQTT 2.5.1", ignoreCase = true)) {
+                put("protocol", "CSQTT 2.5.1")
+            }
+        }
     }
 
-    private fun parseCsqtt(link: String): JSONObject {
+    private fun parseCsqtt(link: String, protocol: String = PROTO_CSQTT): JSONObject {
+        if (protocol.equals("CSQTT 2.1.9", ignoreCase = true)) {
+            Log.i(TAG, "[PARSE][CSQTT 2.1.9] parsing plain link; csqtt-link decryption skipped")
+            return parseCsqttNative(link).apply {
+                put("protocol", "CSQTT 2.1.9")
+                put("rawLink", link)
+            }
+        }
         Log.i(TAG, "[PARSE][CSQTT] start, link_len=${link.length}")
 
         // ---- 1. csqtt-link (libcsqtt-link.so через ProcessBuilder) ----
@@ -1102,7 +1135,7 @@ class Backend(private val context: Context) {
                      else settings.optString("vkHashes", "")
 
         val started = cm.startCore(
-            protocol = PROTO_CSQTT,
+            protocol = protocol,
             peer = peer,
             password = password,
             hashes = hashes,

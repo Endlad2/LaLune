@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::config::{parse_link, ConfigItem};
+use crate::config::{parse_link_for_protocol, ConfigItem};
 use crate::core_manager::{self, CoreProcess};
 use crate::events::Event;
 use crate::protocol::{self, ProtocolKind};
@@ -220,11 +220,12 @@ struct ConfigCreateBody {
 }
 
 fn body_to_item(body: ConfigCreateBody) -> Result<ConfigItem, String> {
+    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
     if let Some(link) = body.link.as_ref().filter(|l| !l.trim().is_empty()) {
-        return parse_link(link).map_err(|e| e.to_string());
+        return parse_link_for_protocol(link, &protocol).map_err(|e| e.to_string());
     }
     let mut c = ConfigItem::default();
-    c.protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
+    c.protocol = protocol;
     c.peer = body.peer.unwrap_or_default();
     c.password = body.password.unwrap_or_default();
     c.hashes = body.hashes.unwrap_or_default();
@@ -287,10 +288,14 @@ async fn configs_delete(
 }
 
 #[derive(Deserialize)]
-struct ParseBody { link: String }
+struct ParseBody {
+    link: String,
+    protocol: Option<String>,
+}
 
 async fn configs_parse(Json(body): Json<ParseBody>) -> impl IntoResponse {
-    match parse_link(&body.link) {
+    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".into());
+    match parse_link_for_protocol(&body.link, &protocol) {
         Ok(c) => Json(json!(c)).into_response(),
         Err(e) => err(400, e.to_string()),
     }
@@ -335,9 +340,14 @@ async fn settings_for_proto(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let mut keys = protocol::settings_keys_for(kind);
+    let is_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
+    if is_csqtt_219 {
+        keys.push("deviceId");
+    }
     Json(json!({
-        "protocol": kind.id(),
-        "keys": protocol::settings_keys_for(kind),
+        "protocol": if is_csqtt_219 { "CSQTT 2.1.9" } else if proto.trim().eq_ignore_ascii_case("CSQTT 2.5.1") { "CSQTT 2.5.1" } else { kind.id() },
+        "keys": keys,
         "linkPlaceholder": protocol::link_placeholder(kind),
     }))
 }
@@ -436,7 +446,7 @@ async fn vpn_connect(
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
-    let core_path = state::core_path_for(&state.app_dir, kind.id());
+    let core_path = state::core_path_for(&state.app_dir, &config.protocol);
 
     if !core_path.exists() {
         state.log(format!("[VPN] {} core not found, downloading...", kind.id()));
@@ -447,12 +457,18 @@ async fn vpn_connect(
 
         match kind {
             ProtocolKind::Csqtt => {
-                let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
-                    Some(v) => v,
-                    None => return err(500, "cannot fetch CSQTT LATEST"),
-                };
-                if let Err(e) = core_manager::download_csqtt(&client, &version, &core_path, &state.events).await {
-                    return err(500, format!("download CSQTT failed: {}", e));
+                if config.protocol.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+                    if let Err(e) = core_manager::download_csqtt_219(&client, &core_path, &state.events).await {
+                        return err(500, format!("download CSQTT 2.1.9 failed: {}", e));
+                    }
+                } else {
+                    let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                        Some(v) => v,
+                        None => return err(500, "cannot fetch CSQTT LATEST"),
+                    };
+                    if let Err(e) = core_manager::download_csqtt(&client, &version, &core_path, &state.events).await {
+                        return err(500, format!("download CSQTT failed: {}", e));
+                    }
                 }
             }
             ProtocolKind::PaperFlux => {
@@ -676,7 +692,7 @@ async fn core_version_p(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
-    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
     let version = tokio::fs::read_to_string(&latest_file)
         .await
         .unwrap_or_default()
@@ -691,9 +707,13 @@ async fn core_latest_p(
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let v = match kind {
-        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
-        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
+    let v = if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+        Some(core_manager::CSQTT_219_RELEASE.to_string())
+    } else {
+        match kind {
+            ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
+            ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
+        }
     };
     match v {
         Some(v) => Json(json!({"version": v})).into_response(),
@@ -707,11 +727,15 @@ async fn core_check_p(
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let remote = match kind {
-        ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
-        ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
+    let remote = if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+        core_manager::CSQTT_219_RELEASE.to_string()
+    } else {
+        match kind {
+            ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
+            ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
+        }
     };
-    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
     let local = tokio::fs::read_to_string(&latest_file)
         .await
         .unwrap_or_default()
@@ -728,23 +752,35 @@ async fn core_download_async_p(
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
+    let use_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let state2 = state.clone();
     tokio::spawn(async move {
         state2.events.emit(Event::progress("core_download", 0));
         let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-        let dest = crate::state::core_path_for(&state2.app_dir, kind.id());
-        let latest_file = state2.app_dir.join(format!("LATEST.{}", kind.id()));
+        let dest = crate::state::core_path_for(&state2.app_dir, &proto);
+        let latest_file = state2.app_dir.join(if use_csqtt_219 { "LATEST.CSQTT-2.1.9" } else if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" });
 
         match kind {
             ProtocolKind::Csqtt => {
-                if let Some(version) = core_manager::fetch_latest_csqtt(&client, &state2.events).await {
+                let version = if use_csqtt_219 {
+                    Some(core_manager::CSQTT_219_RELEASE.to_string())
+                } else {
+                    core_manager::fetch_latest_csqtt(&client, &state2.events).await
+                };
+                if let Some(version) = version {
                     state2.events.emit(Event::progress("core_download", 20));
-                    match core_manager::download_csqtt(&client, &version, &dest, &state2.events).await {
+                    let download = if use_csqtt_219 {
+                        core_manager::download_csqtt_219(&client, &dest, &state2.events).await
+                    } else {
+                        core_manager::download_csqtt(&client, &version, &dest, &state2.events).await
+                    };
+                    match download {
                         Ok(_) => {
-                            let _ = tokio::fs::write(&latest_file, &version).await;
+                            let saved_version = version;
+                            let _ = tokio::fs::write(&latest_file, &saved_version).await;
                             state2.events.emit(Event::progress("core_download", 100));
-                            state2.log(format!("[CORE] CSQTT updated to {}", version));
+                            state2.log(format!("[CORE] CSQTT updated to {}", saved_version));
                         }
                         Err(e) => {
                             state2.log(format!("[CORE] CSQTT download failed: {}", e));
@@ -781,21 +817,32 @@ async fn core_download_sync_p(
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
+    let use_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-    let dest = crate::state::core_path_for(&state.app_dir, kind.id());
-    let latest_file = state.app_dir.join(format!("LATEST.{}", kind.id()));
+    let dest = crate::state::core_path_for(&state.app_dir, &proto);
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
 
     let result = match kind {
         ProtocolKind::Csqtt => {
-            let version = match core_manager::fetch_latest_csqtt(&client, &state.events).await {
-                Some(v) => v,
-                None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+            let version = if use_csqtt_219 {
+                core_manager::CSQTT_219_RELEASE.to_string()
+            } else {
+                match core_manager::fetch_latest_csqtt(&client, &state.events).await {
+                    Some(v) => v,
+                    None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch LATEST"); }
+                }
             };
-            match core_manager::download_csqtt(&client, &version, &dest, &state.events).await {
+            let download = if use_csqtt_219 {
+                core_manager::download_csqtt_219(&client, &dest, &state.events).await
+            } else {
+                core_manager::download_csqtt(&client, &version, &dest, &state.events).await
+            };
+            match download {
                 Ok(_) => {
-                    let _ = tokio::fs::write(&latest_file, &version).await;
-                    Ok(version)
+                    let saved_version = version;
+                    let _ = tokio::fs::write(&latest_file, &saved_version).await;
+                    Ok(saved_version)
                 }
                 Err(e) => Err(e),
             }
@@ -823,7 +870,7 @@ async fn core_path_p(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
-    let p = crate::state::core_path_for(&state.app_dir, kind.id());
+    let p = crate::state::core_path_for(&state.app_dir, &proto);
     Json(json!({"path": p.to_string_lossy()}))
 }
 
@@ -832,7 +879,7 @@ async fn core_delete_p(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
-    let p = crate::state::core_path_for(&state.app_dir, kind.id());
+    let p = crate::state::core_path_for(&state.app_dir, &proto);
     let _ = tokio::fs::remove_file(&p).await;
     Json(json!({"ok": true}))
 }

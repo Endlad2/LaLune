@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// deviceId удалён — новый CSQTT его не использует.
+// Device ID применяется только для CSQTT 2.1.9.
 
 const int kDefaultWorkers = 9;
 const int kMinWorkers = 1;
@@ -13,6 +13,7 @@ class Settings {
   final String peer;
   final String vkHashes;
   final String vkJsToken;
+  final String deviceId;
   final int workers;
   final int autoApiWorkers;
   final String password;
@@ -61,6 +62,7 @@ class Settings {
     this.peer = '',
     this.vkHashes = '',
     this.vkJsToken = '',
+    this.deviceId = 'unknown',
     this.workers = kDefaultWorkers,
     this.autoApiWorkers = kDefaultAutoApiWorkers,
     this.password = '',
@@ -115,6 +117,7 @@ class Settings {
       peer: (j['peer'] ?? '') as String,
       vkHashes: (j['vkHashes'] ?? '') as String,
       vkJsToken: (j['vkJsToken'] ?? '') as String,
+      deviceId: (j['deviceId'] ?? 'unknown') as String,
       workers: w,
       autoApiWorkers: aw,
       password: (j['password'] ?? '') as String,
@@ -161,6 +164,7 @@ class Settings {
         'peer': peer,
         'vkHashes': vkHashes,
         'vkJsToken': vkJsToken,
+        'deviceId': deviceId,
         'workers': workers,
         'autoApiWorkers': autoApiWorkers,
         'password': password,
@@ -206,6 +210,7 @@ class Settings {
     String? peer,
     String? vkHashes,
     String? vkJsToken,
+    String? deviceId,
     int? workers,
     int? autoApiWorkers,
     String? password,
@@ -250,6 +255,7 @@ class Settings {
         peer: peer ?? this.peer,
         vkHashes: vkHashes ?? this.vkHashes,
         vkJsToken: vkJsToken ?? this.vkJsToken,
+        deviceId: deviceId ?? this.deviceId,
         workers: workers ?? this.workers,
         autoApiWorkers: autoApiWorkers ?? this.autoApiWorkers,
         password: password ?? this.password,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// Настройки: CSQTT + PaperFlux. deviceId удалён — новый CSQTT его не использует.
+// Настройки: Device ID передаётся только ядру CSQTT 2.1.9.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,7 @@ pub struct Settings {
     pub peer: String,
     pub vk_hashes: String,
     pub vk_js_token: String,
+    pub device_id: String,
     pub password: String,
     pub obfs: String,
     pub fingerprint: String,
@@ -71,6 +72,7 @@ impl Default for Settings {
             peer: String::new(),
             vk_hashes: String::new(),
             vk_js_token: String::new(),
+            device_id: "unknown".into(),
             password: String::new(),
             obfs: "video".into(),
             fingerprint: "firefox".into(),

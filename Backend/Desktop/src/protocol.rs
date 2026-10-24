@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // Protocol registry: CSQTT и PaperFlux.
-// deviceId удалён — новый CSQTT его не использует.
+// Device ID передаётся только ядру CSQTT 2.1.9.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ pub enum ProtocolKind {
 impl ProtocolKind {
     pub fn from_id(s: &str) -> Option<Self> {
         match s.trim().to_ascii_uppercase().as_str() {
-            "CSQTT" => Some(Self::Csqtt),
+            "CSQTT" | "CSQTT 2.1.9" | "CSQTT 2.5.1" => Some(Self::Csqtt),
             "PAPERFLUX" | "OPENFLUX" => Some(Self::PaperFlux),
             _ => None,
         }
@@ -70,19 +70,32 @@ impl ProtocolKind {
 }
 
 pub fn supported_protocols() -> Vec<serde_json::Value> {
-    [ProtocolKind::Csqtt, ProtocolKind::PaperFlux]
-        .into_iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id(),
-                "displayName": p.display_name(),
-                "repo": p.repo(),
-                "realtime": true,
-                "description": p.description(),
-                "coreAsset": p.core_asset(),
-            })
-        })
-        .collect()
+    vec![
+        serde_json::json!({
+            "id": "CSQTT 2.1.9",
+            "displayName": "CSQTT 2.1.9",
+            "repo": "Endlad2/csqtt-core",
+            "realtime": true,
+            "description": "Plain links; pinned release 2026.09.17.17.36.",
+            "coreAsset": crate::core_manager::csqtt_asset_name(),
+        }),
+        serde_json::json!({
+            "id": "CSQTT 2.5.1",
+            "displayName": "CSQTT 2.5.1 ⚠",
+            "repo": "Endlad2/csqtt-core",
+            "realtime": true,
+            "description": "Latest CSQTT core; DTLS compatibility warning.",
+            "coreAsset": crate::core_manager::csqtt_asset_name(),
+        }),
+        serde_json::json!({
+            "id": "PaperFlux",
+            "displayName": "PaperFlux (Docs)",
+            "repo": "Endlad2/PaperFlux-core",
+            "realtime": true,
+            "description": "Пробрасывает трафик через облачные документы.",
+            "coreAsset": crate::core_manager::paperflux_asset_name(),
+        }),
+    ]
 }
 
 pub fn settings_keys_for(kind: ProtocolKind) -> Vec<&'static str> {
@@ -187,6 +200,13 @@ fn build_csqtt_args(
             args.push("--token".into());
             args.push(token);
         }
+    }
+
+    if config.protocol.trim().eq_ignore_ascii_case("CSQTT 2.1.9")
+        && !settings.device_id.trim().is_empty()
+    {
+        args.push("--device-id".into());
+        args.push(settings.device_id.trim().to_string());
     }
 
     if !settings.turn_host.is_empty() {
