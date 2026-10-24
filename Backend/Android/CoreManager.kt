@@ -287,7 +287,7 @@ class CoreManager(private val context: Context) {
         val finalArgs = if (args != null) {
             listOf(corePath) + args
         } else {
-            buildCsqttArgs(corePath, peer, password, hashes)
+            buildCsqttArgs(corePath, protocol, peer, password, hashes)
         }
 
         return try {
@@ -327,6 +327,7 @@ class CoreManager(private val context: Context) {
     /** buildCsqttArgs: deviceId УБРАН — новое ядро его не принимает. */
     private fun buildCsqttArgs(
         corePath: String,
+        protocol: String,
         peer: String,
         password: String,
         hashes: String,
@@ -347,6 +348,7 @@ class CoreManager(private val context: Context) {
         val vkAuthMode = settings.optString("vkAuthMode", "vkcalls")
         val captchaMode = settings.optString("captchaMode", "auto")
         val turnTransport = settings.optString("turnTransport", "udp")
+        val deviceId = settings.optString("deviceId", "").trim()
 
         val normalized = hashes.replace(' ', ',').replace('\t', ',')
             .replace('\n', ',').replace('\r', ',')
@@ -371,6 +373,10 @@ class CoreManager(private val context: Context) {
         if (clean.isNotEmpty()) {
             args.add("-vk")
             args.add(clean.joinToString(","))
+        }
+        if (protocol.equals(PROTO_CSQTT_219, ignoreCase = true) && deviceId.isNotEmpty()) {
+            args.add("-device-id")
+            args.add(deviceId)
         }
         return args
     }
