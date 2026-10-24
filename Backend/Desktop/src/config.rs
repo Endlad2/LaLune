@@ -278,7 +278,11 @@ pub fn parse_link_for_protocol(link: &str, protocol: &str) -> Result<ConfigItem>
     log::info!("[PARSE] scheme-detect link={}", short_link(link));
 
     if lower.starts_with("csqtt://") {
-        parse_csqtt(link)
+        let mut config = parse_csqtt(link)?;
+        if protocol.trim().eq_ignore_ascii_case("CSQTT 2.5.1") {
+            config.protocol = "CSQTT 2.5.1".into();
+        }
+        Ok(config)
     } else if lower.starts_with("paperflux://") {
         parse_paperflux(link)
     } else if lower.starts_with("olcrtc://") {
