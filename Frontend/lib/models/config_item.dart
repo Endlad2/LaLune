@@ -47,6 +47,8 @@ class ConfigItem {
   });
 
   bool get isPaperFlux => protocol.toLowerCase() == 'paperflux';
+  bool get isCsqtt219 => protocol.toUpperCase() == 'CSQTT 2.1.9';
+  bool get isCsqtt251 => protocol.toUpperCase() == 'CSQTT 2.5.1' || protocol.toUpperCase() == 'CSQTT';
 
   factory ConfigItem.fromJson(Map<String, dynamic> j) => ConfigItem(
         id: (j['id'] as num?)?.toInt() ?? 0,
