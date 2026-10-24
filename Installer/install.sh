@@ -189,7 +189,7 @@ main() {
     cp -f "$csqtt_exe" "${APPDATA_DIR}/csqtt-core"
     chmod +x "${APPDATA_DIR}/csqtt-core"
     cp -f "$csqtt219_exe" "${APPDATA_DIR}/csqtt-219"
-    chmod +x "${APPDATA_DIR}/csqtt-core-2.1.9"
+    chmod +x "${APPDATA_DIR}/csqtt-219"
 
     step "Кладу PaperFlux core"
     cp -f "$pf_exe" "${APPDATA_DIR}/paperflux-core"
