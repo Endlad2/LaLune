@@ -545,7 +545,8 @@ class Backend(private val context: Context) {
 
     private fun routeCore(method: String, rest: String): Pair<Int, String> {
         val slash = rest.indexOf('/')
-        val proto = if (slash > 0) rest.substring(0, slash) else rest
+        val protoRaw = if (slash > 0) rest.substring(0, slash) else rest
+        val proto = URLDecoder.decode(protoRaw, "UTF-8")
         val tail = if (slash > 0) rest.substring(slash + 1) else ""
 
         val cm = coreManager ?: return 500 to jsonErr("coreManager not ready")
