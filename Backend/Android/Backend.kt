@@ -2,7 +2,7 @@
 //
 // LaLune backend для Android.
 //
-// deviceId удалён.
+// Device ID используется только для выбранного ядра CSQTT 2.1.9.
 // csqtt:// парсится: csqtt-link (ProcessBuilder) → Lua → нативный.
 // SOCKS5 слушает рандомный свободный порт (не 1080).
 
