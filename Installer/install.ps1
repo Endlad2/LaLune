@@ -183,7 +183,7 @@ function Main {
     $laLuneZip       = Join-Path $TEMP_DIR 'LaLune-Windows.zip'
     $backendZip      = Join-Path $TEMP_DIR 'Backend-Windows.zip'
     $csqttExe        = Join-Path $TEMP_DIR 'client-windows-x86_64.exe'
-    $csqtt219Exe     = Join-Path $TEMP_DIR 'client-windows-x86_64-2.1.9.exe'
+    $csqtt219Exe     = Join-Path $TEMP_DIR 'csqtt-219.exe'
     $csqtt219Latest  = Join-Path $TEMP_DIR 'LATEST.CSQTT-2.1.9'
     $paperfluxExe    = Join-Path $TEMP_DIR 'paperflux-windows-amd64.exe'
     $csqttLatest     = Join-Path $TEMP_DIR 'LATEST.Csqtt'
@@ -241,7 +241,7 @@ function Main {
     # CSQTT core
     Write-Step 'Кладу CSQTT core'
     Copy-Item -LiteralPath $csqttExe -Destination (Join-Path $APPDATA_DIR 'csqtt-core.exe') -Force
-    Copy-Item -LiteralPath $csqtt219Exe -Destination (Join-Path $APPDATA_DIR 'csqtt-core-2.1.9.exe') -Force
+    Copy-Item -LiteralPath $csqtt219Exe -Destination (Join-Path $APPDATA_DIR 'csqtt-219.exe') -Force
 
     # PaperFlux core
     if (Test-Path -LiteralPath $paperfluxExe) {
