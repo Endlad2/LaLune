@@ -559,7 +559,7 @@ jobs:
           set -euo pipefail
           VERSION="${{ inputs.stable_version }}"
           BRANCH="$GITHUB_REF_NAME"
-          CONTENT="$(printf '%s\\n' "$VERSION" | base64 -w 0)"
+          CONTENT="$(printf '%s\n' "$VERSION" | base64 -w 0)"
           SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/STABLE?ref=$BRANCH" --jq .sha)"
           gh api "repos/$GITHUB_REPOSITORY/contents/STABLE" \
             -X PUT \
