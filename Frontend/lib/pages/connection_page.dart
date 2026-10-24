@@ -73,7 +73,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
       context: context,
       barrierColor: Colors.black.withOpacity(0.55),
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0F1540),
+        backgroundColor: const Color(0xFF21142B),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: Colors.white.withOpacity(0.1)),
@@ -124,7 +124,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                   style: TextStyle(
                     fontSize: 16,
                     color: vpn.connected
-                        ? const Color(0xFF7CFF9A)
+                        ? const Color(0xFFB36AE2)
                         : Colors.white.withOpacity(0.6),
                     fontWeight: FontWeight.w600,
                   ),
@@ -188,7 +188,7 @@ class _AddButtonState extends State<_AddButton> {
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF4A6CF7)
+                  color: const Color(0xFFFF7518)
                       .withOpacity(_hover ? 0.35 : 0.0),
                   blurRadius: 18,
                   spreadRadius: 2,
