@@ -72,7 +72,7 @@ impl Default for Settings {
             peer: String::new(),
             vk_hashes: String::new(),
             vk_js_token: String::new(),
-            device_id: String::new(),
+            device_id: "unknown".into(),
             password: String::new(),
             obfs: "video".into(),
             fingerprint: "firefox".into(),
