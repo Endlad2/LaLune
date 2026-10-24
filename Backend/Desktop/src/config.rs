@@ -598,7 +598,7 @@ mod csqtt_219_plain_link_tests {
         let link = "csqtt://connect?v=2&host=127.0.0.1&peer=46000&password=secret&hashes=h1+h2";
         let config = parse_link_for_protocol(link, "CSQTT 2.5.1").expect("native fallback parses");
 
-        assert_eq!(config.protocol, "CSQTT");
+        assert_eq!(config.protocol, "CSQTT 2.5.1");
         assert_eq!(config.peer, "127.0.0.1:46000");
     }
 }
