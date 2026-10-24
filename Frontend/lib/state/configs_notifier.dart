@@ -107,7 +107,7 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
       await reload();
       final normalizedLink = link.trim();
       final persisted = state.items.any((item) =>
-          item.rawLink.trim() == normalizedLink && item.protocol == protocol);
+          item.rawLink.trim() == normalizedLink);
       if (persisted) return true;
       state = state.copyWith(error: '$e');
       return false;
