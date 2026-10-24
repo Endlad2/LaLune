@@ -81,7 +81,7 @@ class _RouterModalState extends ConsumerState<_RouterModal> {
       ..sort((a, b) => a.ip.compareTo(b.ip));
 
     return Dialog(
-      backgroundColor: const Color(0xFF0F1540),
+      backgroundColor: const Color(0xFF21142B),
       insetPadding: const EdgeInsets.all(20),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
@@ -250,12 +250,12 @@ class _RouterTile extends ConsumerWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: active
-              ? const Color(0xFF4A6CF7).withOpacity(0.18)
+              ? const Color(0xFFFF7518).withOpacity(0.18)
               : Colors.white.withOpacity(0.04),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
             color: active
-                ? const Color(0xFF4A6CF7).withOpacity(0.55)
+                ? const Color(0xFFFF7518).withOpacity(0.55)
                 : Colors.white.withOpacity(0.08),
           ),
         ),
@@ -289,7 +289,7 @@ class _RouterTile extends ConsumerWidget {
               const Icon(
                 Icons.check_circle,
                 size: 16,
-                color: Color(0xFF7CFF9A),
+                color: Color(0xFFB36AE2),
               ),
           ],
         ),

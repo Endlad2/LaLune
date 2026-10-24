@@ -442,16 +442,22 @@ def main() -> int:
         backend_bin = build_backend_desktop()
         status("INFO", f"backend binary: {backend_bin}")
 
-        # 2. Installer (только Windows)
+        # 2. Frontend — build it before the installer so the exact same
+        # freshly built frontend can be embedded into LaLune-Installer.exe.
+        frontend_dir = build_frontend(target_os)
+        status("INFO", f"frontend dir: {frontend_dir}")
+
+        # CI/local Windows installer consumes Installer/launcher/Frontend.zip
+        # when present. Generate it from this build, never from an older release.
         installer_exe: Optional[Path] = None
         if target_os == "windows":
+            frontend_zip = INSTALLER / "Frontend.zip"
+            status("INFO", f"packaging fresh frontend for installer: {frontend_zip}")
+            zip_dir(frontend_dir, frontend_zip)
+            status("OK", f"Frontend.zip ({frontend_zip.stat().st_size // 1024} KB)")
             installer_exe = build_installer()
             if installer_exe:
                 status("INFO", f"installer exe: {installer_exe}")
-
-        # 3. Frontend
-        frontend_dir = build_frontend(target_os)
-        status("INFO", f"frontend dir: {frontend_dir}")
 
         # ── Упаковка ─────────────────────────────────────────
         print()

@@ -5,7 +5,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/core_info.dart';
 import '../models/update_info.dart';
 import '../state/providers.dart';
 import '../theme/assets.dart';
@@ -19,12 +18,9 @@ class InfoPage extends ConsumerStatefulWidget {
 }
 
 class _InfoPageState extends ConsumerState<InfoPage> {
-  static const String _laluneVersion = '0.6.0';
+  static const String _laluneVersion = '0.9';
 
-  CoreInfo _core = CoreInfo.empty;
   UpdateInfo _lalune = UpdateInfo.empty;
-  bool _checkingCore = false;
-  bool _updatingCore = false;
   bool _checkingLaLune = false;
 
   @override
@@ -36,12 +32,6 @@ class _InfoPageState extends ConsumerState<InfoPage> {
   Future<void> _refreshAll() async {
     final api = ref.read(apiClientProvider);
 
-    // Core
-    try {
-      final j = await api.getJson('/core/check');
-      if (mounted) setState(() => _core = CoreInfo.fromJson(j));
-    } catch (_) {}
-
     // LaLune
     try {
       final j = await api.getJson('/update/check');
@@ -49,41 +39,10 @@ class _InfoPageState extends ConsumerState<InfoPage> {
     } catch (_) {}
   }
 
-  Future<void> _manualCheckCore() async {
-    setState(() => _checkingCore = true);
-    await _refreshAll();
-    if (mounted) setState(() => _checkingCore = false);
-  }
-
   Future<void> _manualCheckLaLune() async {
     setState(() => _checkingLaLune = true);
     await _refreshAll();
     if (mounted) setState(() => _checkingLaLune = false);
-  }
-
-  Future<void> _startCoreUpdate() async {
-    if (_updatingCore) return;
-    setState(() => _updatingCore = true);
-    _toast('Обновляю ядро...');
-    final api = ref.read(apiClientProvider);
-    try {
-      await api.postJson('/core/download/sync', {});
-      _toast('Ядро обновлено');
-      await _refreshAll();
-    } catch (e) {
-      _toast('Не удалось обновить ядро: $e');
-    }
-    if (mounted) setState(() => _updatingCore = false);
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      behavior: SnackBarBehavior.floating,
-      duration: const Duration(seconds: 3),
-      backgroundColor: Colors.black.withOpacity(0.85),
-    ));
   }
 
   // ============================================================
@@ -103,7 +62,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xFF0F1540),
+            color: const Color(0xFF21142B),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: Colors.white.withOpacity(0.12)),
           ),
@@ -188,35 +147,11 @@ class _InfoPageState extends ConsumerState<InfoPage> {
                   style: TextStyle(
                       fontSize: 26,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFFF7E84E))),
+                      color: Color(0xFFFFB347))),
               const SizedBox(height: 4),
               Text('Client v$_laluneVersion',
                   style: TextStyle(color: Colors.white.withOpacity(0.5))),
               const SizedBox(height: 20),
-
-              // Ядро
-              _block('Ядро CSQTT', [
-                _kv('Установлено', _core.localVersion.isEmpty
-                    ? '—' : _core.localVersion),
-                _kv('Доступно', _core.remoteVersion.isEmpty
-                    ? '—' : _core.remoteVersion),
-              ]),
-              _actionButton(
-                label: _checkingCore
-                    ? 'Проверка...'
-                    : 'Проверить обновления ядра',
-                onTap: _checkingCore ? null : _manualCheckCore,
-              ),
-              if (_core.hasUpdate) ...[
-                const SizedBox(height: 8),
-                _updateHint(
-                  _updatingCore
-                      ? 'Обновление...'
-                      : 'Обновить ядро до ${_core.remoteVersion}',
-                  onTap: _updatingCore ? null : _startCoreUpdate,
-                ),
-              ],
-              const SizedBox(height: 18),
 
               // LaLune
               _block('LaLune', [
@@ -350,7 +285,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
       child: ElevatedButton(
         onPressed: onTap,
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFFF7E84E),
+          backgroundColor: const Color(0xFFFFB347),
           foregroundColor: Colors.black,
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(

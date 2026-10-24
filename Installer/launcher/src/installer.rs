@@ -11,8 +11,10 @@ use anyhow::{anyhow, Context, Result};
 pub static LALUNE_ZIP:    &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LaLune-Windows.zip"));
 pub static BACKEND_ZIP:   &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/Backend-Windows.zip"));
 pub static CSQTT_EXE:     &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/client-windows-x86_64.exe"));
+pub static CSQTT_219_EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csqtt-219.exe"));
 pub static PAPERFLUX_EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/paperflux-windows-amd64.exe"));
 pub static LATEST_CSQTT:  &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LATEST.Csqtt"));
+pub static LATEST_CSQTT_219: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LATEST.CSQTT-2.1.9"));
 pub static LATEST_PF:     &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LATEST.PaperFlux"));
 pub static ICON_FILE:     &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icon.ico"));
 pub static WINTUN_DLL:    &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wintun.dll"));
@@ -153,12 +155,17 @@ where F: FnMut(&str),
     log("Кладу CSQTT core");
     write_file(&appdata.join("csqtt-core.exe"), CSQTT_EXE)?;
 
+    // Pinned CSQTT 2.1.9 core, kept separate from the latest CSQTT core.
+    log("Кладу CSQTT 2.1.9 core");
+    write_file(&appdata.join("csqtt-219.exe"), CSQTT_219_EXE)?;
+    write_file(&appdata.join("LATEST.CSQTT-2.1.9"), LATEST_CSQTT_219)?;
+
     // PaperFlux core
     log("Кладу PaperFlux core");
     write_file(&appdata.join("paperflux-core.exe"), PAPERFLUX_EXE)?;
 
     // LATEST
-    log("Кладу LATEST.Csqtt + LATEST.PaperFlux");
+    log("Кладу LATEST.Csqtt + LATEST.CSQTT-2.1.9 + LATEST.PaperFlux");
     write_file(&appdata.join("LATEST.Csqtt"), LATEST_CSQTT)?;
     write_file(&appdata.join("LATEST.PaperFlux"), LATEST_PF)?;
 

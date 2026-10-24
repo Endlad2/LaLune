@@ -41,7 +41,7 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
           final placeholder = _placeholderFor(protocol);
 
           return AlertDialog(
-            backgroundColor: const Color(0xFF0F1540),
+            backgroundColor: const Color(0xFF21142B),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
               side: BorderSide(color: Colors.white.withOpacity(0.1)),
@@ -59,7 +59,7 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
                     const SizedBox(height: 6),
                     DropdownButtonFormField<String>(
                       value: protocol,
-                      dropdownColor: const Color(0xFF0F1540),
+                      dropdownColor: const Color(0xFF21142B),
                       style: const TextStyle(fontSize: 13, color: Colors.white),
                       decoration: const InputDecoration(
                         isDense: true,
@@ -87,7 +87,7 @@ Future<AddConfigResult?> showAddConfigDialog(BuildContext context) async {
                                     height: 20,
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFF7E84E),
+                                      color: const Color(0xFFFFB347),
                                       borderRadius: BorderRadius.circular(5),
                                     ),
                                     child: const Text(

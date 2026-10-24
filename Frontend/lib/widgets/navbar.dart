@@ -84,15 +84,15 @@ class _NavButtonState extends State<_NavButton> {
     final scale = _hover ? 0.92 : 1.0;
 
     final chipColor = active
-        ? const Color(0xFFF7E84E).withOpacity(0.18)
+        ? const Color(0xFFFFB347).withOpacity(0.18)
         : (_hover ? Colors.white.withOpacity(0.10) : Colors.transparent);
 
     final chipBorder = active
-        ? const Color(0xFFF7E84E).withOpacity(0.75)
+        ? const Color(0xFFFFB347).withOpacity(0.75)
         : (_hover ? Colors.white.withOpacity(0.22) : Colors.transparent);
 
     final labelColor = active
-        ? const Color(0xFFF7E84E)
+        ? const Color(0xFFFFB347)
         : Colors.white.withOpacity(_hover ? 0.95 : 0.55);
 
     final iconOpacity = active ? 1.0 : (_hover ? 1.0 : 0.85);
@@ -126,7 +126,7 @@ class _NavButtonState extends State<_NavButton> {
                     boxShadow: active
                         ? [
                             BoxShadow(
-                              color: const Color(0xFFF7E84E).withOpacity(0.35),
+                              color: const Color(0xFFFFB347).withOpacity(0.35),
                               blurRadius: 16,
                               spreadRadius: 1,
                             ),
@@ -146,7 +146,7 @@ class _NavButtonState extends State<_NavButton> {
                         Icons.circle_outlined,
                         size: 26,
                         color: active
-                            ? const Color(0xFFF7E84E)
+                            ? const Color(0xFFFFB347)
                             : Colors.white.withOpacity(0.7),
                       ),
                     ),

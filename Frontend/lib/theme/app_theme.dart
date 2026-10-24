@@ -5,11 +5,11 @@
 
 import 'package:flutter/material.dart';
 
-const Color kAccent = Color(0xFF4A6CF7);
-const Color kAccentYellow = Color(0xFFF7E84E);
-const Color kAccentGreen = Color(0xFF7CFF9A);
-const Color kBackground = Color(0xFF0A0E2A);
-const Color kSurface = Color(0xFF0F1540);
+const Color kAccent = Color(0xFFFF7518);
+const Color kAccentYellow = Color(0xFFFFB347);
+const Color kAccentGreen = Color(0xFFB36AE2);
+const Color kBackground = Color(0xFF120D1C);
+const Color kSurface = Color(0xFF21142B);
 
 ThemeData buildAppTheme() {
   final base = ThemeData.dark(useMaterial3: true);
