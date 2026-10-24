@@ -15,6 +15,9 @@ const URL_BACKEND_ZIP: &str =
     "https://github.com/Endlad2/LaLune/releases/latest/download/Backend-Windows.zip";
 const URL_CSQTT_EXE: &str =
     "https://github.com/Endlad2/csqtt-core/releases/latest/download/client-windows-x86_64.exe";
+const URL_CSQTT_219_EXE: &str =
+    "https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/client-windows-x86_64.exe";
+const CSQTT_219_VERSION: &str = "2026.09.17.17.36";
 const URL_PAPERFLUX_EXE: &str =
     "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-windows-amd64.exe";
 const URL_LATEST_CSQTT: &str =
@@ -113,15 +116,27 @@ fn main() -> Result<()> {
     let out = out_dir();
     fs::create_dir_all(&out).ok();
     println!("cargo:rerun-if-changed=build.rs");
+    let frontend_zip = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Frontend.zip");
+    println!("cargo:rerun-if-changed={}", frontend_zip.display());
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("LaLune-Installer-Build/0.6")
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    download(&client, URL_LALUNE_ZIP, &out.join("LaLune-Windows.zip"))?;
+    let embedded_frontend = out.join("LaLune-Windows.zip");
+    if frontend_zip.is_file() {
+        println!("cargo:warning=using local Frontend.zip: {}", frontend_zip.display());
+        fs::copy(&frontend_zip, &embedded_frontend)
+            .with_context(|| format!("copy local Frontend.zip from {}", frontend_zip.display()))?;
+    } else {
+        println!("cargo:warning=Frontend.zip not found next to build.rs; downloading latest LaLune-Windows.zip");
+        download(&client, URL_LALUNE_ZIP, &embedded_frontend)?;
+    }
     download(&client, URL_BACKEND_ZIP, &out.join("Backend-Windows.zip"))?;
     download(&client, URL_CSQTT_EXE, &out.join("client-windows-x86_64.exe"))?;
+    download(&client, URL_CSQTT_219_EXE, &out.join("csqtt-219.exe"))?;
+    fs::write(out.join("LATEST.CSQTT-2.1.9"), CSQTT_219_VERSION)?;
     download(&client, URL_PAPERFLUX_EXE, &out.join("paperflux-windows-amd64.exe"))?;
     download(&client, URL_LATEST_CSQTT, &out.join("LATEST.Csqtt"))?;
     download(&client, URL_LATEST_PF, &out.join("LATEST.PaperFlux"))?;
