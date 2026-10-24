@@ -64,6 +64,12 @@ pub fn app_dir() -> Result<PathBuf> {
 }
 
 pub fn core_path_for(app_dir: &PathBuf, protocol_id: &str) -> PathBuf {
+    if protocol_id.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+        #[cfg(target_os = "windows")]
+        { return app_dir.join("csqtt-core-2.1.9.exe"); }
+        #[cfg(not(target_os = "windows"))]
+        { return app_dir.join("csqtt-core-2.1.9"); }
+    }
     let kind = crate::protocol::ProtocolKind::from_id(protocol_id)
         .unwrap_or(crate::protocol::ProtocolKind::Csqtt);
     app_dir.join(kind.local_filename())
