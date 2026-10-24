@@ -622,7 +622,11 @@ class Backend(private val context: Context) {
 
     private fun settingsForProto(proto: String): JSONObject {
         val upper = proto.uppercase()
-        return if (upper == PROTO_CSQTT.uppercase()) {
+        return if (
+            upper == PROTO_CSQTT.uppercase() ||
+            upper == PROTO_CSQTT_219.uppercase() ||
+            upper == PROTO_CSQTT_251.uppercase()
+        ) {
             JSONObject().apply {
                 put("protocol", PROTO_CSQTT)
                 put("keys", JSONArray(listOf(
