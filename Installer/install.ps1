@@ -22,6 +22,7 @@ $REPO_PAPERFLUX = 'Endlad2/PaperFlux-core'
 $URL_LALUNE_ZIP     = "https://github.com/$REPO_LALUNE/releases/latest/download/LaLune-Windows.zip"
 $URL_BACKEND_ZIP    = "https://github.com/$REPO_LALUNE/releases/latest/download/Backend-Windows.zip"
 $URL_CSQTT_EXE      = "https://github.com/$REPO_CSQTT/releases/latest/download/client-windows-x86_64.exe"
+$URL_CSQTT_219_EXE  = "https://github.com/$REPO_CSQTT/releases/download/2026.09.17.17.36/client-windows-x86_64.exe"
 $URL_PAPERFLUX_EXE  = "https://github.com/$REPO_PAPERFLUX/releases/latest/download/paperflux-windows-amd64.exe"
 $URL_CSQTT_LATEST   = "https://raw.githubusercontent.com/$REPO_CSQTT/refs/heads/main/LATEST"
 $URL_PF_LATEST      = "https://raw.githubusercontent.com/$REPO_PAPERFLUX/refs/heads/main/LATEST"
@@ -182,6 +183,8 @@ function Main {
     $laLuneZip       = Join-Path $TEMP_DIR 'LaLune-Windows.zip'
     $backendZip      = Join-Path $TEMP_DIR 'Backend-Windows.zip'
     $csqttExe        = Join-Path $TEMP_DIR 'client-windows-x86_64.exe'
+    $csqtt219Exe     = Join-Path $TEMP_DIR 'client-windows-x86_64-2.1.9.exe'
+    $csqtt219Latest  = Join-Path $TEMP_DIR 'LATEST.CSQTT-2.1.9'
     $paperfluxExe    = Join-Path $TEMP_DIR 'paperflux-windows-amd64.exe'
     $csqttLatest     = Join-Path $TEMP_DIR 'LATEST.Csqtt'
     $pfLatest        = Join-Path $TEMP_DIR 'LATEST.PaperFlux'
@@ -190,7 +193,7 @@ function Main {
 
     if ($ci) {
         $missing = @()
-        foreach ($f in @($laLuneZip, $backendZip, $csqttExe, $pfLatest, $iconFile, $wintunZip)) {
+        foreach ($f in @($laLuneZip, $backendZip, $csqttExe, $csqtt219Exe, $csqtt219Latest, $pfLatest, $iconFile, $wintunZip)) {
             if (-not (Test-Path -LiteralPath $f)) { $missing += $f }
         }
         if ($missing.Count -gt 0) {
@@ -201,6 +204,8 @@ function Main {
         Download-File -Url $URL_LALUNE_ZIP    -Dest $laLuneZip
         Download-File -Url $URL_BACKEND_ZIP   -Dest $backendZip
         Download-File -Url $URL_CSQTT_EXE     -Dest $csqttExe
+        Download-File -Url $URL_CSQTT_219_EXE -Dest $csqtt219Exe
+        Set-Content -LiteralPath $csqtt219Latest -Value '2026.09.17.17.36' -NoNewline -Encoding ascii
         Download-File -Url $URL_PAPERFLUX_EXE -Dest $paperfluxExe
         Download-File -Url $URL_CSQTT_LATEST  -Dest $csqttLatest
         Download-File -Url $URL_PF_LATEST     -Dest $pfLatest
@@ -233,6 +238,7 @@ function Main {
     # CSQTT core
     Write-Step 'Кладу CSQTT core'
     Copy-Item -LiteralPath $csqttExe -Destination (Join-Path $APPDATA_DIR 'csqtt-core.exe') -Force
+    Copy-Item -LiteralPath $csqtt219Exe -Destination (Join-Path $APPDATA_DIR 'csqtt-core-2.1.9.exe') -Force
 
     # PaperFlux core
     if (Test-Path -LiteralPath $paperfluxExe) {
@@ -247,6 +253,7 @@ function Main {
     if (Test-Path -LiteralPath $csqttLatest) {
         Copy-Item -LiteralPath $csqttLatest -Destination (Join-Path $APPDATA_DIR 'LATEST.Csqtt') -Force
     }
+    Copy-Item -LiteralPath $csqtt219Latest -Destination (Join-Path $APPDATA_DIR 'LATEST.CSQTT-2.1.9') -Force
     Copy-Item -LiteralPath $pfLatest -Destination (Join-Path $APPDATA_DIR 'LATEST.PaperFlux') -Force
 
     # wintun.dll
