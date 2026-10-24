@@ -54,6 +54,7 @@ class CoreManager(private val context: Context) {
     private val coreDir = File(appDir, "core").apply { mkdirs() }
     private val logsFile = File(appDir, "logs.log")
     private val latestCsqtt = File(appDir, "LATEST.Csqtt")
+    private val latestCsqtt219 = File(appDir, "LATEST.CSQTT-2.1.9")
     private val latestPaper = File(appDir, "LATEST.PaperFlux")
 
     private var coreProcess: Process? = null
@@ -114,8 +115,11 @@ class CoreManager(private val context: Context) {
         if (f.exists()) f.readText().trim() else ""
     } catch (_: Exception) { "" }
 
-    private fun latestFileFor(protocol: String): File =
-        if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true)) latestPaper else latestCsqtt
+    private fun latestFileFor(protocol: String): File = when {
+        protocol.equals(PROTO_PAPERFLUX, ignoreCase = true) -> latestPaper
+        protocol.equals(PROTO_CSQTT_219, ignoreCase = true) -> latestCsqtt219
+        else -> latestCsqtt
+    }
 
     fun fetchLatestVersion(protocol: String = PROTO_CSQTT): String? {
         if (protocol.equals(PROTO_CSQTT_219, ignoreCase = true)) return CSQTT_219_RELEASE
@@ -173,7 +177,7 @@ class CoreManager(private val context: Context) {
         val url = String.format(CSQTT_URL_TEMPLATE, CSQTT_219_RELEASE, remoteName)
         Log.i(TAG, "[CORE] downloading CSQTT 2.1.9 pinned release $url")
         return downloadFrom(url, File(coreDir, localName)).also { ok ->
-            if (ok) try { latestCsqtt.writeText(CSQTT_219_RELEASE) } catch (_: Exception) {}
+            if (ok) try { latestCsqtt219.writeText(CSQTT_219_RELEASE) } catch (_: Exception) {}
         }
     }
 
