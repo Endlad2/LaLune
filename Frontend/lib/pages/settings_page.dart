@@ -18,6 +18,7 @@ import '../models/router_info.dart';
 import '../models/settings.dart';
 import '../models/vk_token_state.dart';
 import '../state/configs_notifier.dart';
+import '../state/providers.dart';
 import '../state/router_notifier.dart';
 import '../state/settings_notifier.dart';
 import '../state/vk_notifier.dart';
@@ -511,8 +512,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         Text('Настройка общая для CSQTT и PaperFlux. Можно указывать IPv4, IPv6 и CIDR — по одному на строку.',
             style: TextStyle(fontSize: 11.5, height: 1.45, color: Colors.white.withOpacity(0.55))),
         const SizedBox(height: 10),
-        _rowDropdown('Режим IP', _ipRoutingMode, const ['blacklist', 'whitelist'], (v) {
-          setState(() => _ipRoutingMode = v);
+        _rowDropdown('Режим IP', _ipRoutingMode == 'whitelist' ? 'Белый список' : 'Чёрный список', const ['Чёрный список', 'Белый список'], (v) {
+          setState(() => _ipRoutingMode = v == 'Белый список' ? 'whitelist' : 'blacklist');
           _markDirty();
         }),
         Padding(
@@ -528,7 +529,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               hintText: '192.168.1.10\n10.0.0.0/8\n2001:db8::/32',
               helperText: _ipRoutingMode == 'whitelist'
                   ? 'Белый список: только эти IP идут через VPN.'
-                  : 'Чёрный список: эти IP должны идти напрямую, остальные — через VPN.',
+                  : 'Чёрный список: эти IP должны идти напрямую, остальные — через VPN. Исключение IP поддерживается на Android 13+.',
               helperMaxLines: 3,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             ),
@@ -545,8 +546,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           Text('Выберите приложения по установленному пакету. Изменения применятся при следующем подключении VPN.',
               style: TextStyle(fontSize: 11.5, height: 1.45, color: Colors.white.withOpacity(0.55))),
           const SizedBox(height: 8),
-          _rowDropdown('Режим приложений', _androidAppRoutingMode, const ['blacklist', 'whitelist'], (v) {
-            setState(() => _androidAppRoutingMode = v);
+          _rowDropdown('Режим приложений', _androidAppRoutingMode == 'whitelist' ? 'Белый список' : 'Чёрный список', const ['Чёрный список', 'Белый список'], (v) {
+            setState(() => _androidAppRoutingMode = v == 'Белый список' ? 'whitelist' : 'blacklist');
             _markDirty();
           }),
           const SizedBox(height: 8),
