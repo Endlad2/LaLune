@@ -51,6 +51,7 @@ public final class Backend {
     }
 
     private var settingsURL: URL { appDir.appendingPathComponent("settings.json") }
+    private var deviceIdURL: URL { appDir.appendingPathComponent("device_id.json") }
     private var tokenURL: URL { appDir.appendingPathComponent("token.json") }
     private var logsURL: URL { appDir.appendingPathComponent("logs.log") }
     private var configsURL: URL { appDir.appendingPathComponent("configs.json") }
@@ -433,6 +434,7 @@ public final class Backend {
 
     private func saveSettings(_ s: [String: Any]) {
         var copy = s
+        copy["deviceId"] = getDeviceId()
         if let w = copy["workers"] as? Int {
             copy["workers"] = min(max(w, MIN_WORKERS), MAX_WORKERS)
         }
@@ -462,20 +464,43 @@ public final class Backend {
         return (200, json(["ok": true]))
     }
 
+    /// Stable UUIDv4 persisted separately from editable settings. Read settings
+    /// directly only for one-time migration to avoid defaultSettings recursion.
     private func getDeviceId() -> String {
-        var s = loadSettings()
-        var id = s["deviceId"] as? String ?? ""
-        if id.isEmpty {
-            id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            s["deviceId"] = id
-            saveSettings(s)
+        func canonicalUuid(_ raw: String?) -> String? {
+            guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let uuid = UUID(uuidString: raw) else { return nil }
+            return uuid.uuidString.lowercased()
+        }
+
+        let fromFile: String? = {
+            guard let data = try? Data(contentsOf: deviceIdURL),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return canonicalUuid(object["deviceId"] as? String)
+        }()
+        let legacyId: String? = {
+            guard let data = try? Data(contentsOf: settingsURL),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return canonicalUuid(object["deviceId"] as? String)
+        }()
+        let id = fromFile ?? legacyId ?? UUID().uuidString.lowercased()
+        let payload = ["deviceId": id]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
+            try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+            try? data.write(to: deviceIdURL, options: .atomic)
         }
         return id
     }
 
     private func updateDeviceId(_ new: String) {
+        let canonical = UUID(uuidString: new)?.uuidString.lowercased() ?? UUID().uuidString.lowercased()
+        if let data = try? JSONSerialization.data(withJSONObject: ["deviceId": canonical], options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: deviceIdURL, options: .atomic)
+        }
         var s = loadSettings()
-        s["deviceId"] = new
+        s["deviceId"] = canonical
         saveSettings(s)
     }
 
