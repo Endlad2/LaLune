@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
 // Protocol registry: CSQTT и PaperFlux.
-// deviceId удалён — новый CSQTT его не использует.
+// Device ID передаётся только ядру CSQTT 2.1.9.
 
 use serde::{Deserialize, Serialize};
 
