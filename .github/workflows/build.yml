@@ -540,7 +540,7 @@ jobs:
             release/assets/LaLune-Android.apk
             release/assets/LaLuneTokenFetcher_Windows.zip
             release/assets/LaLuneTokenFetcher_Linux.zip
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
