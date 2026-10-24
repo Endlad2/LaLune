@@ -278,6 +278,15 @@ jobs:
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libclient-android-x86_64.so \
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-x86_64.so
+
+          # CSQTT 2.1.9: pinned release, kept under distinct names so it
+          # coexists with the current core in the same APK.
+          curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a-219.so \
+            https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-arm64-v8a.so
+          curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/armeabi-v7a/libclient-android-armeabi-v7a-219.so \
+            https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-armeabi-v7a.so
+          curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libclient-android-x86_64-219.so \
+            https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-x86_64.so
       - name: Download PaperFlux cores (jniLibs)
         run: |
           TMP_PF=$(mktemp -d)
