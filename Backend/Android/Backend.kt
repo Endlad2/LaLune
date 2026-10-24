@@ -69,6 +69,7 @@ class Backend(private val context: Context) {
     private val appDir = File(context.filesDir, "la-lune").apply { mkdirs() }
     private val configsJson = File(appDir, "configs.json")
     private val settingsFile = File(appDir, "settings.json")
+    private val deviceIdFile = File(appDir, "device_id.json")
     private val logsFile = File(appDir, "logs.log")
     private val tokenFile = File(appDir, "token.json")
     private val selectedConfigFile = File(appDir, "selected_config.json")
@@ -341,6 +342,14 @@ class Backend(private val context: Context) {
                         .sortedBy { it.optString("label").lowercase(Locale.ROOT) }
                         .forEach { apps.put(it) }
                     200 to apps.toString()
+                }
+                path == "/device/id" && method == "GET" -> 200 to JSONObject().put("deviceId", ensureDeviceId()).toString()
+                path == "/device/id/regenerate" && method == "POST" -> {
+                    val id = java.util.UUID.randomUUID().toString()
+                    writeDeviceId(id)
+                    val settings = loadSettings().put("deviceId", id)
+                    saveSettings(settings)
+                    200 to JSONObject().put("deviceId", id).toString()
                 }
                 path == "/settings" && method == "GET" -> 200 to loadSettings().toString()
                 path == "/settings" && method == "PUT" -> replaceSettings(body)
@@ -751,16 +760,52 @@ class Backend(private val context: Context) {
     }
 
     private fun ensureDefaults() {
+        val deviceId = ensureDeviceId()
         if (!settingsFile.exists()) saveSettings(defaultSettings())
+        else {
+            val settings = try { JSONObject(settingsFile.readText()) } catch (_: Exception) { defaultSettings() }
+            settings.put("deviceId", deviceId)
+            saveSettings(settings)
+        }
         if (!configsJson.exists()) configsJson.writeText("[]")
         if (!logsFile.exists()) logsFile.writeText("")
+    }
+
+    /** Stable UUIDv4 in app-private files; migrates a valid legacy settings ID. */
+    private fun ensureDeviceId(): String {
+        fun canonicalUuid(raw: String?): String? = try {
+            if (raw.isNullOrBlank()) null else java.util.UUID.fromString(raw.trim()).toString()
+        } catch (_: Exception) { null }
+
+        val fromFile = try {
+            if (deviceIdFile.exists()) canonicalUuid(JSONObject(deviceIdFile.readText()).optString("deviceId"))
+            else null
+        } catch (_: Exception) { null }
+        val fromSettings = try {
+            if (settingsFile.exists()) canonicalUuid(JSONObject(settingsFile.readText()).optString("deviceId"))
+            else null
+        } catch (_: Exception) { null }
+        val id = fromFile ?: fromSettings ?: java.util.UUID.randomUUID().toString()
+        writeDeviceId(id)
+        return id
+    }
+
+    private fun writeDeviceId(id: String) {
+        deviceIdFile.parentFile?.mkdirs()
+        val tmp = File(deviceIdFile.parentFile, deviceIdFile.name + ".tmp")
+        tmp.writeText(JSONObject().put("deviceId", id).toString(2))
+        if (deviceIdFile.exists()) deviceIdFile.delete()
+        if (!tmp.renameTo(deviceIdFile)) {
+            tmp.copyTo(deviceIdFile, overwrite = true)
+            tmp.delete()
+        }
     }
 
     private fun defaultSettings(): JSONObject = JSONObject().apply {
         put("peer", "")
         put("vkHashes", "")
         put("vkJsToken", "")
-        put("deviceId", "unknown")
+        put("deviceId", ensureDeviceId())
         put("workers", DEFAULT_WORKERS)
         put("autoApiWorkers", DEFAULT_AUTO_API_WORKERS)
         put("password", "")
@@ -803,8 +848,10 @@ class Backend(private val context: Context) {
     }
 
     private fun loadSettings(): JSONObject = try {
-        if (settingsFile.exists()) JSONObject(settingsFile.readText()) else defaultSettings()
-    } catch (_: Exception) { defaultSettings() }
+        val settings = if (settingsFile.exists()) JSONObject(settingsFile.readText()) else defaultSettings()
+        settings.put("deviceId", ensureDeviceId())
+        settings
+    } catch (_: Exception) { defaultSettings().put("deviceId", ensureDeviceId()) }
 
     private fun saveSettings(s: JSONObject) {
         val w = s.optInt("workers", DEFAULT_WORKERS).coerceIn(MIN_WORKERS, MAX_WORKERS)
@@ -812,6 +859,7 @@ class Backend(private val context: Context) {
             .coerceIn(MIN_AUTO_API_WORKERS, MAX_AUTO_API_WORKERS)
         s.put("workers", w)
         s.put("autoApiWorkers", aw)
+        s.put("deviceId", ensureDeviceId())
         try { settingsFile.writeText(s.toString()) } catch (_: Exception) {}
     }
 
