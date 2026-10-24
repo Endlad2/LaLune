@@ -46,6 +46,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
   SseClient? _sse;
   StreamSubscription<String>? _baseUrlSub;
   ProviderSubscription<bool>? _showCoreLogsSub;
+  int _refreshGeneration = 0;
 
   LogsNotifier(this._ref) : super(const LogsState()) {
     _refresh();
@@ -93,7 +94,9 @@ class LogsNotifier extends StateNotifier<LogsState> {
         final line = ev.data['line'] as String? ?? '';
         if (line.isEmpty) return;
         // Читаем каждый раз — не кэшируем.
-        if (!_showCoreLogs && line.startsWith('[CORE] ')) return;
+        if (!_showCoreLogs && _isCoreLog(line)) return;
+        // Avoid duplicate SSE entries if the same line is already in the API tail.
+        if (state.lines.isNotEmpty && state.lines.last == line) return;
         final next = [...state.lines, line];
         if (next.length > 500) next.removeRange(0, next.length - 500);
         state = state.copyWith(lines: next);
@@ -102,18 +105,34 @@ class LogsNotifier extends StateNotifier<LogsState> {
     _sse!.connect();
   }
 
+  bool _isCoreLog(String line) {
+    // Logs can have several prefixes, e.g. [LUA] [CORE] ... or [LUA] [SMART-TUNNEL] ...
+    final tags = RegExp(r'\\[([^\\]]+)\\]')
+        .allMatches(line)
+        .map((m) => m.group(1)!.toUpperCase());
+    return tags.any((tag) =>
+        tag == 'CORE' ||
+        tag == 'CSQTT' ||
+        tag == 'PAPERFLUX' ||
+        tag == 'LUA' ||
+        tag == 'SMART-TUNNEL' ||
+        tag == 'WINTUN');
+  }
+
   Future<void> _refresh() async {
+    final generation = ++_refreshGeneration;
     final api = _ref.read(apiClientProvider);
-    // Читаем актуальное значение прямо здесь.
+    // Read the current toggle for each request. Ignore older responses that
+    // finish after a newer request (common when the toggle changes mid-flight).
     final source = _showCoreLogs ? 'all' : 'backend';
     try {
       final list = await api.getJsonList('/logs/tail', query: {
         'lines': '300',
         'source': source,
       });
-      state = state.copyWith(
-        lines: list.map((e) => e.toString()).toList(),
-      );
+      if (generation != _refreshGeneration) return;
+      final fetched = list.map((e) => e.toString()).toList();
+      state = state.copyWith(lines: fetched);
     } catch (_) {}
   }
 
