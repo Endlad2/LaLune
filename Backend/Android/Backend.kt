@@ -628,14 +628,20 @@ class Backend(private val context: Context) {
             upper == PROTO_CSQTT_251.uppercase()
         ) {
             JSONObject().apply {
-                put("protocol", PROTO_CSQTT)
-                put("keys", JSONArray(listOf(
+                put("protocol", when {
+                    upper == PROTO_CSQTT_219.uppercase() -> PROTO_CSQTT_219
+                    upper == PROTO_CSQTT_251.uppercase() -> PROTO_CSQTT_251
+                    else -> PROTO_CSQTT
+                })
+                val keys = JSONArray(listOf(
                     "peer", "vkHashes", "password", "workers", "autoApiWorkers",
                     "authMode", "obfs", "fingerprint", "clientIds",
                     "captchaMode", "vkAuthMode", "turnTransport",
                     "allowHashRedistribution", "validateVkHashes",
                     "shareVpn", "showCoreLogs"
-                )))
+                ))
+                if (upper == PROTO_CSQTT_219.uppercase()) keys.put("deviceId")
+                put("keys", keys)
                 put("linkPlaceholder",
                     "csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2")
             }
