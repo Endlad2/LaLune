@@ -67,10 +67,10 @@ class CoreManager(private val context: Context) {
         val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
         return when (protocol.uppercase()) {
             PROTO_CSQTT_219.uppercase() -> when {
-                abi.contains("arm64") -> "libclient-android-arm64-v8a-219.so"
-                abi.contains("armeabi-v7a") -> "libclient-android-armeabi-v7a-219.so"
-                abi.contains("arm") -> "libclient-android-armeabi-v7a-219.so"
-                abi.contains("x86_64") -> "libclient-android-x86_64-219.so"
+                abi.contains("arm64") -> "libcsqtt219.so"
+                abi.contains("armeabi-v7a") -> "libcsqtt219.so"
+                abi.contains("arm") -> "libcsqtt219.so"
+                abi.contains("x86_64") -> "libcsqtt219.so"
                 else -> null
             }
             PROTO_CSQTT.uppercase(), PROTO_CSQTT_251.uppercase() -> when {
