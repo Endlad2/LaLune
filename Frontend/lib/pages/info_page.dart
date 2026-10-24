@@ -285,7 +285,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
       child: ElevatedButton(
         onPressed: onTap,
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFFF7E84E),
+          backgroundColor: const Color(0xFFFFB347),
           foregroundColor: Colors.black,
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
