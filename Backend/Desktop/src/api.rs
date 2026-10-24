@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //
-// HTTP API. deviceId удалён. /smarttunnel/* реально дёргают Lua.
+// HTTP API. Device ID хранится отдельно; /smarttunnel/* реально дёргают Lua.
 
 use axum::{
     extract::{Path, Query, State},
