@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, release]
   workflow_dispatch:
+    inputs:
+      stable_version:
+        description: 'Stable release version, e.g. 0.9 (without commit hash)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -428,6 +433,8 @@ jobs:
       - build-token-fetcher
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: release
@@ -446,13 +453,36 @@ jobs:
           find . -name 'LaLuneTokenFetcher_Windows.zip' -exec cp {} ./ \;
           find . -name 'LaLuneTokenFetcher_Linux.zip'   -exec cp {} ./ \;
           ls -la
-      - id: date
-        run: echo "date=$(date +'%y.%m.%d.%H.%M')" >> $GITHUB_OUTPUT
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.stable_version }}"
+            if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+              echo "Stable version must look like 0.9 or 0.9.1, without a commit hash." >&2
+              exit 1
+            fi
+            PRERELEASE=false
+          else
+            STABLE="$(tr -d '\r\n' < STABLE)"
+            if [[ ! "$STABLE" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+              echo "STABLE must contain a version such as 0.9." >&2
+              exit 1
+            fi
+            SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+            VERSION="${STABLE}-${SHORT_SHA}"
+            PRERELEASE=true
+          fi
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $VERSION (prerelease=$PRERELEASE)"
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.date.outputs.date }}
-          name: Release ${{ steps.date.outputs.date }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: LaLune ${{ steps.version.outputs.tag }}
           files: |
             release/LaLune-Windows.zip
             release/Backend-Windows.zip
@@ -465,7 +495,7 @@ jobs:
             release/LaLuneTokenFetcher_Linux.zip
           fail_on_unmatched_files: false
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.version.outputs.prerelease }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
