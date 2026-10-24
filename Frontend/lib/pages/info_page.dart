@@ -18,12 +18,9 @@ class InfoPage extends ConsumerStatefulWidget {
 }
 
 class _InfoPageState extends ConsumerState<InfoPage> {
-  static const String _laluneVersion = '0.6.0';
+  static const String _laluneVersion = '0.9';
 
-  CoreInfo _core = CoreInfo.empty;
   UpdateInfo _lalune = UpdateInfo.empty;
-  bool _checkingCore = false;
-  bool _updatingCore = false;
   bool _checkingLaLune = false;
 
   @override
@@ -46,16 +43,6 @@ class _InfoPageState extends ConsumerState<InfoPage> {
     setState(() => _checkingLaLune = true);
     await _refreshAll();
     if (mounted) setState(() => _checkingLaLune = false);
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      behavior: SnackBarBehavior.floating,
-      duration: const Duration(seconds: 3),
-      backgroundColor: Colors.black.withOpacity(0.85),
-    ));
   }
 
   // ============================================================
@@ -160,7 +147,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
                   style: TextStyle(
                       fontSize: 26,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFFF7E84E))),
+                      color: Color(0xFFFFB347))),
               const SizedBox(height: 4),
               Text('Client v$_laluneVersion',
                   style: TextStyle(color: Colors.white.withOpacity(0.5))),
