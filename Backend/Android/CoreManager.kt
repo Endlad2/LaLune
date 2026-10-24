@@ -352,7 +352,7 @@ class CoreManager(private val context: Context) {
         val vkAuthMode = settings.optString("vkAuthMode", "vkcalls")
         val captchaMode = settings.optString("captchaMode", "auto")
         val turnTransport = settings.optString("turnTransport", "udp")
-        val deviceId = settings.optString("deviceId", "").trim()
+        val deviceId = settings.optString("deviceId", "unknown").trim().ifEmpty { "unknown" }
 
         val normalized = hashes.replace(' ', ',').replace('\t', ',')
             .replace('\n', ',').replace('\r', ',')
@@ -379,7 +379,7 @@ class CoreManager(private val context: Context) {
             args.add(clean.joinToString(","))
         }
         if (protocol.equals(PROTO_CSQTT_219, ignoreCase = true) && deviceId.isNotEmpty()) {
-            args.add("-device-id")
+            args.add("--device-id")
             args.add(deviceId)
         }
         return args
