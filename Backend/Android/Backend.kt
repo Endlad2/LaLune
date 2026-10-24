@@ -61,6 +61,8 @@ class Backend(private val context: Context) {
         const val CORE_PREFIX = "[CORE] "
 
         const val PROTO_CSQTT = "CSQTT"
+        const val PROTO_CSQTT_219 = "CSQTT 2.1.9"
+        const val PROTO_CSQTT_251 = "CSQTT 2.5.1"
         const val PROTO_PAPERFLUX = "PaperFlux"
     }
 
