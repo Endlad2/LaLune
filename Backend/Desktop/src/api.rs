@@ -939,7 +939,7 @@ async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .unwrap_or_default(),
         Err(_) => String::new(),
     };
-    let local = "0.6.0";
+    let local = include_str!("../../../STABLE").trim();
     let has_update = !remote_tag.is_empty() && remote_tag != local;
     let _ = &state;
     Json(json!({"hasUpdate": has_update, "remoteTag": remote_tag, "localVersion": local}))
