@@ -204,6 +204,7 @@ public final class Backend {
                 return (200, json(["deviceId": new]))
             case ("GET", "/device/info"):
                 return (200, json(["os": "ios", "arch": "arm64",
+                                   "deviceId": getDeviceId(),
                                    "hostname": UIDevice.current.name,
                                    "cores": ProcessInfo.processInfo.processorCount,
                                    "totalMemMb": Int(ProcessInfo.processInfo.physicalMemory / 1024 / 1024)]))
@@ -468,8 +469,16 @@ public final class Backend {
     /// directly only for one-time migration to avoid defaultSettings recursion.
     private func getDeviceId() -> String {
         func canonicalUuid(_ raw: String?) -> String? {
-            guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let uuid = UUID(uuidString: raw) else { return nil }
+            guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+            let expanded: String
+            if raw.range(of: "^[0-9a-fA-F]{32}$", options: .regularExpression) != nil {
+                let chars = Array(raw)
+                expanded = String(chars[0..<8]) + "-" + String(chars[8..<12]) + "-" +
+                    String(chars[12..<16]) + "-" + String(chars[16..<20]) + "-" + String(chars[20..<32])
+            } else {
+                expanded = raw
+            }
+            guard let uuid = UUID(uuidString: expanded) else { return nil }
             return uuid.uuidString.lowercased()
         }
 
