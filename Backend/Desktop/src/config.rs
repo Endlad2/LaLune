@@ -258,7 +258,21 @@ fn short_link(link: &str) -> String {
 }
 
 pub fn parse_link(link: &str) -> Result<ConfigItem> {
+    parse_link_for_protocol(link, "CSQTT")
+}
+
+/// CSQTT 2.1.9 uses a plain, unencrypted link format; do not send it through csqtt-link.
+pub fn parse_link_for_protocol(link: &str, protocol: &str) -> Result<ConfigItem> {
     let link = link.trim();
+    if protocol.trim().eq_ignore_ascii_case("CSQTT 2.1.9")
+        && link.to_ascii_lowercase().starts_with("csqtt://")
+    {
+        let mut config = parse_csqtt_native(link)?;
+        config.protocol = "CSQTT 2.1.9".into();
+        config.raw_link = link.to_string();
+        log::info!("[PARSE][CSQTT 2.1.9] parsed plain link without csqtt-link");
+        return Ok(config);
+    }
     let lower = link.to_ascii_lowercase();
 
     log::info!("[PARSE] scheme-detect link={}", short_link(link));
