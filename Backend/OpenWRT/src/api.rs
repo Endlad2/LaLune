@@ -330,6 +330,7 @@ async fn settings_get_key(State(state): State<Arc<AppState>>, Path(key): Path<St
 async fn settings_put_key(State(state): State<Arc<AppState>>, Path(key): Path<String>, Json(body): Json<Value>) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.set_field(&key, body) { return err(400, e.to_string()); }
+    s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
     let _ = state.save_settings();
     Json(json!({"ok": true})).into_response()
@@ -356,12 +357,13 @@ async fn device_id_regenerate(State(state): State<Arc<AppState>>) -> impl IntoRe
     Json(json!({ "deviceId": new_id })).into_response()
 }
 
-async fn device_info() -> impl IntoResponse {
+async fn device_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let hostname = hostname::get().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let cores = num_cpus::get();
     Json(json!({
         "os": "linux", "arch": "aarch64", "platform": "openwrt",
         "hostname": hostname, "cores": cores, "totalMemMb": 0,
+        "deviceId": state.settings.read().device_id,
     }))
 }
 
