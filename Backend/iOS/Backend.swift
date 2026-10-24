@@ -199,7 +199,7 @@ public final class Backend {
             case ("GET", "/device/id"):
                 return (200, json(["deviceId": getDeviceId()]))
             case ("POST", "/device/id/regenerate"):
-                let new = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                let new = UUID().uuidString.lowercased()
                 updateDeviceId(new)
                 return (200, json(["deviceId": new]))
             case ("GET", "/device/info"):
