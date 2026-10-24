@@ -376,6 +376,7 @@ async fn settings_patch(
 ) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.merge_from_json(body) { return err(400, e.to_string()); }
+    s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
     if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
     Json(json!({"ok": true})).into_response()
@@ -408,6 +409,7 @@ async fn settings_put_key(
 ) -> impl IntoResponse {
     let mut s = state.settings.read().clone();
     if let Err(e) = s.set_field(&key, body) { return err(400, e.to_string()); }
+    s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
     let _ = state.save_settings();
     Json(json!({"ok": true})).into_response()
@@ -434,7 +436,7 @@ async fn device_id_regenerate(State(state): State<Arc<AppState>>) -> impl IntoRe
     Json(json!({ "deviceId": new_id })).into_response()
 }
 
-async fn device_info() -> impl IntoResponse {
+async fn device_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let hostname = hostname::get()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -445,6 +447,7 @@ async fn device_info() -> impl IntoResponse {
         "hostname": hostname,
         "cores": cores,
         "totalMemMb": 0,
+        "deviceId": state.settings.read().device_id,
     }))
 }
 
