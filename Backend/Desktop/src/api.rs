@@ -772,8 +772,8 @@ async fn core_download_async_p(
                     };
                     match download {
                         Ok(_) => {
-                            let saved_version = if use_csqtt_219 { core_manager::CSQTT_219_RELEASE } else { &version };
-                            let _ = tokio::fs::write(&latest_file, saved_version).await;
+                            let saved_version = version;
+                            let _ = tokio::fs::write(&latest_file, &saved_version).await;
                             state2.events.emit(Event::progress("core_download", 100));
                             state2.log(format!("[CORE] CSQTT updated to {}", saved_version));
                         }
