@@ -193,6 +193,17 @@ class LaLuneVpnService : VpnService() {
         }
     }
 
+    private fun parseIpPrefix(entry: String): Pair<InetAddress, Int> {
+        val value = normalizeIpPrefix(entry)
+        val separator = value.lastIndexOf('/')
+        require(separator > 0 && separator < value.lastIndex) { "invalid IP/CIDR: $entry" }
+        val address = InetAddress.getByName(value.substring(0, separator))
+        val prefixLength = value.substring(separator + 1).toInt()
+        val maxPrefixLength = if (address.address.size == 4) 32 else 128
+        require(prefixLength in 0..maxPrefixLength) { "invalid prefix length: $entry" }
+        return address to prefixLength
+    }
+
     private fun normalizeIpPrefix(entry: String): String {
         val value = entry.trim()
         require(value.isNotEmpty()) { "empty IP" }
@@ -228,9 +239,8 @@ class LaLuneVpnService : VpnService() {
                 // White list: only explicitly listed destination networks enter the VPN.
                 configuredIps.forEach { entry ->
                     try {
-                        val prefix = normalizeIpPrefix(entry)
-                        val parsed = IpPrefix(prefix)
-                        builder.addRoute(parsed.address, parsed.prefixLength)
+                        val (address, prefixLength) = parseIpPrefix(entry)
+                        builder.addRoute(address, prefixLength)
                     } catch (e: Exception) {
                         Log.w(TAG, "Invalid whitelist IP/CIDR '$entry': ${e.message}")
                     }
@@ -243,7 +253,7 @@ class LaLuneVpnService : VpnService() {
                 configuredIps.forEach { entry ->
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            builder.excludeRoute(IpPrefix(normalizeIpPrefix(entry)))
+                            builder.excludeRoute(parseIpPrefix(entry).let { (address, prefixLength) -> IpPrefix(address, prefixLength) })
                         } else {
                             Log.w(TAG, "IP blacklist exclusions require Android 13+; cannot bypass '$entry' on this Android version")
                         }
