@@ -88,11 +88,14 @@ pub fn ensure_device_id(app_dir: &std::path::Path, preferred: &str) -> Result<St
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|json| json.get("deviceId").and_then(Value::as_str).map(str::to_owned));
 
-    let candidate = existing.as_deref().filter(|s| Uuid::parse_str(s).is_ok())
-        .or_else(|| preferred.trim().is_empty().then_some("").filter(|_| false))
-        .or_else(|| Uuid::parse_str(preferred).ok().map(|_| preferred))
-        .map(|s| Uuid::parse_str(s).expect("validated UUID").to_string())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let existing_uuid = existing.as_deref()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .filter(|id| id.get_version_num() == 4);
+    let preferred_uuid = Uuid::parse_str(preferred).ok()
+        .filter(|id| id.get_version_num() == 4);
+    let candidate = existing_uuid.or(preferred_uuid)
+        .unwrap_or_else(Uuid::new_v4)
+        .to_string();
 
     let payload = serde_json::json!({ "deviceId": candidate });
     std::fs::write(&path, serde_json::to_string_pretty(&payload)?)?;
