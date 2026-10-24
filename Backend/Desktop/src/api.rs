@@ -340,9 +340,14 @@ async fn settings_for_proto(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
+    let mut keys = protocol::settings_keys_for(kind);
+    let is_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
+    if is_csqtt_219 {
+        keys.push("deviceId");
+    }
     Json(json!({
-        "protocol": kind.id(),
-        "keys": protocol::settings_keys_for(kind),
+        "protocol": if is_csqtt_219 { "CSQTT 2.1.9" } else if proto.trim().eq_ignore_ascii_case("CSQTT 2.5.1") { "CSQTT 2.5.1" } else { kind.id() },
+        "keys": keys,
         "linkPlaceholder": protocol::link_placeholder(kind),
     }))
 }
