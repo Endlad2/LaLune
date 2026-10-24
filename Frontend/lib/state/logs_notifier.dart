@@ -107,7 +107,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
 
   bool _isCoreLog(String line) {
     // Logs can have several prefixes, e.g. [LUA] [CORE] ... or [LUA] [SMART-TUNNEL] ...
-    final tags = RegExp(r'\\[([^\\]]+)\\]')
+    final tags = RegExp(r'\[([^\]]+)\]')
         .allMatches(line)
         .map((m) => m.group(1)!.toUpperCase());
     return tags.any((tag) =>
