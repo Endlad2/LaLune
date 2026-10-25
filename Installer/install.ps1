@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    LaLune installer для Windows (CSQTT + PaperFlux).
+    LaLune installer для Windows (CSQTT + CSQTTR + PaperFlux).
 #>
 
 [CmdletBinding()]
