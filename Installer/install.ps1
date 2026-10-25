@@ -197,11 +197,17 @@ function Main {
     $wintunZip       = Join-Path $TEMP_DIR 'wintun.zip'
 
     if ($ci) {
+        if (-not (Test-Path -LiteralPath $csqttrExe)) {
+            Download-File -Url $URL_CSQTTR_EXE -Dest $csqttrExe
+        }
+        if (-not (Test-Path -LiteralPath $csqttrLatest)) {
+            Download-File -Url $URL_CSQTTR_LATEST -Dest $csqttrLatest
+        }
         if (-not (Test-Path -LiteralPath $csqtt219Latest)) {
             Set-Content -LiteralPath $csqtt219Latest -Value '2026.09.17.17.36' -NoNewline -Encoding ascii
         }
         $missing = @()
-        foreach ($f in @($laLuneZip, $backendZip, $csqttExe, $csqtt219Exe, $csqtt219Latest, $csqttrExe, $csqttrLatest, $pfLatest, $iconFile, $wintunZip)) {
+        foreach ($f in @($laLuneZip, $backendZip, $csqttExe, $csqtt219Exe, $csqtt219Latest, $csqttrExe, $csqttrLatest, $paperfluxExe, $csqttLatest, $pfLatest, $iconFile, $wintunZip)) {
             if (-not (Test-Path -LiteralPath $f)) { $missing += $f }
         }
         if ($missing.Count -gt 0) {
