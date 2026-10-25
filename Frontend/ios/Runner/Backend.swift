@@ -644,6 +644,7 @@ public final class Backend {
 
     private func vpnConnect(body: String) -> (Int, String) {
         let settings = loadSettings()
+        var proto = settings["protocol"] as? String ?? "CSQTT"
         var peer = settings["peer"] as? String ?? ""
         var password = settings["password"] as? String ?? ""
         var hashes = settings["vkHashes"] as? String ?? ""
@@ -652,6 +653,7 @@ public final class Backend {
            let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let configId = b["configId"] as? Int64,
            let c = findConfig(id: configId) {
+            proto = c["protocol"] as? String ?? proto
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
             hashes = c["hashes"] as? String ?? hashes
@@ -666,7 +668,8 @@ public final class Backend {
         if peer.isEmpty { return (400, err("no config selected")) }
 
         CoreManager.shared.writeSharedSettings(
-            from: settings, peer: peer, password: password, hashes: hashes
+            from: settings, protocol: proto, peer: peer,
+            password: password, hashes: hashes
         )
 
         if CoreManager.shared.corePath() == nil {
