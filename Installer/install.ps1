@@ -250,6 +250,9 @@ function Main {
     Copy-Item -LiteralPath $csqttExe -Destination (Join-Path $APPDATA_DIR 'csqtt-core.exe') -Force
     Copy-Item -LiteralPath $csqtt219Exe -Destination (Join-Path $APPDATA_DIR 'csqtt-219.exe') -Force
 
+    # CSQTTR core
+    Copy-Item -LiteralPath $csqttrExe -Destination (Join-Path $APPDATA_DIR 'csqttr-core.exe') -Force
+
     # PaperFlux core
     if (Test-Path -LiteralPath $paperfluxExe) {
         Write-Step 'Кладу PaperFlux core'
@@ -264,6 +267,7 @@ function Main {
         Copy-Item -LiteralPath $csqttLatest -Destination (Join-Path $APPDATA_DIR 'LATEST.Csqtt') -Force
     }
     Copy-Item -LiteralPath $csqtt219Latest -Destination (Join-Path $APPDATA_DIR 'LATEST.CSQTT-2.1.9') -Force
+    Copy-Item -LiteralPath $csqttrLatest -Destination (Join-Path $APPDATA_DIR 'LATEST.CSQTTR') -Force
     Copy-Item -LiteralPath $pfLatest -Destination (Join-Path $APPDATA_DIR 'LATEST.PaperFlux') -Force
 
     # wintun.dll
