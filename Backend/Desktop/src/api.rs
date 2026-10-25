@@ -764,9 +764,10 @@ async fn core_check_p(
     State(state): State<Arc<AppState>>,
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
+    let use_csqtt_219 = proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9");
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-    let remote = if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") {
+    let remote = if use_csqtt_219 {
         core_manager::CSQTT_219_RELEASE.to_string()
     } else {
         match kind {
@@ -888,7 +889,15 @@ async fn core_download_sync_p(
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
     let dest = crate::state::core_path_for(&state.app_dir, &proto);
-    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
+    let latest_file = state.app_dir.join(if use_csqtt_219 {
+        "LATEST.CSQTT-2.1.9"
+    } else {
+        match kind {
+            ProtocolKind::Csqtt => "LATEST.Csqtt",
+            ProtocolKind::Csqttr => "LATEST.CSQTTR",
+            ProtocolKind::PaperFlux => "LATEST.PaperFlux",
+        }
+    });
 
     let result = match kind {
         ProtocolKind::Csqtt => {
