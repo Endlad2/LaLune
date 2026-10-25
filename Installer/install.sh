@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
-# LaLune installer для Linux (CSQTT + PaperFlux).
+# LaLune installer для Linux (CSQTT + CSQTTR + PaperFlux).
 #
 # Использование:
 #   ./install.sh           — скачивает всё из интернета
@@ -122,7 +122,7 @@ main() {
     echo
     printf "${c_green}========================================${c_reset}\n"
     printf "${c_green}     LaLune Installer (Linux)          ${c_reset}\n"
-    printf "${c_green}     CSQTT + PaperFlux                 ${c_reset}\n"
+    printf "${c_green}     CSQTT + CSQTTR + PaperFlux       ${c_reset}\n"
     printf "${c_green}========================================${c_reset}\n"
     echo
 
