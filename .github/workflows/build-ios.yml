@@ -20,6 +20,7 @@ env:
   FLUTTER_VERSION: "3.29.0"
   XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
+  CSQTTR_IOS_CORE_URL: https://github.com/Endlad2/csqttr-core/releases/latest/download/libcsqttr_ios_core.a
   PAPERFLUX_IOS_ZIP_URL: https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-ios.zip
 
 jobs:
@@ -101,6 +102,13 @@ jobs:
           cd Frontend/ios/Core
           curl -fL --retry 3 --retry-delay 2 -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
           ls -la libcsqtt_ios_core.a
+
+      - name: Download CSQTTR iOS core
+        run: |
+          set -e
+          mkdir -p Frontend/ios/Core
+          curl -fL --retry 3 --retry-delay 2 -o Frontend/ios/Core/libcsqttr_ios_core.a "$CSQTTR_IOS_CORE_URL"
+          ls -la Frontend/ios/Core/libcsqttr_ios_core.a
 
       - name: Download PaperFlux iOS core
         run: |
