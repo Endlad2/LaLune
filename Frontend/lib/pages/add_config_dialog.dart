@@ -13,7 +13,7 @@ class AddConfigResult {
   const AddConfigResult(this.protocol, this.link);
 }
 
-const _protocols = <String>['CSQTT 2.1.9', 'CSQTT 2.5.1', 'PaperFlux'];
+const _protocols = <String>['CSQTT 2.1.9', 'CSQTT 2.5.1', 'CSQTTR', 'PaperFlux'];
 
 String _placeholderFor(String protocol) {
   switch (protocol) {
@@ -22,6 +22,7 @@ String _placeholderFor(String protocol) {
           '&transport=...&doc=...&token=...&volga=...';
     case 'CSQTT 2.1.9':
     case 'CSQTT 2.5.1':
+    case 'CSQTTR':
     case 'CSQTT':
     default:
       return 'csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2';
