@@ -137,8 +137,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (cfg != null && !cfg.isPaperFlux) {
       _peerCtl.text = cfg.peer;
       _passwordCtl.text = cfg.password;
-      // Показываем хеши из конфига, если они есть; иначе — из settings.
-      _vkHashesCtl.text = cfg.hashes.isNotEmpty ? cfg.hashes : s.vkHashes;
+      // Хеши в настройках — самостоятельное значение. Не перезаписываем
+      // сохранённый пользовательский ввод хешами выбранного конфига.
+      _vkHashesCtl.text = s.vkHashes.isNotEmpty ? s.vkHashes : cfg.hashes;
     } else {
       _peerCtl.text = s.peer;
       _passwordCtl.text = s.password;
