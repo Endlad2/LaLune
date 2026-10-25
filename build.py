@@ -64,6 +64,30 @@ OUTPUT          = ROOT / "Output"
 
 IS_WINDOWS_HOST = platform.system() == "Windows"
 
+
+def resolve_release_version() -> str:
+    """Resolve the same version string used for the GitHub Release tag."""
+    configured = os.environ.get("LALUNE_VERSION", "").strip()
+    if configured:
+        return configured
+    manual = os.environ.get("INPUT_STABLE_VERSION", "").strip()
+    if manual:
+        return manual
+    stable_file = ROOT / "STABLE"
+    stable = stable_file.read_text(encoding="utf-8").strip() if stable_file.exists() else "0.0"
+    try:
+        short_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short=7", "HEAD"], cwd=str(ROOT), text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        short_sha = os.environ.get("GITHUB_SHA", "unknown")[:7]
+    return f"{stable}-{short_sha}"
+
+
+# Propagate to build.rs so the backend API/UI report the release tag.
+os.environ["LALUNE_VERSION"] = resolve_release_version()
+
 # ────────────────────────────────────────────────────────────────
 #  Логирование
 # ────────────────────────────────────────────────────────────────
