@@ -547,10 +547,24 @@ async fn vpn_connect(
         }
     }
 
-    // Start a fresh log session only when a valid new connection is requested.
-    state.logs.lock().clear();
-    if let Err(e) = tokio::fs::write(&state.logs_path, "").await {
-        state.log(format!("[LOGS] failed to reset kernel log file: {}", e));
+    // Keep logs when reconnecting the same config. A different config starts a new session.
+    let reset_log_session = {
+        let mut last_config_id = state.logs_config_id.lock();
+        if *last_config_id == Some(config.id) {
+            false
+        } else {
+            *last_config_id = Some(config.id);
+            true
+        }
+    };
+    if reset_log_session {
+        state.logs.lock().clear();
+        if let Err(e) = tokio::fs::write(&state.logs_path, "").await {
+            state.log(format!("[LOGS] failed to reset kernel log file: {}", e));
+        }
+        if let Err(e) = tokio::fs::write(&state.logs_config_id_path, config.id.to_string()).await {
+            state.log(format!("[LOGS] failed to save active config id: {}", e));
+        }
     }
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
