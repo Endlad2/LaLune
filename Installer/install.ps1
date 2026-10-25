@@ -189,6 +189,8 @@ function Main {
     $csqtt219Exe     = Join-Path $TEMP_DIR 'csqtt-219.exe'
     $csqtt219Latest  = Join-Path $TEMP_DIR 'LATEST.CSQTT-2.1.9'
     $paperfluxExe    = Join-Path $TEMP_DIR 'paperflux-windows-amd64.exe'
+    $csqttrExe       = Join-Path $TEMP_DIR 'csqttr-windows-x86_64.exe'
+    $csqttrLatest    = Join-Path $TEMP_DIR 'LATEST.CSQTTR'
     $csqttLatest     = Join-Path $TEMP_DIR 'LATEST.Csqtt'
     $pfLatest        = Join-Path $TEMP_DIR 'LATEST.PaperFlux'
     $iconFile        = Join-Path $TEMP_DIR 'icon.ico'
@@ -199,7 +201,7 @@ function Main {
             Set-Content -LiteralPath $csqtt219Latest -Value '2026.09.17.17.36' -NoNewline -Encoding ascii
         }
         $missing = @()
-        foreach ($f in @($laLuneZip, $backendZip, $csqttExe, $csqtt219Exe, $csqtt219Latest, $pfLatest, $iconFile, $wintunZip)) {
+        foreach ($f in @($laLuneZip, $backendZip, $csqttExe, $csqtt219Exe, $csqtt219Latest, $csqttrExe, $csqttrLatest, $pfLatest, $iconFile, $wintunZip)) {
             if (-not (Test-Path -LiteralPath $f)) { $missing += $f }
         }
         if ($missing.Count -gt 0) {
