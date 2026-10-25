@@ -77,7 +77,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         log("protocol=\(protocolName) peer=\(peer) workers=\(workers)")
 
-        csqtt_set_log_callback(logCallback)
+        let setLogCallback = activeProtocol.uppercased().hasPrefix("CSQTTR") ? csqttr_set_log_callback : csqtt_set_log_callback
+        setLogCallback(logCallback)
 
         let tunIP = "10.66.67.12"
         let dnsServers = ["8.8.8.8", "8.8.4.4"]
