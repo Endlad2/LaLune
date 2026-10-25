@@ -12,6 +12,8 @@ pub static LALUNE_ZIP:    &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LaLu
 pub static BACKEND_ZIP:   &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/Backend-Windows.zip"));
 pub static CSQTT_EXE:     &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/client-windows-x86_64.exe"));
 pub static CSQTT_219_EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csqtt-219.exe"));
+pub static CSQTTR_EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csqttr-windows-x86_64.exe"));
+pub static LATEST_CSQTTR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LATEST.CSQTTR"));
 pub static PAPERFLUX_EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/paperflux-windows-amd64.exe"));
 pub static LATEST_CSQTT:  &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LATEST.Csqtt"));
 pub static LATEST_CSQTT_219: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LATEST.CSQTT-2.1.9"));
@@ -160,12 +162,17 @@ where F: FnMut(&str),
     write_file(&appdata.join("csqtt-219.exe"), CSQTT_219_EXE)?;
     write_file(&appdata.join("LATEST.CSQTT-2.1.9"), LATEST_CSQTT_219)?;
 
+    // CSQTTR core
+    log("Кладу CSQTTR core");
+    write_file(&appdata.join("csqttr-core.exe"), CSQTTR_EXE)?;
+    write_file(&appdata.join("LATEST.CSQTTR"), LATEST_CSQTTR)?;
+
     // PaperFlux core
     log("Кладу PaperFlux core");
     write_file(&appdata.join("paperflux-core.exe"), PAPERFLUX_EXE)?;
 
     // LATEST
-    log("Кладу LATEST.Csqtt + LATEST.CSQTT-2.1.9 + LATEST.PaperFlux");
+    log("Кладу LATEST.Csqtt + LATEST.CSQTT-2.1.9 + LATEST.CSQTTR + LATEST.PaperFlux");
     write_file(&appdata.join("LATEST.Csqtt"), LATEST_CSQTT)?;
     write_file(&appdata.join("LATEST.PaperFlux"), LATEST_PF)?;
 
