@@ -103,11 +103,28 @@ jobs:
           curl -fL --retry 3 --retry-delay 2 -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
           ls -la libcsqtt_ios_core.a
 
+      - name: Set up Rust for CSQTTR fallback build
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios
+
       - name: Download CSQTTR iOS core
         run: |
           set -e
           mkdir -p Frontend/ios/Core
-          curl -fL --retry 3 --retry-delay 2 -o Frontend/ios/Core/libcsqttr_ios_core.a "$CSQTTR_IOS_CORE_URL"
+          if curl -fL --retry 2 --retry-delay 2 -o Frontend/ios/Core/libcsqttr_ios_core.a "$CSQTTR_IOS_CORE_URL"; then
+            echo "Downloaded published CSQTTR iOS core"
+          else
+            echo "::warning::No CSQTTR release asset yet; building from the linked core PR branch"
+            rm -f Frontend/ios/Core/libcsqttr_ios_core.a
+            git clone --depth 1 --branch feat/csqttr-ci-ios-latest https://github.com/Endlad2/csqttr-core.git /tmp/csqttr-core
+            cargo build --manifest-path /tmp/csqttr-core/ios-core/Cargo.toml --release --target x86_64-apple-ios
+            cargo build --manifest-path /tmp/csqttr-core/ios-core/Cargo.toml --release --target aarch64-apple-ios
+            lipo -create \
+              /tmp/csqttr-core/ios-core/target/x86_64-apple-ios/release/libcsqttr_ios_core.a \
+              /tmp/csqttr-core/ios-core/target/aarch64-apple-ios/release/libcsqttr_ios_core.a \
+              -output Frontend/ios/Core/libcsqttr_ios_core.a
+          fi
           ls -la Frontend/ios/Core/libcsqttr_ios_core.a
 
       - name: Download PaperFlux iOS core
