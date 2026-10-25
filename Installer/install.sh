@@ -12,11 +12,13 @@ set -euo pipefail
 REPO_LALUNE="Endlad2/LaLune"
 REPO_CSQTT="Endlad2/csqtt-core"
 REPO_PAPERFLUX="Endlad2/PaperFlux-core"
+REPO_CSQTTR="Endlad2/csqttr-core"
 
 URL_LALUNE_ZIP="https://github.com/${REPO_LALUNE}/releases/latest/download/LaLune-Linux.zip"
 URL_BACKEND_ZIP="https://github.com/${REPO_LALUNE}/releases/latest/download/Backend-Linux.zip"
 URL_LATEST_CSQTT="https://raw.githubusercontent.com/${REPO_CSQTT}/refs/heads/main/LATEST"
 URL_LATEST_PF="https://raw.githubusercontent.com/${REPO_PAPERFLUX}/refs/heads/main/LATEST"
+URL_CSQTTR_LATEST="https://raw.githubusercontent.com/${REPO_CSQTTR}/refs/heads/release-2.5.2/LATEST"
 URL_ICON="https://raw.githubusercontent.com/${REPO_LALUNE}/refs/heads/main/icon.ico"
 
 HOME_DIR="${HOME}"
@@ -140,6 +142,9 @@ main() {
     local csqtt219_exe="${TEMP_DIR}/csqtt-219"
     local latest_csqtt219="${TEMP_DIR}/LATEST.CSQTT-2.1.9"
     local pf_exe="${TEMP_DIR}/${pf_asset}"
+    local csqttr_asset="${csqtt_asset}"
+    local csqttr_exe="${TEMP_DIR}/${csqttr_asset}"
+    local latest_csqttr="${TEMP_DIR}/LATEST.CSQTTR"
     local latest_csqtt="${TEMP_DIR}/LATEST.Csqtt"
     local latest_pf="${TEMP_DIR}/LATEST.PaperFlux"
     local icon_file="${TEMP_DIR}/icon.ico"
@@ -147,8 +152,8 @@ main() {
     if [ "$CI_MODE" = "1" ]; then
         [ -f "$latest_csqtt219" ] || printf '%s' '2026.09.17.17.36' > "$latest_csqtt219"
         local missing=()
-        for f in "$lalune_zip" "$backend_zip" "$csqtt_exe" "$csqtt219_exe" "$pf_exe" \
-                 "$latest_csqtt" "$latest_csqtt219" "$latest_pf" "$icon_file"; do
+        for f in "$lalune_zip" "$backend_zip" "$csqtt_exe" "$csqtt219_exe" "$csqttr_exe" "$pf_exe" \
+                 "$latest_csqtt" "$latest_csqtt219" "$latest_csqttr" "$latest_pf" "$icon_file"; do
             [ -f "$f" ] || missing+=("$f")
         done
         if [ "${#missing[@]}" -gt 0 ]; then
@@ -158,6 +163,8 @@ main() {
         download "https://github.com/${REPO_CSQTT}/releases/latest/download/${csqtt_asset}" "$csqtt_exe"
         download "https://github.com/${REPO_CSQTT}/releases/download/2026.09.17.17.36/${csqtt_asset}" "$csqtt219_exe"
         printf '%s' '2026.09.17.17.36' > "$latest_csqtt219"
+        download "https://github.com/${REPO_CSQTTR}/releases/latest/download/${csqttr_asset}" "$csqttr_exe"
+        download "$URL_CSQTTR_LATEST" "$latest_csqttr"
         download "https://github.com/${REPO_PAPERFLUX}/releases/latest/download/${pf_asset}" "$pf_exe"
         download "$URL_LALUNE_ZIP"  "$lalune_zip"
         download "$URL_BACKEND_ZIP" "$backend_zip"
@@ -190,6 +197,11 @@ main() {
     chmod +x "${APPDATA_DIR}/csqtt-core"
     cp -f "$csqtt219_exe" "${APPDATA_DIR}/csqtt-219"
     chmod +x "${APPDATA_DIR}/csqtt-219"
+
+    step "Кладу CSQTTR core"
+    cp -f "$csqttr_exe" "${APPDATA_DIR}/csqttr-core"
+    chmod +x "${APPDATA_DIR}/csqttr-core"
+    cp -f "$latest_csqttr" "${APPDATA_DIR}/LATEST.CSQTTR"
 
     step "Кладу PaperFlux core"
     cp -f "$pf_exe" "${APPDATA_DIR}/paperflux-core"
