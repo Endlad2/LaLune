@@ -612,6 +612,11 @@ async fn vpn_connect(
 
     let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
     state.log(format!("[VPN] core args: {}", args.join(" ")));
+    // Capture the file offset before spawn so early startup lines are not skipped by the watchdog.
+    let log_start_offset = tokio::fs::metadata(&state.logs_path)
+        .await
+        .map(|meta| meta.len())
+        .unwrap_or(0);
 
     let core = match CoreProcess::spawn(&core_path, &args, &state.logs_path, state.events.clone()).await {
         Ok(c) => c,
@@ -635,10 +640,7 @@ async fn vpn_connect(
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         // Existing persisted logs belong to earlier runs; only parse bytes appended by this core.
-        let mut last_size = tokio::fs::metadata(&state2.logs_path)
-            .await
-            .map(|meta| meta.len())
-            .unwrap_or(0);
+        let mut last_size = log_start_offset;
         let mut tun_ip: Option<String> = None;
         let mut tun_dns: Option<String> = None;
         let mut consecutive_active_ticks: i32 = 0;
