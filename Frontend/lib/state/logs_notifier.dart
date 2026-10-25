@@ -57,7 +57,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _refresh());
     _startWebSocket();
 
-    // При смене baseUrl — переподключаем SSE и перечитываем.
+    // При смене baseUrl — переподключаем WebSocket и перечитываем.
     final api = _ref.read(apiClientProvider);
     _baseUrlSub = api.baseUrlChanges.listen((_) {
       _stopWebSocket();
