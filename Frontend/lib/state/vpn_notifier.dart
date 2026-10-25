@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
+import '../api/api_exception.dart';
 import '../api/sse_client.dart';
 import '../models/vpn_status.dart';
 import 'providers.dart';
@@ -130,13 +131,16 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
       await api.postJson('/vpn/connect', {'configId': configId});
       unawaited(_refresh());
       return true;
-    } catch (_) {
+    } catch (e) {
       _connectingSince = null;
+      final message = e is ApiException
+          ? e.message
+          : 'Ошибка подключения';
       state = VpnStatus(
         state: 'error',
         connected: false,
         configId: configId,
-        message: 'Ошибка подключения',
+        message: message,
       );
       return false;
     }
