@@ -152,11 +152,13 @@ async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn version() -> Json<Value> {
+    // Injected by build.rs from the release tag selected by CI.
+    let version = env!("LALUNE_VERSION");
     Json(json!({
         "api": 1,
-        "backend": "0.6.0",
+        "backend": version,
         "core": "unknown",
-        "ui": "0.6.0",
+        "ui": version,
     }))
 }
 
