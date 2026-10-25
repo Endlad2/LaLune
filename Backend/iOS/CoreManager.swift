@@ -64,7 +64,7 @@ final class CoreManager {
     }
 
     func corePath(protocol proto: String = "CSQTT") -> String? {
-        let filename = proto.lowercased() == "paperflux" ? "paperflux-core" : "csqtt-core"
+        let filename = proto.lowercased() == "paperflux" ? "paperflux-core" : (proto.uppercased().hasPrefix("CSQTTR") ? "libcsqttr_ios_core.a" : "csqtt-core")
         let f = coreDir.appendingPathComponent(filename)
         return FileManager.default.fileExists(atPath: f.path) ? f.path : nil
     }
