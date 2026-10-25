@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{parse_link_for_protocol, ConfigItem};
@@ -230,10 +231,33 @@ async fn stream_logs_ws(socket: WebSocket, state: Arc<AppState>) {
 
 async fn logs_snapshot_all(state: &AppState) -> Vec<String> {
     let mut logs = state.logs_snapshot();
-    if let Ok(contents) = tokio::fs::read_to_string(&state.logs_path).await {
-        logs.extend(contents.lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| format!("{}{}", CORE_PREFIX, line)));
+
+    // Keep the log file intact, but read only its tail for API snapshots so a long
+    // running kernel does not make every UI poll load the entire file into memory.
+    const MAX_TAIL_BYTES: u64 = 256 * 1024;
+    if let Ok(mut file) = tokio::fs::File::open(&state.logs_path).await {
+        if let Ok(meta) = file.metadata().await {
+            let start = meta.len().saturating_sub(MAX_TAIL_BYTES);
+            if file.seek(std::io::SeekFrom::Start(start)).await.is_ok() {
+                let mut contents = String::new();
+                if file.read_to_string(&mut contents).await.is_ok() {
+                    let contents = if start > 0 {
+                        contents.find('\n')
+                            .map(|index| &contents[index + 1..])
+                            .unwrap_or("")
+                    } else {
+                        contents.as_str()
+                    };
+                    let tail: Vec<&str> = contents.lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .rev()
+                        .take(1000)
+                        .collect();
+                    logs.extend(tail.into_iter().rev()
+                        .map(|line| format!("{}{}", CORE_PREFIX, line)));
+                }
+            }
+        }
     }
     logs
 }
