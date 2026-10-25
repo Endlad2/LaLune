@@ -315,16 +315,19 @@ public final class Backend {
             case ("PUT", "/smarttunnel/args"):
                 return (200, json(["ok": true]))
 
-            case ("POST", "/deploy/run"):
-                return (200, json(["stub": true, "message": "DeployManager not yet implemented"]))
-            case ("GET", "/deploy/status"):
-                return (200, json(["busy": false, "stub": true]))
-            case ("GET", "/deploy/log"):
-                return (200, json(["log": "", "stub": true]))
-            case ("POST", "/deploy/cancel"):
-                return (200, json(["stub": true]))
-            case ("GET", "/deploy/protocols"):
-                return (200, json(["protocols": [], "stub": true]))
+            // Deployment is intentionally unsupported on iOS. Return an explicit
+            // error instead of fake success responses that leave the UI in a
+            // misleading "started" state.
+            case ("POST", "/deploy/run"),
+                 ("GET", "/deploy/status"),
+                 ("GET", "/deploy/log"),
+                 ("POST", "/deploy/cancel"),
+                 ("GET", "/deploy/protocols"):
+                return (501, json([
+                    "error": "unsupported_platform",
+                    "message": "Развёртывание серверов недоступно в iOS-клиенте",
+                    "platform": "ios"
+                ]))
 
             case ("GET", "/platform/capabilities"):
                 return (200, json([
