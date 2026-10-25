@@ -12,7 +12,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use futures::stream::Stream;
+use futures::{stream::Stream, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
@@ -189,12 +189,13 @@ async fn ws_logs(
     ws.on_upgrade(move |socket| stream_logs_ws(socket, state))
 }
 
-async fn stream_logs_ws(mut socket: WebSocket, state: Arc<AppState>) {
+async fn stream_logs_ws(socket: WebSocket, state: Arc<AppState>) {
     // Subscribe before sending the snapshot so log lines are not lost during the handshake.
     let mut rx = state.events.subscribe();
+    let (mut sender, mut receiver) = socket.split();
     let snapshot = logs_snapshot_all(&state).await;
     let payload = json!({"type": "snapshot", "lines": snapshot}).to_string();
-    if socket.send(Message::Text(payload)).await.is_err() {
+    if sender.send(Message::Text(payload)).await.is_err() {
         return;
     }
 
@@ -204,7 +205,7 @@ async fn stream_logs_ws(mut socket: WebSocket, state: Arc<AppState>) {
                 match received {
                     Ok(Event::Log { line, .. }) => {
                         let payload = json!({"type": "log", "line": line}).to_string();
-                        if socket.send(Message::Text(payload)).await.is_err() {
+                        if sender.send(Message::Text(payload)).await.is_err() {
                             break;
                         }
                     }
@@ -213,12 +214,12 @@ async fn stream_logs_ws(mut socket: WebSocket, state: Arc<AppState>) {
                     Err(_) => break,
                 }
             }
-            incoming = socket.recv() => {
+            incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
                     Some(Ok(Message::Ping(data))) => {
-                        if socket.send(Message::Pong(data)).await.is_err() { break; }
+                        if sender.send(Message::Pong(data)).await.is_err() { break; }
                     }
                     _ => {}
                 }
