@@ -556,7 +556,7 @@ async fn vpn_connect(
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
     let settings = state.settings.read().clone();
     if matches!(kind, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
-        && settings.auth_mode != "autoVk"
+        && settings.auth_mode == "manual"
     {
         let source_hashes = if config.hashes.trim().is_empty() {
             settings.vk_hashes.as_str()
