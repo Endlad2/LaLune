@@ -730,7 +730,7 @@ async fn core_version_p(
     Path(proto): Path<String>,
 ) -> impl IntoResponse {
     let kind = ProtocolKind::from_id(&proto).unwrap_or(ProtocolKind::Csqtt);
-    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
+    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else if kind == ProtocolKind::Csqttr { "LATEST.CSQTTR" } else { "LATEST.PaperFlux" } });
     let version = tokio::fs::read_to_string(&latest_file)
         .await
         .unwrap_or_default()
@@ -750,6 +750,7 @@ async fn core_latest_p(
     } else {
         match kind {
             ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await,
+            ProtocolKind::Csqttr => core_manager::fetch_latest_csqttr(&client, &state.events).await,
             ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await,
         }
     };
@@ -770,6 +771,7 @@ async fn core_check_p(
     } else {
         match kind {
             ProtocolKind::Csqtt => core_manager::fetch_latest_csqtt(&client, &state.events).await.unwrap_or_default(),
+            ProtocolKind::Csqttr => core_manager::fetch_latest_csqttr(&client, &state.events).await.unwrap_or_default(),
             ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
         }
     };
@@ -797,7 +799,7 @@ async fn core_download_async_p(
         state2.events.emit(Event::progress("core_download", 0));
         let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
         let dest = crate::state::core_path_for(&state2.app_dir, &proto);
-        let latest_file = state2.app_dir.join(if use_csqtt_219 { "LATEST.CSQTT-2.1.9" } else if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" });
+        let latest_file = state2.app_dir.join(if use_csqtt_219 { "LATEST.CSQTT-2.1.9" } else if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else if kind == ProtocolKind::Csqttr { "LATEST.CSQTTR" } else { "LATEST.PaperFlux" });
 
         match kind {
             ProtocolKind::Csqtt => {
@@ -825,6 +827,25 @@ async fn core_download_async_p(
                             state2.events.emit(Event::error(e.to_string()));
                         }
                     }
+                }
+            }
+            ProtocolKind::Csqttr => {
+                let version = core_manager::fetch_latest_csqttr(&client, &state2.events).await;
+                if let Some(version) = version {
+                    state2.events.emit(Event::progress("core_download", 20));
+                    match core_manager::download_csqttr(&client, &version, &dest, &state2.events).await {
+                        Ok(_) => {
+                            let _ = tokio::fs::write(&latest_file, &version).await;
+                            state2.events.emit(Event::progress("core_download", 100));
+                            state2.log(format!("[CORE] CSQTTR updated to {}", version));
+                        }
+                        Err(e) => {
+                            state2.log(format!("[CORE] CSQTTR download failed: {}", e));
+                            state2.events.emit(Event::error(e.to_string()));
+                        }
+                    }
+                } else {
+                    state2.events.emit(Event::error("cannot fetch CSQTTR LATEST".to_string()));
                 }
             }
             ProtocolKind::PaperFlux => {
@@ -881,6 +902,19 @@ async fn core_download_sync_p(
                     let saved_version = version;
                     let _ = tokio::fs::write(&latest_file, &saved_version).await;
                     Ok(saved_version)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        ProtocolKind::Csqttr => {
+            let version = match core_manager::fetch_latest_csqttr(&client, &state.events).await {
+                Some(v) => v,
+                None => { *state.core_downloading.lock() = false; return err(500, "cannot fetch CSQTTR LATEST"); }
+            };
+            match core_manager::download_csqttr(&client, &version, &dest, &state.events).await {
+                Ok(_) => {
+                    let _ = tokio::fs::write(&latest_file, &version).await;
+                    Ok(version)
                 }
                 Err(e) => Err(e),
             }
