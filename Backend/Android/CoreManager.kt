@@ -23,11 +23,16 @@ class CoreManager(private val context: Context) {
         const val PROTO_CSQTT = "CSQTT"
         const val PROTO_CSQTT_219 = "CSQTT 2.1.9"
         const val PROTO_CSQTT_251 = "CSQTT 2.5.1"
+        const val PROTO_CSQTTR = "CSQTTR"
         const val PROTO_PAPERFLUX = "PaperFlux"
         const val CSQTT_219_RELEASE = "2026.09.17.17.36"
 
         const val LATEST_CSQTT_URL =
             "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
+        const val LATEST_CSQTTR_URL =
+            "https://raw.githubusercontent.com/Endlad2/csqttr-core/refs/heads/release-2.5.2/LATEST"
+        const val CSQTTR_URL_TEMPLATE =
+            "https://github.com/Endlad2/csqttr-core/releases/download/%s/%s"
         const val LATEST_PAPERFLUX_URL =
             "https://raw.githubusercontent.com/Endlad2/PaperFlux-core/refs/heads/main/LATEST"
 
@@ -56,6 +61,7 @@ class CoreManager(private val context: Context) {
     private val latestCsqtt = File(appDir, "LATEST.Csqtt")
     private val latestCsqtt219 = File(appDir, "LATEST.CSQTT-2.1.9")
     private val latestPaper = File(appDir, "LATEST.PaperFlux")
+    private val latestCsqttr = File(appDir, "LATEST.CSQTTR")
 
     private var coreProcess: Process? = null
 
@@ -73,6 +79,12 @@ class CoreManager(private val context: Context) {
                 abi.contains("x86_64") -> "libcsqtt219.so"
                 else -> null
             }
+            PROTO_CSQTTR.uppercase() -> when {
+                abi.contains("arm64") -> "libcsqttr-android-arm64-v8a.so"
+                abi.contains("armeabi-v7a") || abi.contains("arm") -> "libcsqttr-android-armeabi-v7a.so"
+                abi.contains("x86_64") -> "libcsqttr-android-x86_64.so"
+                else -> null
+            }
             PROTO_CSQTT.uppercase(), PROTO_CSQTT_251.uppercase() -> when {
                 abi.contains("arm64") -> "libclient-android-arm64-v8a.so"
                 abi.contains("arm") -> "libclient-android-armeabi-v7a.so"
@@ -86,6 +98,7 @@ class CoreManager(private val context: Context) {
 
     private fun getRemoteAssetName(protocol: String): String? {
         return when (protocol.uppercase()) {
+            PROTO_CSQTTR.uppercase() -> getCoreName(PROTO_CSQTT)
             PROTO_CSQTT.uppercase(), PROTO_CSQTT_219.uppercase(), PROTO_CSQTT_251.uppercase() -> getCoreName(PROTO_CSQTT)
             PROTO_PAPERFLUX.uppercase() -> {
                 val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
@@ -117,14 +130,18 @@ class CoreManager(private val context: Context) {
 
     private fun latestFileFor(protocol: String): File = when {
         protocol.equals(PROTO_PAPERFLUX, ignoreCase = true) -> latestPaper
+        protocol.equals(PROTO_CSQTTR, ignoreCase = true) -> latestCsqttr
         protocol.equals(PROTO_CSQTT_219, ignoreCase = true) -> latestCsqtt219
         else -> latestCsqtt
     }
 
     fun fetchLatestVersion(protocol: String = PROTO_CSQTT): String? {
         if (protocol.equals(PROTO_CSQTT_219, ignoreCase = true)) return CSQTT_219_RELEASE
-        val baseUrl = if (protocol.equals(PROTO_PAPERFLUX, ignoreCase = true))
-            LATEST_PAPERFLUX_URL else LATEST_CSQTT_URL
+        val baseUrl = when {
+            protocol.equals(PROTO_PAPERFLUX, ignoreCase = true) -> LATEST_PAPERFLUX_URL
+            protocol.equals(PROTO_CSQTTR, ignoreCase = true) -> LATEST_CSQTTR_URL
+            else -> LATEST_CSQTT_URL
+        }
         for (level in 1..3) {
             try {
                 val url = when (level) {
@@ -156,6 +173,7 @@ class CoreManager(private val context: Context) {
         return when {
             protocol.equals(PROTO_PAPERFLUX, ignoreCase = true) -> downloadPaperFlux()
             protocol.equals(PROTO_CSQTT_219, ignoreCase = true) -> downloadCsqtt219()
+            protocol.equals(PROTO_CSQTTR, ignoreCase = true) -> downloadCsqttr()
             else -> downloadCsqtt()
         }
     }
@@ -168,6 +186,17 @@ class CoreManager(private val context: Context) {
 
         return downloadFrom(url, File(coreDir, getCoreName(PROTO_CSQTT)!!)).also { ok ->
             if (ok) try { latestCsqtt.writeText(version) } catch (_: Exception) {}
+        }
+    }
+
+    private fun downloadCsqttr(): Boolean {
+        val remoteName = getRemoteAssetName(PROTO_CSQTT) ?: return false
+        val localName = getCoreName(PROTO_CSQTTR) ?: return false
+        val version = fetchLatestVersion(PROTO_CSQTTR) ?: return false
+        val url = String.format(CSQTTR_URL_TEMPLATE, version, remoteName)
+        Log.i(TAG, "[CORE] downloading CSQTTR $url")
+        return downloadFrom(url, File(coreDir, localName)).also { ok ->
+            if (ok) try { latestCsqttr.writeText(version) } catch (_: Exception) {}
         }
     }
 
