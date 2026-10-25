@@ -315,16 +315,19 @@ public final class Backend {
             case ("PUT", "/smarttunnel/args"):
                 return (200, json(["ok": true]))
 
-            case ("POST", "/deploy/run"):
-                return (200, json(["stub": true, "message": "DeployManager not yet implemented"]))
-            case ("GET", "/deploy/status"):
-                return (200, json(["busy": false, "stub": true]))
-            case ("GET", "/deploy/log"):
-                return (200, json(["log": "", "stub": true]))
-            case ("POST", "/deploy/cancel"):
-                return (200, json(["stub": true]))
-            case ("GET", "/deploy/protocols"):
-                return (200, json(["protocols": [], "stub": true]))
+            // Deployment is intentionally unsupported on iOS. Return an explicit
+            // error instead of fake success responses that leave the UI in a
+            // misleading "started" state.
+            case ("POST", "/deploy/run"),
+                 ("GET", "/deploy/status"),
+                 ("GET", "/deploy/log"),
+                 ("POST", "/deploy/cancel"),
+                 ("GET", "/deploy/protocols"):
+                return (501, json([
+                    "error": "unsupported_platform",
+                    "message": "Развёртывание серверов недоступно в iOS-клиенте",
+                    "platform": "ios"
+                ]))
 
             case ("GET", "/platform/capabilities"):
                 return (200, json([
@@ -641,6 +644,7 @@ public final class Backend {
 
     private func vpnConnect(body: String) -> (Int, String) {
         let settings = loadSettings()
+        var proto = settings["protocol"] as? String ?? "CSQTT"
         var peer = settings["peer"] as? String ?? ""
         var password = settings["password"] as? String ?? ""
         var hashes = settings["vkHashes"] as? String ?? ""
@@ -649,12 +653,14 @@ public final class Backend {
            let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let configId = b["configId"] as? Int64,
            let c = findConfig(id: configId) {
+            proto = c["protocol"] as? String ?? proto
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
             hashes = c["hashes"] as? String ?? hashes
         } else if let sel = readSelectedConfigJson(),
                   let data = sel.data(using: .utf8),
                   let c = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            proto = c["protocol"] as? String ?? proto
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
             hashes = c["hashes"] as? String ?? hashes
@@ -663,7 +669,8 @@ public final class Backend {
         if peer.isEmpty { return (400, err("no config selected")) }
 
         CoreManager.shared.writeSharedSettings(
-            from: settings, peer: peer, password: password, hashes: hashes
+            from: settings, protocol: proto, peer: peer,
+            password: password, hashes: hashes
         )
 
         if CoreManager.shared.corePath() == nil {

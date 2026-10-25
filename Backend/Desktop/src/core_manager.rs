@@ -15,6 +15,10 @@ use crate::events::{Event, EventBus};
 
 pub const LATEST_CSQTT_URL: &str =
     "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST";
+pub const LATEST_CSQTTR_URL: &str =
+    "https://raw.githubusercontent.com/Endlad2/csqttr-core/refs/heads/release-2.5.2/LATEST";
+pub const CSQTTR_URL_TEMPLATE: &str =
+    "https://github.com/Endlad2/csqttr-core/releases/download/{VER}/{FILE}";
 pub const LATEST_PAPERFLUX_URL: &str =
     "https://raw.githubusercontent.com/Endlad2/PaperFlux-core/refs/heads/main/LATEST";
 
@@ -49,6 +53,24 @@ pub fn csqtt_local_filename() -> &'static str {
 }
 
 // ============================================================
+//  CSQTTR: имена ассетов
+// ============================================================
+
+pub fn csqttr_asset_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    { "client-macos-x86_64" }
+    #[cfg(not(target_os = "macos"))]
+    { csqtt_asset_name() }
+}
+
+pub fn csqttr_local_filename() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "csqttr-core.exe" }
+    #[cfg(not(target_os = "windows"))]
+    { "csqttr-core" }
+}
+
+// ============================================================
 //  PaperFlux: имена ассетов
 // ============================================================
 
@@ -80,6 +102,22 @@ pub fn supported_protocols() -> Vec<serde_json::Value> {
 /// Скачивает LATEST для CSQTT.
 pub async fn fetch_latest_csqtt(client: &reqwest::Client, events: &EventBus) -> Option<String> {
     fetch_latest_generic(client, events, LATEST_CSQTT_URL).await
+}
+
+/// Скачивает LATEST для CSQTTR.
+pub async fn fetch_latest_csqttr(client: &reqwest::Client, events: &EventBus) -> Option<String> {
+    fetch_latest_generic(client, events, LATEST_CSQTTR_URL).await
+}
+
+/// Скачивает и кладёт ядро CSQTTR.
+pub async fn download_csqttr(
+    client: &reqwest::Client,
+    version: &str,
+    dest: &Path,
+    events: &EventBus,
+) -> Result<()> {
+    let url = CSQTTR_URL_TEMPLATE.replace("{VER}", version).replace("{FILE}", csqttr_asset_name());
+    download_binary(client, &url, dest, events).await
 }
 
 /// Скачивает LATEST для PaperFlux.
@@ -266,8 +304,9 @@ impl CoreProcess {
         log_file: &Path,
         events: EventBus,
     ) -> Result<Self> {
-        let log = std::fs::File::create(log_file)?;
-        let log_err = log.try_clone()?;
+        if let Some(parent) = log_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
         let mut cmd = Command::new(core_path);
         cmd.args(args);
@@ -328,9 +367,6 @@ impl CoreProcess {
                 }
             });
         }
-
-        drop(log);
-        drop(log_err);
 
         Ok(Self { child })
     }

@@ -49,7 +49,14 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
     if (ok) {
       Toast.show(context, 'Подключение...');
     } else {
-      Toast.show(context, 'Ошибка подключения', isError: true);
+      final message = ref.read(vpnProvider).message;
+      Toast.show(
+        context,
+        message.isNotEmpty && message != 'Ошибка подключения'
+            ? message
+            : 'Ошибка подключения',
+        isError: true,
+      );
     }
   }
 

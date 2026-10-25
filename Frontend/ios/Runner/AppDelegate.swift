@@ -22,6 +22,12 @@ import UserNotifications
     private var backend: Backend?
     private var watchdogTimer: Timer?
 
+    /// Called by SceneDelegate once the real Flutter window exists.
+    func attach(window: UIWindow) {
+        self.window = window
+        backend?.attach(window: window)
+    }
+
     private let API_URL = URL(string: "http://127.0.0.1:1062/ping")!
     private let BG_TASK_ID = "com.lalune.app.refresh"
 

@@ -14,6 +14,7 @@ pub const CORE_LISTEN_PORT: u16 = 52230;
 #[serde(rename_all = "UPPERCASE")]
 pub enum ProtocolKind {
     Csqtt,
+    Csqttr,
     PaperFlux,
 }
 
@@ -21,6 +22,7 @@ impl ProtocolKind {
     pub fn from_id(s: &str) -> Option<Self> {
         match s.trim().to_ascii_uppercase().as_str() {
             "CSQTT" | "CSQTT 2.1.9" | "CSQTT 2.5.1" => Some(Self::Csqtt),
+            "CSQTTR" | "CSQTTR 2.5.2" => Some(Self::Csqttr),
             "PAPERFLUX" | "OPENFLUX" => Some(Self::PaperFlux),
             _ => None,
         }
@@ -29,6 +31,7 @@ impl ProtocolKind {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Csqtt => "CSQTT",
+            Self::Csqttr => "CSQTTR",
             Self::PaperFlux => "PaperFlux",
         }
     }
@@ -36,6 +39,7 @@ impl ProtocolKind {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Csqtt => "CSQTT (VK Calls)",
+            Self::Csqttr => "CSQTTR",
             Self::PaperFlux => "PaperFlux (Docs)",
         }
     }
@@ -43,6 +47,7 @@ impl ProtocolKind {
     pub fn repo(&self) -> &'static str {
         match self {
             Self::Csqtt => "Endlad2/csqtt-core",
+            Self::Csqttr => "Endlad2/csqttr-core",
             Self::PaperFlux => "Endlad2/PaperFlux-core",
         }
     }
@@ -50,6 +55,7 @@ impl ProtocolKind {
     pub fn description(&self) -> &'static str {
         match self {
             Self::Csqtt => "Оригинальный протокол на базе VK Calls, TURN и WRAP.",
+            Self::Csqttr => "CSQTTR 2.5.2.",
             Self::PaperFlux => "Пробрасывает трафик через облачные документы (Yandex, Mail, OneMe и др.).",
         }
     }
@@ -57,6 +63,7 @@ impl ProtocolKind {
     pub fn core_asset(&self) -> &'static str {
         match self {
             Self::Csqtt => crate::core_manager::csqtt_asset_name(),
+            Self::Csqttr => crate::core_manager::csqttr_asset_name(),
             Self::PaperFlux => crate::core_manager::paperflux_asset_name(),
         }
     }
@@ -64,6 +71,7 @@ impl ProtocolKind {
     pub fn local_filename(&self) -> &'static str {
         match self {
             Self::Csqtt => crate::core_manager::csqtt_local_filename(),
+            Self::Csqttr => crate::core_manager::csqttr_local_filename(),
             Self::PaperFlux => crate::core_manager::paperflux_local_filename(),
         }
     }
@@ -88,6 +96,14 @@ pub fn supported_protocols() -> Vec<serde_json::Value> {
             "coreAsset": crate::core_manager::csqtt_asset_name(),
         }),
         serde_json::json!({
+            "id": "CSQTTR",
+            "displayName": "CSQTTR",
+            "repo": "Endlad2/csqttr-core",
+            "realtime": true,
+            "description": "CSQTTR 2.5.2.",
+            "coreAsset": crate::core_manager::csqttr_asset_name(),
+        }),
+        serde_json::json!({
             "id": "PaperFlux",
             "displayName": "PaperFlux (Docs)",
             "repo": "Endlad2/PaperFlux-core",
@@ -101,6 +117,13 @@ pub fn supported_protocols() -> Vec<serde_json::Value> {
 pub fn settings_keys_for(kind: ProtocolKind) -> Vec<&'static str> {
     match kind {
         ProtocolKind::Csqtt => vec![
+            "peer", "vkHashes", "password", "workers", "autoApiWorkers",
+            "authMode", "obfs", "fingerprint", "clientIds",
+            "captchaMode", "vkAuthMode", "turnTransport",
+            "allowHashRedistribution", "validateVkHashes",
+            "shareVpn", "showCoreLogs",
+        ],
+        ProtocolKind::Csqttr => vec![
             "peer", "vkHashes", "password", "workers", "autoApiWorkers",
             "authMode", "obfs", "fingerprint", "clientIds",
             "captchaMode", "vkAuthMode", "turnTransport",
@@ -126,7 +149,7 @@ pub fn build_args(
         .unwrap_or(ProtocolKind::Csqtt);
 
     match kind {
-        ProtocolKind::Csqtt => build_csqtt_args(config, settings, listen_port),
+        ProtocolKind::Csqtt | ProtocolKind::Csqttr => build_csqtt_args(config, settings, listen_port),
         ProtocolKind::PaperFlux => build_paperflux_args(config, settings, listen_port),
     }
 }
@@ -370,7 +393,7 @@ fn read_vk_token_for_core() -> Option<String> {
 
 pub fn link_placeholder(kind: ProtocolKind) -> &'static str {
     match kind {
-        ProtocolKind::Csqtt => {
+        ProtocolKind::Csqtt | ProtocolKind::Csqttr => {
             "csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2"
         }
         ProtocolKind::PaperFlux => {

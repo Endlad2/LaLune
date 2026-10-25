@@ -569,6 +569,14 @@ class Backend(private val context: Context) {
             put("coreAsset", coreManager?.getCoreName(PROTO_CSQTT) ?: "")
         })
         put(JSONObject().apply {
+            put("id", CoreManager.PROTO_CSQTTR)
+            put("displayName", "CSQTTR")
+            put("repo", "Endlad2/csqttr-core")
+            put("realtime", true)
+            put("description", "CSQTTR 2.5.2")
+            put("coreAsset", coreManager?.getCoreName(CoreManager.PROTO_CSQTTR) ?: "")
+        })
+        put(JSONObject().apply {
             put("id", PROTO_PAPERFLUX)
             put("displayName", "PaperFlux (Docs)")
             put("repo", "Endlad2/PaperFlux-core")
@@ -660,12 +668,14 @@ class Backend(private val context: Context) {
         return if (
             upper == PROTO_CSQTT.uppercase() ||
             upper == PROTO_CSQTT_219.uppercase() ||
-            upper == PROTO_CSQTT_251.uppercase()
+            upper == PROTO_CSQTT_251.uppercase() ||
+            upper == CoreManager.PROTO_CSQTTR.uppercase()
         ) {
             JSONObject().apply {
                 put("protocol", when {
                     upper == PROTO_CSQTT_219.uppercase() -> PROTO_CSQTT_219
                     upper == PROTO_CSQTT_251.uppercase() -> PROTO_CSQTT_251
+                    upper == CoreManager.PROTO_CSQTTR.uppercase() -> CoreManager.PROTO_CSQTTR
                     else -> PROTO_CSQTT
                 })
                 val keys = JSONArray(listOf(

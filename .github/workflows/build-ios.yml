@@ -6,6 +6,11 @@ name: Build iOS
 
 on:
   workflow_dispatch:
+    inputs:
+      stable_version:
+        description: 'Release version (empty uses STABLE-shortsha)'
+        required: false
+        type: string
   push:
     branches: [main, master]
     tags: ['v*']
@@ -20,6 +25,7 @@ env:
   FLUTTER_VERSION: "3.29.0"
   XCODE_APP: /Applications/Xcode_15.4.app
   CSQTT_IOS_CORE_URL: https://github.com/Endlad2/csqtt-core/releases/latest/download/libcsqtt_ios_core.a
+  CSQTTR_IOS_CORE_URL: https://github.com/Endlad2/csqttr-core/releases/latest/download/libcsqttr_ios_core.a
   PAPERFLUX_IOS_ZIP_URL: https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-ios.zip
 
 jobs:
@@ -31,6 +37,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.stable_version }}" ]]; then
+            VERSION="${{ inputs.stable_version }}"
+          else
+            STABLE="$(tr -d '\\r\\n' < STABLE)"
+            VERSION="${STABLE}-$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "LALUNE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          python3 - "$VERSION" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path('Backend/iOS/Backend.swift')
+          source = path.read_text(encoding='utf-8')
+          import re
+          updated, count = re.subn(r'private let VERSION = "[^"]*"', f'private let VERSION = "{sys.argv[1]}"', source, count=1)
+          if count != 1:
+              raise SystemExit('Could not stamp iOS backend version')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          echo "Building iOS version: $VERSION"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -101,6 +131,30 @@ jobs:
           cd Frontend/ios/Core
           curl -fL --retry 3 --retry-delay 2 -o libcsqtt_ios_core.a "$CSQTT_IOS_CORE_URL"
           ls -la libcsqtt_ios_core.a
+
+      - name: Set up Rust for CSQTTR fallback build
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios
+
+      - name: Download CSQTTR iOS core
+        run: |
+          set -e
+          mkdir -p Frontend/ios/Core
+          if curl -fL --retry 2 --retry-delay 2 -o Frontend/ios/Core/libcsqttr_ios_core.a "$CSQTTR_IOS_CORE_URL"; then
+            echo "Downloaded published CSQTTR iOS core"
+          else
+            echo "::warning::No CSQTTR release asset yet; building from the linked core PR branch"
+            rm -f Frontend/ios/Core/libcsqttr_ios_core.a
+            git clone --depth 1 --branch feat/csqttr-ci-ios-latest https://github.com/Endlad2/csqttr-core.git /tmp/csqttr-core
+            cargo build --manifest-path /tmp/csqttr-core/ios-core/Cargo.toml --release --target x86_64-apple-ios
+            cargo build --manifest-path /tmp/csqttr-core/ios-core/Cargo.toml --release --target aarch64-apple-ios
+            lipo -create \
+              /tmp/csqttr-core/ios-core/target/x86_64-apple-ios/release/libcsqttr_ios_core.a \
+              /tmp/csqttr-core/ios-core/target/aarch64-apple-ios/release/libcsqttr_ios_core.a \
+              -output Frontend/ios/Core/libcsqttr_ios_core.a
+          fi
+          ls -la Frontend/ios/Core/libcsqttr_ios_core.a
 
       - name: Download PaperFlux iOS core
         run: |

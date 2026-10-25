@@ -137,8 +137,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (cfg != null && !cfg.isPaperFlux) {
       _peerCtl.text = cfg.peer;
       _passwordCtl.text = cfg.password;
-      // Показываем хеши из конфига, если они есть; иначе — из settings.
-      _vkHashesCtl.text = cfg.hashes.isNotEmpty ? cfg.hashes : s.vkHashes;
+      // Хеши в настройках — самостоятельное значение. Не перезаписываем
+      // сохранённый пользовательский ввод хешами выбранного конфига.
+      _vkHashesCtl.text = s.vkHashes.isNotEmpty ? s.vkHashes : cfg.hashes;
     } else {
       _peerCtl.text = s.peer;
       _passwordCtl.text = s.password;
@@ -1132,17 +1133,22 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
         children: [
-          SizedBox(
-            width: 150,
+          Flexible(
+            flex: 2,
             child: Text(label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: Colors.white.withOpacity(0.7))),
           ),
+          const SizedBox(width: 8),
           Expanded(
+            flex: 3,
             child: DropdownButtonFormField<String>(
+              isExpanded: true,
               value: items.contains(value) ? value : items.first,
               dropdownColor: const Color(0xFF21142B),
               items: items
-                  .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                  .map((v) => DropdownMenuItem(value: v, child: Text(v, overflow: TextOverflow.ellipsis, maxLines: 1)))
                   .toList(),
               onChanged: (v) {
                 if (v != null) onChanged(v);

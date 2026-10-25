@@ -20,6 +20,7 @@ env:
   PYTHONUTF8: "1"
   FLUTTER_VERSION: "3.29.0"
   RUST_VERSION: "stable"
+  LALUNE_VERSION: ${{ inputs.stable_version }}
 
 jobs:
 
@@ -294,6 +295,40 @@ jobs:
             https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libcsqtt219.so \
             https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-x86_64.so
+      - name: Download CSQTTR core binaries (jniLibs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST="Frontend/android/app/src/main/jniLibs"
+          mkdir -p "$DEST/arm64-v8a" "$DEST/armeabi-v7a" "$DEST/x86_64"
+
+          BASE="https://github.com/Endlad2/csqttr-core/releases/latest/download"
+          if curl -fL --retry 2 --retry-delay 2 -o "$DEST/arm64-v8a/libcsqttr-android-arm64-v8a.so" "$BASE/libclient-android-arm64-v8a.so" \
+            && curl -fL --retry 2 --retry-delay 2 -o "$DEST/armeabi-v7a/libcsqttr-android-armeabi-v7a.so" "$BASE/libclient-android-armeabi-v7a.so" \
+            && curl -fL --retry 2 --retry-delay 2 -o "$DEST/x86_64/libcsqttr-android-x86_64.so" "$BASE/libclient-android-x86_64.so"; then
+            echo "Downloaded all published CSQTTR Android binaries."
+          else
+            echo "::warning::CSQTTR release assets are not published yet; building them from the CSQTTR core PR branch."
+            rm -f "$DEST/arm64-v8a/libcsqttr-android-arm64-v8a.so" "$DEST/armeabi-v7a/libcsqttr-android-armeabi-v7a.so" "$DEST/x86_64/libcsqttr-android-x86_64.so"
+            git clone --depth 1 --branch feat/csqttr-ci-ios-latest https://github.com/Endlad2/csqttr-core.git /tmp/csqttr-core
+            cargo install cargo-ndk --locked
+            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+            export NDK_HOME="$ANDROID_NDK_HOME"
+            cd /tmp/csqttr-core/rust-client
+
+            cargo ndk --target aarch64-linux-android --platform 26 build --release
+            cp target/aarch64-linux-android/release/client "$GITHUB_WORKSPACE/$DEST/arm64-v8a/libcsqttr-android-arm64-v8a.so"
+
+            cargo ndk --target armv7-linux-androideabi --platform 26 build --release
+            cp target/armv7-linux-androideabi/release/client "$GITHUB_WORKSPACE/$DEST/armeabi-v7a/libcsqttr-android-armeabi-v7a.so"
+
+            cargo ndk --target x86_64-linux-android --platform 26 build --release
+            cp target/x86_64-linux-android/release/client "$GITHUB_WORKSPACE/$DEST/x86_64/libcsqttr-android-x86_64.so"
+          fi
+          file "$DEST/arm64-v8a/libcsqttr-android-arm64-v8a.so"
+          file "$DEST/armeabi-v7a/libcsqttr-android-armeabi-v7a.so"
+          file "$DEST/x86_64/libcsqttr-android-x86_64.so"
+
       - name: Download PaperFlux cores (jniLibs)
         run: |
           TMP_PF=$(mktemp -d)
@@ -336,7 +371,7 @@ jobs:
           set -euo pipefail
           APK=$(find Frontend/build/app/outputs/flutter-apk -name "app-debug.apk" -type f | head -n 1)
           echo "APK: $APK"
-          unzip -l "$APK" | grep -E 'libcsqtt-link|libclient-android|libopenflux' || true
+          unzip -l "$APK" | grep -E 'libcsqtt-link|libclient-android|libcsqttr-android|libopenflux' || true
 
       - name: Locate & rename APK
         id: find_apk

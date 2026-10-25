@@ -77,7 +77,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         log("protocol=\(protocolName) peer=\(peer) workers=\(workers)")
 
-        csqtt_set_log_callback(logCallback)
+        let setLogCallback = activeProtocol.uppercased().hasPrefix("CSQTTR") ? csqttr_set_log_callback : csqtt_set_log_callback
+        setLogCallback(logCallback)
 
         let tunIP = "10.66.67.12"
         let dnsServers = ["8.8.8.8", "8.8.4.4"]
@@ -130,7 +131,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let listenAddr = "127.0.0.1:52230"
         log("csqtt_run: peer=\(peer) workers=\(workers)")
 
-        let result = csqtt_run(
+        let runCore = activeProtocol.uppercased().hasPrefix("CSQTTR") ? csqttr_run : csqtt_run
+        let result = runCore(
             peer.cString(using: .utf8),
             hashes.cString(using: .utf8),
             password.cString(using: .utf8),
@@ -231,8 +233,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         isRunning = false
         udpConnection?.cancel()
         if isCoreStarted {
-            log("csqtt_stop")
-            csqtt_stop()
+            if activeProtocol.uppercased().hasPrefix("CSQTTR") {
+                log("csqttr_stop")
+                csqttr_stop()
+            } else {
+                log("csqtt_stop")
+                csqtt_stop()
+            }
         }
         completionHandler()
     }

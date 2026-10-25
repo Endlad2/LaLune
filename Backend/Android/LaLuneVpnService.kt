@@ -125,9 +125,9 @@ class LaLuneVpnService : VpnService() {
         notificationTickerJob = scope.launch {
             while (isActive && isRunning) {
                 delay(NOTIFICATION_TICK_MS)
-                if (tunEstablished) {
-                    updateNotification()
-                }
+                // Обновляем ongoing notification даже до поднятия TUN:
+                // активные сессии и трафик читаются из логов независимо от TUN.
+                updateNotification()
             }
         }
     }
@@ -142,7 +142,12 @@ class LaLuneVpnService : VpnService() {
             if (logsFile.exists()) {
                 try {
                     val content = logsFile.readText()
-                    if (content.length > lastOffset) {
+                    // Backend may truncate/rotate logs. Reset offset or all
+                    // future updates (including notification stats) would stop.
+                    if (content.length.toLong() < lastOffset) {
+                        lastOffset = 0L
+                    }
+                    if (content.length.toLong() > lastOffset) {
                         val newPart = content.substring(lastOffset.toInt())
                         lastOffset = content.length.toLong()
 
@@ -425,7 +430,7 @@ class LaLuneVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val text = if (tunEstablished) {
+        val text = if (tunEstablished || activeSessions > 0 || trafficMB != "0.00") {
             "Активных: $activeSessions | Трафик: $trafficMB МБ"
         } else "Подключение..."
 

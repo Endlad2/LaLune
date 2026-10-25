@@ -17,11 +17,12 @@
 // Плюс периодический опрос каждые 3 сек — на случай race condition.
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
-import '../api/sse_client.dart';
 import 'providers.dart';
 import 'settings_notifier.dart';
 
@@ -43,7 +44,10 @@ class LogsState {
 class LogsNotifier extends StateNotifier<LogsState> {
   final Ref _ref;
   Timer? _poll;
-  SseClient? _sse;
+  WebSocket? _ws;
+  StreamSubscription<dynamic>? _wsSub;
+  Timer? _wsReconnect;
+  int _wsGeneration = 0;
   StreamSubscription<String>? _baseUrlSub;
   ProviderSubscription<bool>? _showCoreLogsSub;
   int _refreshGeneration = 0;
@@ -51,15 +55,14 @@ class LogsNotifier extends StateNotifier<LogsState> {
   LogsNotifier(this._ref) : super(const LogsState()) {
     _refresh();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _refresh());
-    _startSse();
+    _startWebSocket();
 
-    // При смене baseUrl — переподключаем SSE и перечитываем.
+    // При смене baseUrl — переподключаем WebSocket и перечитываем.
     final api = _ref.read(apiClientProvider);
     _baseUrlSub = api.baseUrlChanges.listen((_) {
-      _sse?.dispose();
-      _sse = null;
+      _stopWebSocket();
       state = state.copyWith(lines: const []);
-      _startSse();
+      _startWebSocket();
       _refresh();
     });
 
@@ -78,31 +81,72 @@ class LogsNotifier extends StateNotifier<LogsState> {
   /// Актуальное значение на каждый запрос.
   bool get _showCoreLogs => _ref.read(_showCoreLogsProvider);
 
-  void _startSse() {
+  void _startWebSocket() {
+    final generation = ++_wsGeneration;
     final api = _ref.read(apiClientProvider);
-    _sse = SseClient(
-      uriProvider: () => Uri(
-        scheme: 'http',
-        host: api.host,
-        port: api.port,
-        path: '/events',
-      ),
-      baseUrlChanges: api.baseUrlChanges,
+    final uri = Uri(
+      scheme: 'ws',
+      host: api.host,
+      port: api.port,
+      path: '/logs/ws',
     );
-    _sse!.stream.listen((ev) {
-      if (ev.type == 'log') {
-        final line = ev.data['line'] as String? ?? '';
-        if (line.isEmpty) return;
-        // Читаем каждый раз — не кэшируем.
-        if (!_showCoreLogs && _isCoreLog(line)) return;
-        // Avoid duplicate SSE entries if the same line is already in the API tail.
-        if (state.lines.isNotEmpty && state.lines.last == line) return;
-        final next = [...state.lines, line];
-        if (next.length > 500) next.removeRange(0, next.length - 500);
-        state = state.copyWith(lines: next);
+
+    WebSocket.connect(uri.toString()).then((socket) {
+      if (generation != _wsGeneration) {
+        socket.close();
+        return;
       }
+      _ws = socket;
+      _wsSub = socket.listen(
+        (raw) {
+          if (generation != _wsGeneration || raw is! String) return;
+          try {
+            final message = jsonDecode(raw) as Map<String, dynamic>;
+            if (message['type'] == 'snapshot') {
+              final rawLines = (message['lines'] as List? ?? const [])
+                  .map((line) => line.toString())
+                  .where((line) => line.isNotEmpty && (_showCoreLogs || !_isCoreLog(line)))
+                  .toList();
+              if (rawLines.length > 500) {
+                rawLines.removeRange(0, rawLines.length - 500);
+              }
+              state = state.copyWith(lines: rawLines);
+            } else if (message['type'] == 'log') {
+              final line = message['line'] as String? ?? '';
+              if (line.isEmpty || (!_showCoreLogs && _isCoreLog(line))) return;
+              if (state.lines.isNotEmpty && state.lines.last == line) return;
+              final next = [...state.lines, line];
+              if (next.length > 500) next.removeRange(0, next.length - 500);
+              state = state.copyWith(lines: next);
+            }
+          } catch (_) {
+            // Ignore malformed messages and keep the connection alive.
+          }
+        },
+        onDone: () => _scheduleWsReconnect(generation),
+        onError: (_) => _scheduleWsReconnect(generation),
+        cancelOnError: true,
+      );
+    }).catchError((_) {
+      _scheduleWsReconnect(generation);
     });
-    _sse!.connect();
+  }
+
+  void _scheduleWsReconnect(int generation) {
+    if (generation != _wsGeneration || _wsReconnect?.isActive == true) return;
+    _wsReconnect = Timer(const Duration(seconds: 2), () {
+      if (generation == _wsGeneration) _startWebSocket();
+    });
+  }
+
+  void _stopWebSocket() {
+    _wsGeneration++;
+    _wsReconnect?.cancel();
+    _wsReconnect = null;
+    _wsSub?.cancel();
+    _wsSub = null;
+    _ws?.close();
+    _ws = null;
   }
 
   bool _isCoreLog(String line) {
@@ -147,7 +191,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
   @override
   void dispose() {
     _poll?.cancel();
-    _sse?.dispose();
+    _stopWebSocket();
     _baseUrlSub?.cancel();
     _showCoreLogsSub?.close();
     super.dispose();

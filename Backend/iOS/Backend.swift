@@ -182,7 +182,8 @@ public final class Backend {
                 let obj = (try? JSONSerialization.jsonObject(
                     with: body.data(using: .utf8) ?? Data()) as? [String: Any])
                 let link = obj?["link"] as? String ?? ""
-                return (200, jsonString(from: parseLink(link)) ?? "{}")
+                let protocolName = obj?["protocol"] as? String ?? "CSQTT"
+                return (200, jsonString(from: parseLink(link, protocol: protocolName)) ?? "{}")
             case ("POST", "/configs"):
                 return createConfig(body: body)
 
@@ -618,7 +619,7 @@ public final class Backend {
 
         var parsed: [String: Any]
         if let link = b["link"] as? String, !link.isEmpty {
-            parsed = parseLink(link)
+            parsed = parseLink(link, protocol: b["protocol"] as? String ?? "CSQTT")
         } else {
             parsed = [
                 "protocol": b["protocol"] as? String ?? "CSQTT",
@@ -650,9 +651,9 @@ public final class Backend {
         try? FileManager.default.removeItem(at: selectedConfigURL)
     }
 
-    private func parseLink(_ link: String) -> [String: Any] {
+    private func parseLink(_ link: String, protocol protocolName: String = "CSQTT") -> [String: Any] {
         var out: [String: Any] = [
-            "protocol": "CSQTT", "peer": "", "password": "", "hashes": "", "name": ""
+            "protocol": protocolName, "peer": "", "password": "", "hashes": "", "name": ""
         ]
         guard link.lowercased().hasPrefix("csqtt://") else {
             out["peer"] = link
