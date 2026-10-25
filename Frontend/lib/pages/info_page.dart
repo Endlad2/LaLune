@@ -18,7 +18,8 @@ class InfoPage extends ConsumerStatefulWidget {
 }
 
 class _InfoPageState extends ConsumerState<InfoPage> {
-  static const String _laluneVersion = '0.9';
+  static const String _fallbackVersion = 'unknown';
+  String _laluneVersion = _fallbackVersion;
 
   UpdateInfo _lalune = UpdateInfo.empty;
   bool _checkingLaLune = false;
@@ -32,7 +33,16 @@ class _InfoPageState extends ConsumerState<InfoPage> {
   Future<void> _refreshAll() async {
     final api = ref.read(apiClientProvider);
 
-    // LaLune
+    // Show the version reported by the running backend, which CI stamps
+    // with the exact release tag (stable version or STABLE-shortsha).
+    try {
+      final version = await api.getJson('/version');
+      final value = (version['backend'] ?? version['ui'] ?? '').toString();
+      if (mounted && value.isNotEmpty) {
+        setState(() => _laluneVersion = value);
+      }
+    } catch (_) {}
+
     try {
       final j = await api.getJson('/update/check');
       if (mounted) setState(() => _lalune = UpdateInfo.fromJson(j));
