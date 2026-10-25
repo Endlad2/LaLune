@@ -304,8 +304,9 @@ impl CoreProcess {
         log_file: &Path,
         events: EventBus,
     ) -> Result<Self> {
-        let log = std::fs::File::create(log_file)?;
-        let log_err = log.try_clone()?;
+        if let Some(parent) = log_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
         let mut cmd = Command::new(core_path);
         cmd.args(args);
@@ -366,9 +367,6 @@ impl CoreProcess {
                 }
             });
         }
-
-        drop(log);
-        drop(log_err);
 
         Ok(Self { child })
     }
