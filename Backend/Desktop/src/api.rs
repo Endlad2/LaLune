@@ -570,7 +570,7 @@ async fn vpn_connect(
             }
 
             let ready = match kind_for_watchdog {
-                ProtocolKind::Csqtt => {
+                ProtocolKind::Csqtt | ProtocolKind::Csqttr => {
                     tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2
                 }
                 ProtocolKind::PaperFlux => {
