@@ -143,6 +143,7 @@ targets:
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lcsqtt_ios_core"
+          - "-lcsqttr_ios_core"
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
