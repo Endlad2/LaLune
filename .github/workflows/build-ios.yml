@@ -6,6 +6,11 @@ name: Build iOS
 
 on:
   workflow_dispatch:
+    inputs:
+      stable_version:
+        description: 'Release version (empty uses STABLE-shortsha)'
+        required: false
+        type: string
   push:
     branches: [main, master]
     tags: ['v*']
@@ -32,6 +37,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.stable_version }}" ]]; then
+            VERSION="${{ inputs.stable_version }}"
+          else
+            STABLE="$(tr -d '\\r\\n' < STABLE)"
+            VERSION="${STABLE}-$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "LALUNE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          python3 - "$VERSION" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path('Backend/iOS/Backend.swift')
+          source = path.read_text(encoding='utf-8')
+          import re
+          updated, count = re.subn(r'private let VERSION = "[^"]*"', f'private let VERSION = "{sys.argv[1]}"', source, count=1)
+          if count != 1:
+              raise SystemExit('Could not stamp iOS backend version')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          echo "Building iOS version: $VERSION"
 
       - name: Set up Python
         uses: actions/setup-python@v5
