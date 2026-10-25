@@ -14,6 +14,10 @@ final class CoreManager {
 
     private let LATEST_CSQTT_URL =
         "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
+    private let LATEST_CSQTTR_URL =
+        "https://raw.githubusercontent.com/Endlad2/csqttr-core/refs/heads/release-2.5.2/LATEST"
+    private let CSQTTR_URL_TEMPLATE =
+        "https://github.com/Endlad2/csqttr-core/releases/download/%@/%@"
     private let LATEST_PAPERFLUX_URL =
         "https://raw.githubusercontent.com/Endlad2/PaperFlux-core/refs/heads/main/LATEST"
 
@@ -55,7 +59,7 @@ final class CoreManager {
     }
 
     private func latestFile(protocol proto: String) -> URL {
-        let name = proto.lowercased() == "paperflux" ? "LATEST.PaperFlux" : "LATEST.Csqtt"
+        let name = proto.lowercased() == "paperflux" ? "LATEST.PaperFlux" : (proto.uppercased().hasPrefix("CSQTTR") ? "LATEST.CSQTTR" : "LATEST.Csqtt")
         return appDir.appendingPathComponent(name)
     }
 
@@ -68,7 +72,7 @@ final class CoreManager {
     // MARK: - LATEST
 
     func fetchLatestVersion(protocol proto: String = "CSQTT") -> String? {
-        let baseURL = proto.lowercased() == "paperflux" ? LATEST_PAPERFLUX_URL : LATEST_CSQTT_URL
+        let baseURL = proto.lowercased() == "paperflux" ? LATEST_PAPERFLUX_URL : (proto.uppercased().hasPrefix("CSQTTR") ? LATEST_CSQTTR_URL : LATEST_CSQTT_URL)
         for level in 1...3 {
             let urlStr = level == 1
                 ? baseURL
@@ -100,7 +104,7 @@ final class CoreManager {
     // MARK: - Download
 
     func downloadCore(protocol proto: String = "CSQTT") -> Bool {
-        return proto.lowercased() == "paperflux" ? downloadPaperFlux() : downloadCsqtt()
+        return proto.lowercased() == "paperflux" ? downloadPaperFlux() : (proto.uppercased().hasPrefix("CSQTTR") ? downloadCsqttr() : downloadCsqtt())
     }
 
     private func downloadCsqtt() -> Bool {
@@ -108,6 +112,13 @@ final class CoreManager {
         let filename = "csqtt-core"
         let base = String(format: CSQTT_URL_TEMPLATE, version, filename)
         return downloadFrom(baseURL: base, destName: filename, latestName: "LATEST.Csqtt", latestValue: version)
+    }
+
+    private func downloadCsqttr() -> Bool {
+        guard let version = fetchLatestVersion(protocol: "CSQTTR") else { return false }
+        let filename = "libcsqttr_ios_core.a"
+        let base = String(format: CSQTTR_URL_TEMPLATE, version, filename)
+        return downloadFrom(baseURL: base, destName: filename, latestName: "LATEST.CSQTTR", latestValue: version)
     }
 
     private func downloadPaperFlux() -> Bool {
