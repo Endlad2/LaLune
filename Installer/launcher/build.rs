@@ -18,6 +18,10 @@ const URL_CSQTT_EXE: &str =
 const URL_CSQTT_219_EXE: &str =
     "https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/client-windows-x86_64.exe";
 const CSQTT_219_VERSION: &str = "2026.09.17.17.36";
+const URL_CSQTTR_EXE: &str =
+    "https://github.com/Endlad2/csqttr-core/releases/latest/download/client-windows-x86_64.exe";
+const URL_LATEST_CSQTTR: &str =
+    "https://raw.githubusercontent.com/Endlad2/csqttr-core/refs/heads/release-2.5.2/LATEST";
 const URL_PAPERFLUX_EXE: &str =
     "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-windows-amd64.exe";
 const URL_LATEST_CSQTT: &str =
@@ -137,6 +141,8 @@ fn main() -> Result<()> {
     download(&client, URL_CSQTT_EXE, &out.join("client-windows-x86_64.exe"))?;
     download(&client, URL_CSQTT_219_EXE, &out.join("csqtt-219.exe"))?;
     fs::write(out.join("LATEST.CSQTT-2.1.9"), CSQTT_219_VERSION)?;
+    download(&client, URL_CSQTTR_EXE, &out.join("csqttr-windows-x86_64.exe"))?;
+    download(&client, URL_LATEST_CSQTTR, &out.join("LATEST.CSQTTR"))?;
     download(&client, URL_PAPERFLUX_EXE, &out.join("paperflux-windows-amd64.exe"))?;
     download(&client, URL_LATEST_CSQTT, &out.join("LATEST.Csqtt"))?;
     download(&client, URL_LATEST_PF, &out.join("LATEST.PaperFlux"))?;
