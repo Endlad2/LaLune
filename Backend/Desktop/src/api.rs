@@ -3,7 +3,7 @@
 // HTTP API. Device ID хранится отдельно; /smarttunnel/* реально дёргают Lua.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -61,6 +61,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/logs", get(logs_all).delete(logs_clear))
         .route("/logs/tail", get(logs_tail))
         .route("/logs/stream", get(sse_logs))
+        .route("/logs/ws", get(ws_logs))
         .route("/logs/export", get(logs_export))
         .route("/core/protocols", get(core_protocols))
         .route("/core/:proto/version", get(core_version_p))
@@ -179,6 +180,61 @@ async fn sse_logs(
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+async fn ws_logs(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| stream_logs_ws(socket, state))
+}
+
+async fn stream_logs_ws(mut socket: WebSocket, state: Arc<AppState>) {
+    // Subscribe before sending the snapshot so log lines are not lost during the handshake.
+    let mut rx = state.events.subscribe();
+    let snapshot = logs_snapshot_all(&state).await;
+    let payload = json!({"type": "snapshot", "lines": snapshot}).to_string();
+    if socket.send(Message::Text(payload)).await.is_err() {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            received = rx.recv() => {
+                match received {
+                    Ok(Event::Log { line, .. }) => {
+                        let payload = json!({"type": "log", "line": line}).to_string();
+                        if socket.send(Message::Text(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        if socket.send(Message::Pong(data)).await.is_err() { break; }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+async fn logs_snapshot_all(state: &AppState) -> Vec<String> {
+    let mut logs = state.logs_snapshot();
+    if let Ok(contents) = tokio::fs::read_to_string(&state.logs_path).await {
+        logs.extend(contents.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| format!("{}{}", CORE_PREFIX, line)));
+    }
+    logs
 }
 
 async fn configs_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -473,6 +529,28 @@ async fn vpn_connect(
     };
 
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
+    let settings = state.settings.read().clone();
+    if matches!(kind, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
+        && settings.auth_mode != "autoVk"
+    {
+        let source_hashes = if config.hashes.trim().is_empty() {
+            settings.vk_hashes.as_str()
+        } else {
+            config.hashes.as_str()
+        };
+        let has_hashes = source_hashes
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .any(|hash| !hash.trim().is_empty());
+        if !has_hashes {
+            return err(400, "Не заполнены хеши для режима ручной");
+        }
+    }
+
+    // Start a fresh log session only when a valid new connection is requested.
+    state.logs.lock().clear();
+    if let Err(e) = tokio::fs::write(&state.logs_path, "").await {
+        state.log(format!("[LOGS] failed to reset kernel log file: {}", e));
+    }
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
     let core_path = state::core_path_for(&state.app_dir, &config.protocol);
@@ -517,7 +595,6 @@ async fn vpn_connect(
         }
     }
 
-    let settings = state.settings.read().clone();
     let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
     state.log(format!("[VPN] core args: {}", args.join(" ")));
 
@@ -690,7 +767,7 @@ async fn logs_all(
     State(state): State<Arc<AppState>>,
     Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let logs = state.logs_snapshot();
+    let logs = logs_snapshot_all(&state).await;
     let filtered = filter_logs(&logs, q.source.as_deref());
     Json(json!(filtered))
 }
@@ -700,7 +777,7 @@ async fn logs_tail(
     Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
     let n = q.lines.unwrap_or(100);
-    let logs = state.logs_snapshot();
+    let logs = logs_snapshot_all(&state).await;
     let filtered = filter_logs(&logs, q.source.as_deref());
     let start = filtered.len().saturating_sub(n);
     Json(json!(filtered[start..].to_vec()))
@@ -708,6 +785,9 @@ async fn logs_tail(
 
 async fn logs_clear(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.logs.lock().clear();
+    if let Err(e) = tokio::fs::write(&state.logs_path, "").await {
+        return err(500, format!("failed to clear log file: {}", e));
+    }
     Json(json!({"ok": true}))
 }
 
@@ -715,7 +795,7 @@ async fn logs_export(
     State(state): State<Arc<AppState>>,
     Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let logs = state.logs_snapshot();
+    let logs = logs_snapshot_all(&state).await;
     let filtered = filter_logs(&logs, q.source.as_deref());
     let body = filtered.join("\n");
     (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], body)
