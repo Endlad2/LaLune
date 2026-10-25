@@ -98,7 +98,17 @@ class CoreManager(private val context: Context) {
 
     private fun getRemoteAssetName(protocol: String): String? {
         return when (protocol.uppercase()) {
-            PROTO_CSQTTR.uppercase() -> getCoreName(PROTO_CSQTT)
+            PROTO_CSQTTR.uppercase() -> {
+                // CSQTTR releases reuse the upstream client asset names, but are
+                // stored under a protocol-specific filename inside LaLune.
+                val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
+                when {
+                    abi.contains("arm64") -> "libclient-android-arm64-v8a.so"
+                    abi.contains("armeabi-v7a") || abi.contains("arm") -> "libclient-android-armeabi-v7a.so"
+                    abi.contains("x86_64") -> "libclient-android-x86_64.so"
+                    else -> null
+                }
+            }
             PROTO_CSQTT.uppercase(), PROTO_CSQTT_219.uppercase(), PROTO_CSQTT_251.uppercase() -> getCoreName(PROTO_CSQTT)
             PROTO_PAPERFLUX.uppercase() -> {
                 val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
