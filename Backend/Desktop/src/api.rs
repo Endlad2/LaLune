@@ -634,7 +634,11 @@ async fn vpn_connect(
     let kind_for_watchdog = kind;
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-        let mut last_size = 0u64;
+        // Existing persisted logs belong to earlier runs; only parse bytes appended by this core.
+        let mut last_size = tokio::fs::metadata(&state2.logs_path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         let mut tun_ip: Option<String> = None;
         let mut tun_dns: Option<String> = None;
         let mut consecutive_active_ticks: i32 = 0;
