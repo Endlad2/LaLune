@@ -500,6 +500,15 @@ async fn vpn_connect(
                     }
                 }
             }
+            ProtocolKind::Csqttr => {
+                let version = match core_manager::fetch_latest_csqttr(&client, &state.events).await {
+                    Some(v) => v,
+                    None => return err(500, "cannot fetch CSQTTR LATEST"),
+                };
+                if let Err(e) = core_manager::download_csqttr(&client, &version, &core_path, &state.events).await {
+                    return err(500, format!("download CSQTTR failed: {}", e));
+                }
+            }
             ProtocolKind::PaperFlux => {
                 if let Err(e) = core_manager::download_paperflux(&client, &core_path, &state.events).await {
                     return err(500, format!("download PaperFlux failed: {}", e));
@@ -518,7 +527,7 @@ async fn vpn_connect(
     };
     *state.core.lock() = Some(core);
 
-    if kind == ProtocolKind::Csqtt && settings.share_vpn {
+    if matches!(kind, ProtocolKind::Csqtt | ProtocolKind::Csqttr) && settings.share_vpn {
         match crate::socks5::start(state.clone()) {
             Ok(port) => state.log(format!("[PROXY] socks5 on port {}", port)),
             Err(e) => state.log(format!("[PROXY] failed to start: {}", e)),
