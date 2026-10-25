@@ -393,7 +393,7 @@ fn read_vk_token_for_core() -> Option<String> {
 
 pub fn link_placeholder(kind: ProtocolKind) -> &'static str {
     match kind {
-        ProtocolKind::Csqtt => {
+        ProtocolKind::Csqtt | ProtocolKind::Csqttr => {
             "csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2"
         }
         ProtocolKind::PaperFlux => {
