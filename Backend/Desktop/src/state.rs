@@ -20,6 +20,8 @@ pub struct AppState {
     pub configs_path: PathBuf,
     pub settings_path: PathBuf,
     pub logs_path: PathBuf,
+    pub logs_config_id_path: PathBuf,
+    pub logs_config_id: Mutex<Option<i64>>,
     pub token_path: PathBuf,
     pub core_path: PathBuf,
 
@@ -110,6 +112,10 @@ impl AppState {
         let configs_path = app_dir.join("configs.db");
         let settings_path = app_dir.join("settings.json");
         let logs_path = app_dir.join("logs.log");
+        let logs_config_id_path = app_dir.join("logs_config_id.txt");
+        let logs_config_id = std::fs::read_to_string(&logs_config_id_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok());
         let token_path = app_dir.join("token.json");
         let core_path = core_path_for(&app_dir, "CSQTT");
 
@@ -137,6 +143,8 @@ impl AppState {
             configs_path,
             settings_path,
             logs_path,
+            logs_config_id_path,
+            logs_config_id: Mutex::new(logs_config_id),
             token_path,
             core_path,
             events,
