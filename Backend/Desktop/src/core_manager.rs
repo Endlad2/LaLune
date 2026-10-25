@@ -57,7 +57,10 @@ pub fn csqtt_local_filename() -> &'static str {
 // ============================================================
 
 pub fn csqttr_asset_name() -> &'static str {
-    csqtt_asset_name()
+    #[cfg(target_os = "macos")]
+    { "client-macos-x86_64" }
+    #[cfg(not(target_os = "macos"))]
+    { csqtt_asset_name() }
 }
 
 pub fn csqttr_local_filename() -> &'static str {
