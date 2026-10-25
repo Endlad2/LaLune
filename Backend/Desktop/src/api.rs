@@ -682,7 +682,7 @@ async fn vpn_connect(
                 ));
 
                 if let Err(e) =
-                    vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone())
+                    vpn::start_tun(state2.vpn.clone(), ip.clone(), dns.clone(), state2.events.clone())
                 {
                     state2.log(format!("[VPN] tun start failed: {}", e));
                     state2
