@@ -18,12 +18,15 @@ $ErrorActionPreference = 'Stop'
 $REPO_LALUNE   = 'Endlad2/LaLune'
 $REPO_CSQTT    = 'Endlad2/csqtt-core'
 $REPO_PAPERFLUX = 'Endlad2/PaperFlux-core'
+$REPO_CSQTTR = 'Endlad2/csqttr-core'
 
 $URL_LALUNE_ZIP     = "https://github.com/$REPO_LALUNE/releases/latest/download/LaLune-Windows.zip"
 $URL_BACKEND_ZIP    = "https://github.com/$REPO_LALUNE/releases/latest/download/Backend-Windows.zip"
 $URL_CSQTT_EXE      = "https://github.com/$REPO_CSQTT/releases/latest/download/client-windows-x86_64.exe"
 $URL_CSQTT_219_EXE  = "https://github.com/$REPO_CSQTT/releases/download/2026.09.17.17.36/client-windows-x86_64.exe"
 $URL_PAPERFLUX_EXE  = "https://github.com/$REPO_PAPERFLUX/releases/latest/download/paperflux-windows-amd64.exe"
+$URL_CSQTTR_EXE     = "https://github.com/$REPO_CSQTTR/releases/latest/download/client-windows-x86_64.exe"
+$URL_CSQTTR_LATEST  = "https://raw.githubusercontent.com/$REPO_CSQTTR/refs/heads/release-2.5.2/LATEST"
 $URL_CSQTT_LATEST   = "https://raw.githubusercontent.com/$REPO_CSQTT/refs/heads/main/LATEST"
 $URL_PF_LATEST      = "https://raw.githubusercontent.com/$REPO_PAPERFLUX/refs/heads/main/LATEST"
 $URL_ICON           = "https://raw.githubusercontent.com/$REPO_LALUNE/refs/heads/main/icon.ico"
@@ -210,6 +213,8 @@ function Main {
         Download-File -Url $URL_CSQTT_219_EXE -Dest $csqtt219Exe
         Set-Content -LiteralPath $csqtt219Latest -Value '2026.09.17.17.36' -NoNewline -Encoding ascii
         Download-File -Url $URL_PAPERFLUX_EXE -Dest $paperfluxExe
+        Download-File -Url $URL_CSQTTR_EXE -Dest $csqttrExe
+        Download-File -Url $URL_CSQTTR_LATEST -Dest $csqttrLatest
         Download-File -Url $URL_CSQTT_LATEST  -Dest $csqttLatest
         Download-File -Url $URL_PF_LATEST     -Dest $pfLatest
         Download-File -Url $URL_ICON          -Dest $iconFile
