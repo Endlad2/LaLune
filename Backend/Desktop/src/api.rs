@@ -775,7 +775,15 @@ async fn core_check_p(
             ProtocolKind::PaperFlux => core_manager::fetch_latest_paperflux(&client, &state.events).await.unwrap_or_default(),
         }
     };
-    let latest_file = state.app_dir.join(if proto.trim().eq_ignore_ascii_case("CSQTT 2.1.9") { "LATEST.CSQTT-2.1.9" } else { if kind == ProtocolKind::Csqtt { "LATEST.Csqtt" } else { "LATEST.PaperFlux" } });
+    let latest_file = state.app_dir.join(if use_csqtt_219 {
+        "LATEST.CSQTT-2.1.9"
+    } else {
+        match kind {
+            ProtocolKind::Csqtt => "LATEST.Csqtt",
+            ProtocolKind::Csqttr => "LATEST.CSQTTR",
+            ProtocolKind::PaperFlux => "LATEST.PaperFlux",
+        }
+    });
     let local = tokio::fs::read_to_string(&latest_file)
         .await
         .unwrap_or_default()
