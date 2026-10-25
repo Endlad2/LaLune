@@ -142,7 +142,12 @@ class LaLuneVpnService : VpnService() {
             if (logsFile.exists()) {
                 try {
                     val content = logsFile.readText()
-                    if (content.length > lastOffset) {
+                    // Backend may truncate/rotate logs. Reset offset or all
+                    // future updates (including notification stats) would stop.
+                    if (content.length.toLong() < lastOffset) {
+                        lastOffset = 0L
+                    }
+                    if (content.length.toLong() > lastOffset) {
                         val newPart = content.substring(lastOffset.toInt())
                         lastOffset = content.length.toLong()
 

@@ -692,6 +692,75 @@ async fn vpn_connect(
                 state2.events.emit(Event::status(true));
                 state2.log("[VPN] connected");
                 tun_started = true;
+
+                // Keep watching live core logs after TUN creation. CSQTT can
+                // report code 41 while sessions are active if Wintun came up
+                // before the core was ready; rebuild the tunnel with a cooldown.
+                let monitor_state = state2.clone();
+                let monitor_ip = ip.clone();
+                let monitor_dns = dns.clone();
+                tokio::spawn(async move {
+                    let mut offset = tokio::fs::metadata(&monitor_state.logs_path)
+                        .await.map(|m| m.len()).unwrap_or(0);
+                    let mut active_sessions = 0i32;
+                    let mut last_rebuild = tokio::time::Instant::now()
+                        - Duration::from_secs(60);
+                    loop {
+                        if !monitor_state.vpn.running.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Ok(content) = tokio::fs::read_to_string(&monitor_state.logs_path).await {
+                            if (content.len() as u64) < offset {
+                                offset = 0;
+                            }
+                            let start = (offset as usize).min(content.len());
+                            let tail = &content[start..];
+                            offset = content.len() as u64;
+                            let mut rebuild_requested = false;
+                            for line in tail.lines() {
+                                if let Some((active, _)) = vpn::parse_stats(line) {
+                                    active_sessions = active;
+                                }
+                                let lower = line.to_ascii_lowercase();
+                                if lower.contains("csqtt 41")
+                                    || lower.contains("csqtt: 41")
+                                    || lower.contains("без доступа к интернету")
+                                {
+                                    rebuild_requested = true;
+                                }
+                            }
+                            if rebuild_requested && active_sessions > 0
+                                && last_rebuild.elapsed() >= Duration::from_secs(30)
+                            {
+                                monitor_state.log(format!(
+                                    "[VPN] CSQTT 41 with {} active sessions; rebuilding TUN",
+                                    active_sessions
+                                ));
+                                vpn::cleanup_routes(&monitor_state.vpn, &monitor_state.events);
+                                monitor_state.vpn.stop();
+                                tokio::time::sleep(Duration::from_millis(750)).await;
+                                match vpn::start_tun(
+                                    monitor_state.vpn.clone(),
+                                    monitor_ip.clone(),
+                                    monitor_dns.clone(),
+                                    monitor_state.events.clone(),
+                                ) {
+                                    Ok(()) => {
+                                        last_rebuild = tokio::time::Instant::now();
+                                        monitor_state.events.emit(Event::status(true));
+                                        monitor_state.log("[VPN] TUN rebuilt after CSQTT 41");
+                                    }
+                                    Err(e) => {
+                                        last_rebuild = tokio::time::Instant::now();
+                                        monitor_state.log(format!("[VPN] TUN rebuild failed: {}", e));
+                                        monitor_state.events.emit(Event::error(format!("TUN rebuild failed: {}", e)));
+                                    }
+                                }
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                });
             }
 
             if !tun_started {
