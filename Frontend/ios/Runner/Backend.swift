@@ -660,6 +660,7 @@ public final class Backend {
         } else if let sel = readSelectedConfigJson(),
                   let data = sel.data(using: .utf8),
                   let c = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            proto = c["protocol"] as? String ?? proto
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
             hashes = c["hashes"] as? String ?? hashes
