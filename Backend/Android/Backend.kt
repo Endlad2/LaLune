@@ -81,6 +81,8 @@ class Backend(private val context: Context) {
 
     @Volatile private var running = false
     @Volatile private var vpnConnected = false
+    @Volatile private var vpnState = "disconnected"
+    @Volatile private var vpnMessage = ""
     @Volatile private var smarttunnelRunning = false
     @Volatile private var coreDownloading = false
 
@@ -104,8 +106,19 @@ class Backend(private val context: Context) {
             val connected = intent?.getBooleanExtra(
                 LaLuneVpnService.EXTRA_CONNECTED, false
             ) ?: false
+            val state = intent?.getStringExtra(LaLuneVpnService.EXTRA_STATE)
+                ?: if (connected) "connected" else "disconnected"
+            val message = intent?.getStringExtra(LaLuneVpnService.EXTRA_MESSAGE).orEmpty()
             vpnConnected = connected
-            emit("status", JSONObject().put("connected", connected))
+            vpnState = state
+            vpnMessage = message
+            emit(
+                "status",
+                JSONObject()
+                    .put("connected", connected)
+                    .put("state", state)
+                    .put("message", message)
+            )
         }
     }
 
@@ -384,9 +397,9 @@ class Backend(private val context: Context) {
                 path == "/vpn/connect" && method == "POST" -> vpnConnect(body)
                 path == "/vpn/disconnect" && method == "POST" -> vpnDisconnect()
                 path == "/vpn/status" && method == "GET" -> 200 to jsonOk(
-                    "state" to if (vpnConnected) "connected" else "disconnected",
+                    "state" to vpnState,
                     "connected" to vpnConnected, "uptimeSec" to 0,
-                    "configId" to 0, "message" to "", "since" to "",
+                    "configId" to 0, "message" to vpnMessage, "since" to "",
                     "socks5Port" to socks5Port
                 )
                 path == "/vpn/reconnect" && method == "POST" -> {
@@ -1204,6 +1217,7 @@ class Backend(private val context: Context) {
             )
             if (!started) return 500 to jsonErr("paperflux core start failed")
 
+            markVpnConnecting()
             mainHandler.post {
                 val act = activity
                 if (act == null) { startVpnService(); return@post }
@@ -1236,6 +1250,7 @@ class Backend(private val context: Context) {
 
         if (settings.optBoolean("shareVpn", false)) startSocks5()
 
+        markVpnConnecting()
         mainHandler.post {
             val act = activity
             if (act == null) { startVpnService(); return@post }
@@ -1304,6 +1319,16 @@ class Backend(private val context: Context) {
         return args
     }
 
+    private fun markVpnConnecting() {
+        vpnConnected = false
+        vpnState = "connecting"
+        vpnMessage = "Подключение"
+        emit(
+            "status",
+            JSONObject().put("connected", false).put("state", vpnState).put("message", vpnMessage)
+        )
+    }
+
     fun onVpnPermissionGranted() {
         addLog("[VPN] permission granted, starting service")
         startVpnService()
@@ -1312,7 +1337,12 @@ class Backend(private val context: Context) {
     fun onVpnPermissionDenied() {
         addLog("[VPN] permission denied")
         vpnConnected = false
-        emit("status", JSONObject().put("connected", false))
+        vpnState = "error"
+        vpnMessage = "Нет разрешения VPN"
+        emit(
+            "status",
+            JSONObject().put("connected", false).put("state", vpnState).put("message", vpnMessage)
+        )
     }
 
     private fun startVpnService() {
@@ -1330,7 +1360,12 @@ class Backend(private val context: Context) {
         coreManager?.stopCore()
         stopSocks5()
         vpnConnected = false
-        emit("status", JSONObject().put("connected", false))
+        vpnState = "disconnected"
+        vpnMessage = ""
+        emit(
+            "status",
+            JSONObject().put("connected", false).put("state", vpnState).put("message", vpnMessage)
+        )
         addLog("[VPN] disconnect")
         luaRuntime?.onDisconnect()
         return 200 to jsonOk("ok" to true)

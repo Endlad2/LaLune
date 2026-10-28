@@ -19,6 +19,15 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
   DateTime? _connectingSince;
   DateTime? _disconnectingSince;
 
+  static const _connectTransitionStates = {
+    'connecting',
+    'checking',
+    'checking_tunnel',
+  };
+
+  bool _isConnectTransition(String value) =>
+      _connectTransitionStates.contains(value);
+
   VpnNotifier(this._ref) : super(VpnStatus.empty) {
     _startPolling();
     _startSse();
@@ -52,16 +61,28 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
     _sse!.stream.listen((ev) {
       if (ev.type == 'status') {
         final connected = (ev.data['connected'] ?? false) as bool;
-        // SSE can report a stale "disconnected" while the core is still starting.
-        if (!connected && _isTransitionPending(_connectingSince)) return;
+        final reportedState = (ev.data['state'] ??
+                (connected ? 'connected' : 'disconnected'))
+            .toString();
+        final message = (ev.data['message'] ?? '').toString();
+
+        // Ignore only a truly stale disconnected event during the initial
+        // hand-off. Explicit backend transition states must reach the UI.
+        if (!connected &&
+            reportedState == 'disconnected' &&
+            _isTransitionPending(_connectingSince)) {
+          return;
+        }
         if (connected) _connectingSince = null;
-        if (!connected) _disconnectingSince = null;
+        if (!connected && !_isConnectTransition(reportedState)) {
+          _disconnectingSince = null;
+        }
         state = VpnStatus(
-          state: connected ? 'connected' : 'disconnected',
+          state: reportedState,
           connected: connected,
           uptimeSec: state.uptimeSec,
           configId: state.configId,
-          message: state.message,
+          message: message,
         );
       } else if (ev.type == 'event' && ev.data['name'] == 'tun_ready') {
         _refresh();
@@ -87,9 +108,13 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
         _connectingSince = null;
         _disconnectingSince = null;
         state = next;
+      } else if (_isConnectTransition(next.state)) {
+        // Backend owns the detailed startup state machine (Подключение ->
+        // Проверка -> Проверка туннеля), so preserve it verbatim.
+        state = next;
       } else if (_isTransitionPending(_connectingSince)) {
-        // Keep the transitional UI until the backend confirms connection,
-        // rather than flashing "Отключено" during startup.
+        // Keep the initial transitional UI only while the backend still reports
+        // a plain disconnected state.
         state = VpnStatus(
           state: 'connecting',
           connected: false,
@@ -125,7 +150,7 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
       state: 'connecting',
       connected: false,
       configId: configId,
-      message: 'Подключение...',
+      message: 'Подключение',
     );
     try {
       await api.postJson('/vpn/connect', {'configId': configId});

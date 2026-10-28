@@ -28,8 +28,11 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
 
   Future<void> _toggle() async {
     final vpn = ref.read(vpnProvider);
-    if (vpn.state == 'connecting' || vpn.state == 'disconnecting') return;
-    if (vpn.connected) {
+    if (vpn.state == 'disconnecting') return;
+    if (vpn.connected ||
+        vpn.state == 'connecting' ||
+        vpn.state == 'checking' ||
+        vpn.state == 'checking_tunnel') {
       final ok = await ref.read(vpnProvider.notifier).disconnect();
       if (!mounted) return;
       Toast.show(
@@ -137,6 +140,8 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       if (vpn.state == 'connecting' ||
+                          vpn.state == 'checking' ||
+                          vpn.state == 'checking_tunnel' ||
                           vpn.state == 'disconnecting') ...[
                         SizedBox(
                           width: 13,
@@ -144,9 +149,9 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
                             valueColor: AlwaysStoppedAnimation<Color>(
-                              vpn.state == 'connecting'
-                                  ? const Color(0xFFFFB347)
-                                  : Colors.white70,
+                              vpn.state == 'disconnecting'
+                                  ? Colors.white70
+                                  : const Color(0xFFFFB347),
                             ),
                           ),
                         ),
@@ -155,11 +160,15 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                       Text(
                         vpn.connected
                             ? 'Подключено'
-                            : (vpn.state == 'connecting'
-                                ? 'Подключение...'
-                                : (vpn.state == 'disconnecting'
-                                    ? 'Отключение...'
-                                    : 'Отключено')),
+                            : (vpn.state == 'checking'
+                                ? 'Проверка'
+                                : (vpn.state == 'checking_tunnel'
+                                    ? 'Проверка туннеля'
+                                    : (vpn.state == 'connecting'
+                                        ? 'Подключение'
+                                        : (vpn.state == 'disconnecting'
+                                            ? 'Отключение...'
+                                            : 'Отключено')))),
                         style: TextStyle(
                           fontSize: 16,
                           color: vpn.connected

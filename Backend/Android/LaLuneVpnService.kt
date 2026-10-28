@@ -4,10 +4,14 @@
 //
 // package = com.lalune.lalune — тот же, что у MainActivity и Backend.
 //
-// Порядок (как в Desktop):
-//   1. Ядро запускается (уже запущено Backend'ом до startForegroundService).
-//   2. Ждём в logs.log "Активных: N>0" ДВА тика подряд.
-//   3. Только тогда поднимаем TUN + UDP-мост.
+// Порядок подключения:
+//   1. Ядро запускается Backend'ом до startForegroundService.
+//   2. После первого "Активных: N>0" показываем «Проверка» и ждём ещё 3
+//      положительных тика подряд.
+//   3. Поднимаем TUN + UDP-мост, показываем «Проверка туннеля» и проверяем
+//      telegram.org / youtube.com именно через Android VPN Network.
+//   4. Если оба запроса не прошли — закрываем только TUN, перечитываем
+//      TUN-параметры из logs.log и повторяем. Ядро при этом не останавливается.
 //
 // Уведомление: отдельный тикер каждые 2 сек обновляет notification,
 // чтобы статистика (Активных / Трафик) не "застывала".
@@ -18,13 +22,19 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.IpPrefix
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -36,13 +46,17 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.URL
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -58,17 +72,36 @@ class LaLuneVpnService : VpnService() {
         private const val DEFAULT_DNS_1 = "8.8.8.8"
         private const val DEFAULT_DNS_2 = "8.8.4.4"
         private const val MTU = 1300
+        private const val REQUIRED_ACTIVE_TICKS = 4 // первый >0 + ещё 3 проверки
+        private const val LOG_POLL_MS = 500L
+        private const val TUN_RETRY_DELAY_MS = 1_000L
+        private const val VPN_NETWORK_WAIT_MS = 3_000L
+        private const val HTTP_TIMEOUT_MS = 6_000
+
+        private val TUN_CHECK_URLS = listOf(
+            "https://telegram.org/",
+            "https://youtube.com/",
+        )
 
         /** Периодичность обновления уведомления (2 сек). */
         private const val NOTIFICATION_TICK_MS = 2_000L
 
         const val ACTION_STATUS = "com.lalune.lalune.VPN_STATUS"
         const val EXTRA_CONNECTED = "connected"
+        const val EXTRA_STATE = "state"
+        const val EXTRA_MESSAGE = "message"
 
-        fun notifyStatus(ctx: Context, connected: Boolean) {
+        fun notifyStatus(
+            ctx: Context,
+            connected: Boolean,
+            state: String = if (connected) "connected" else "disconnected",
+            message: String = if (connected) "Подключено" else "",
+        ) {
             val i = Intent(ACTION_STATUS).apply {
                 setPackage(ctx.packageName)
                 putExtra(EXTRA_CONNECTED, connected)
+                putExtra(EXTRA_STATE, state)
+                putExtra(EXTRA_MESSAGE, message)
             }
             ctx.sendBroadcast(i)
         }
@@ -79,20 +112,62 @@ class LaLuneVpnService : VpnService() {
     @Volatile private var activeSessions: Int = 0
     @Volatile private var consecutiveActiveTicks: Int = 0
     @Volatile private var trafficMB: String = "0.00"
+    @Volatile private var connectionState: String = "disconnected"
+    @Volatile private var connectionMessage: String = ""
+    @Volatile private var screenInteractive: Boolean = true
+    @Volatile private var rescanLogsRequested: Boolean = false
+    @Volatile private var fastTunRebuild: Boolean = false
+    @Volatile private var hadTunnel: Boolean = false
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var udpSocket: DatagramSocket? = null
-    private var isRunning = false
+    @Volatile private var isRunning = false
     @Volatile private var tunEstablished = false
     @Volatile private var establishing = false
+    @Volatile private var tunnelGeneration = 0L
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val tunnelMutex = Mutex()
     private lateinit var coreManager: CoreManager
     private var notificationTickerJob: Job? = null
+    private var flowJob: Job? = null
+    private val bridgeJobs = mutableListOf<Job>()
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    screenInteractive = false
+                    Log.i(TAG, "screen off: closing TUN only; core stays alive")
+                    scope.launch {
+                        teardownTunnelOnly("screen off")
+                        consecutiveActiveTicks = 0
+                        detectedTunIP = null
+                        detectedDNS = null
+                        fastTunRebuild = hadTunnel
+                        rescanLogsRequested = true
+                        if (isRunning) publishState("connecting", false, "Подключение")
+                    }
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    screenInteractive = true
+                    Log.i(TAG, "screen on: re-reading TUN params and reconnecting")
+                    consecutiveActiveTicks = 0
+                    detectedTunIP = null
+                    detectedDNS = null
+                    fastTunRebuild = hadTunnel
+                    rescanLogsRequested = true
+                    if (isRunning) publishState("connecting", false, "Подключение")
+                }
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         coreManager = CoreManager(this)
+        screenInteractive = getSystemService(PowerManager::class.java)?.isInteractive ?: true
+        registerScreenReceiver()
         startForegroundCompat()
     }
 
@@ -100,6 +175,7 @@ class LaLuneVpnService : VpnService() {
         when (intent?.action) {
             "START" -> if (!isRunning) {
                 isRunning = true
+                publishState("connecting", false, "Подключение")
                 startFlow()
             }
             "STOP", ACTION_STOP -> stopFlow()
@@ -107,11 +183,25 @@ class LaLuneVpnService : VpnService() {
         return START_STICKY
     }
 
+    private fun registerScreenReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(screenReceiver, filter)
+        }
+    }
+
     private fun startFlow() {
         Log.d(TAG, "startFlow")
-        scope.launch {
+        flowJob?.cancel()
+        flowJob = scope.launch {
             val logsFile = File(filesDir, "la-lune/logs.log")
-            watchLogsAndEstablish(logsFile)
+            watchLogsAndManageTunnel(logsFile)
         }
         startNotificationTicker()
     }
@@ -125,34 +215,39 @@ class LaLuneVpnService : VpnService() {
         notificationTickerJob = scope.launch {
             while (isActive && isRunning) {
                 delay(NOTIFICATION_TICK_MS)
-                // Обновляем ongoing notification даже до поднятия TUN:
-                // активные сессии и трафик читаются из логов независимо от TUN.
                 updateNotification()
             }
         }
     }
 
-    private suspend fun watchLogsAndEstablish(logsFile: File) = withContext(Dispatchers.IO) {
+    private suspend fun watchLogsAndManageTunnel(logsFile: File) = withContext(Dispatchers.IO) {
         var lastOffset = 0L
-        var waited = 0L
-        val timeoutMs = 90_000L
-
         Log.d(TAG, "watching ${logsFile.absolutePath}")
-        while (isRunning && waited < timeoutMs && !tunEstablished) {
+
+        while (isRunning) {
+            if (!screenInteractive) {
+                delay(LOG_POLL_MS)
+                continue
+            }
+
+            if (rescanLogsRequested) {
+                lastOffset = 0L
+                consecutiveActiveTicks = 0
+                detectedTunIP = null
+                detectedDNS = null
+                rescanLogsRequested = false
+                Log.i(TAG, "re-reading logs for fresh TUN parameters")
+            }
+
             if (logsFile.exists()) {
                 try {
                     val content = logsFile.readText()
-                    // Backend may truncate/rotate logs. Reset offset or all
-                    // future updates (including notification stats) would stop.
-                    if (content.length.toLong() < lastOffset) {
-                        lastOffset = 0L
-                    }
+                    if (content.length.toLong() < lastOffset) lastOffset = 0L
                     if (content.length.toLong() > lastOffset) {
                         val newPart = content.substring(lastOffset.toInt())
                         lastOffset = content.length.toLong()
-
-                        newPart.lines().forEach { line ->
-                            if (line.isBlank()) return@forEach
+                        for (line in newPart.lines()) {
+                            if (line.isBlank()) continue
 
                             coreManager.parseTunconf(line)?.let { (ip, dns) ->
                                 detectedTunIP = ip
@@ -164,16 +259,16 @@ class LaLuneVpnService : VpnService() {
                                 trafficMB = String.format("%.2f", traffic)
                                 updateNotification()
 
-                                if (active > 0) consecutiveActiveTicks++
-                                else consecutiveActiveTicks = 0
-
-                                if (active > 0 && consecutiveActiveTicks >= 2 &&
-                                    !tunEstablished && !establishing
-                                ) {
-                                    establishing = true
-                                    Log.i(TAG, "establishing TUN (active=$active)")
-                                    withContext(Dispatchers.Main) { establishTun() }
-                                    establishing = false
+                                if (!tunEstablished && !establishing && !fastTunRebuild) {
+                                    if (active > 0) {
+                                        consecutiveActiveTicks++
+                                        if (consecutiveActiveTicks == 1) {
+                                            publishState("checking", false, "Проверка")
+                                        }
+                                    } else {
+                                        consecutiveActiveTicks = 0
+                                        publishState("connecting", false, "Подключение")
+                                    }
                                 }
                             }
                         }
@@ -182,10 +277,52 @@ class LaLuneVpnService : VpnService() {
                     Log.e(TAG, "read log: ${e.message}")
                 }
             }
-            delay(500)
-            waited += 500
+
+            val readyForTun = !tunEstablished && !establishing &&
+                detectedTunIP != null && detectedDNS != null &&
+                (fastTunRebuild || consecutiveActiveTicks >= REQUIRED_ACTIVE_TICKS)
+
+            if (readyForTun) {
+                establishing = true
+                val established = establishTun()
+                establishing = false
+
+                if (established && isRunning && screenInteractive) {
+                    publishState("checking_tunnel", false, "Проверка туннеля")
+                    val internetOk = verifyTunnelConnectivity()
+                    if (internetOk && isRunning && screenInteractive && tunEstablished) {
+                        publishState("connected", true, "Подключено")
+                        Log.i(TAG, "tunnel connectivity verified")
+                    } else if (isRunning) {
+                        Log.w(TAG, "tunnel check failed; rebuilding TUN without stopping core")
+                        teardownTunnelOnly("connectivity check failed")
+                        consecutiveActiveTicks = 0
+                        detectedTunIP = null
+                        detectedDNS = null
+                        fastTunRebuild = true
+                        rescanLogsRequested = true
+                        publishState("checking_tunnel", false, "Проверка туннеля")
+                        delay(TUN_RETRY_DELAY_MS)
+                    }
+                } else if (isRunning) {
+                    consecutiveActiveTicks = 0
+                    rescanLogsRequested = true
+                    delay(TUN_RETRY_DELAY_MS)
+                }
+            }
+
+            delay(LOG_POLL_MS)
         }
-        if (!tunEstablished) Log.w(TAG, "timeout waiting for TUNCONF + Активных>0")
+    }
+
+    private fun publishState(state: String, connected: Boolean, message: String) {
+        val changed = state != connectionState || message != connectionMessage
+        connectionState = state
+        connectionMessage = message
+        if (changed || connected) {
+            notifyStatus(this, connected, state, message)
+            updateNotification()
+        }
     }
 
     private fun readRoutingSettings(): JSONObject {
@@ -216,13 +353,11 @@ class LaLuneVpnService : VpnService() {
         return value + if (value.contains(':')) "/128" else "/32"
     }
 
-    private fun establishTun() {
-        if (tunEstablished) return
+    private suspend fun establishTun(): Boolean = tunnelMutex.withLock {
+        if (tunEstablished || !isRunning || !screenInteractive) return@withLock false
         Log.d(TAG, "establishTun")
 
-        try { vpnInterface?.close() } catch (_: Exception) {}
-        vpnInterface = null
-
+        teardownTunnelOnlyLocked("before establish")
         try {
             val tunIP = detectedTunIP ?: DEFAULT_TUN_IP
             val dnsList = (detectedDNS ?: "$DEFAULT_DNS_1,$DEFAULT_DNS_2")
@@ -308,81 +443,166 @@ class LaLuneVpnService : VpnService() {
 
             builder.setBlocking(true)
 
-            val iface = builder.establish() ?: run {
+            val iface = withContext(Dispatchers.Main) { builder.establish() } ?: run {
                 Log.e(TAG, "establish() null — no VPN permission")
-                return
+                return@withLock false
             }
 
-            vpnInterface = iface
-            tunEstablished = true
-            Log.d(TAG, "establish() ok, fd=${iface.fd}")
+            val socket = try {
+                DatagramSocket().also { bridge ->
+                    // UDP-мост к ядру обязан идти вне VPN, иначе получим рекурсию.
+                    if (!protect(bridge)) Log.w(TAG, "protect(UDP bridge) returned false")
+                    bridge.connect(InetAddress.getByName("127.0.0.1"), CORE_PORT)
+                }
+            } catch (e: Exception) {
+                try { iface.close() } catch (_: Exception) {}
+                Log.e(TAG, "setupSocket: ${e.message}", e)
+                return@withLock false
+            }
 
-            scope.launch { setupSocketAndBridges(iface, tunIP) }
-            notifyStatus(this, true)
+            tunnelGeneration++
+            val generation = tunnelGeneration
+            vpnInterface = iface
+            udpSocket = socket
+            tunEstablished = true
+            hadTunnel = true
+            fastTunRebuild = false
+            Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$CORE_PORT")
+
+            bridgeJobs.forEach { it.cancel() }
+            bridgeJobs.clear()
+            bridgeJobs += scope.launch { tunToUdp(iface, socket, generation) }
+            bridgeJobs += scope.launch { udpToTun(iface, socket, generation) }
             updateNotification()
+            true
         } catch (e: Exception) {
             Log.e(TAG, "establishTun: ${e.message}", e)
-            tunEstablished = false
+            teardownTunnelOnlyLocked("establish failed")
+            false
         }
     }
 
-    private suspend fun setupSocketAndBridges(iface: ParcelFileDescriptor, tunIP: String) =
-        withContext(Dispatchers.IO) {
-            try {
-                val socket = DatagramSocket()
-                socket.connect(InetAddress.getByName("127.0.0.1"), CORE_PORT)
-                udpSocket = socket
-
-                Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$CORE_PORT")
-                updateNotification()
-
-                launch { tunToUdp(iface, socket) }
-                launch { udpToTun(iface, socket) }
-            } catch (e: Exception) {
-                Log.e(TAG, "setupSocket: ${e.message}", e)
-                tunEstablished = false
-                try { iface.close() } catch (_: Exception) {}
-                vpnInterface = null
-                notifyStatus(this@LaLuneVpnService, false)
-            }
+    private suspend fun verifyTunnelConnectivity(): Boolean = withContext(Dispatchers.IO) {
+        val network = waitForVpnNetwork() ?: run {
+            Log.w(TAG, "VPN Network not visible for tunnel check")
+            return@withContext false
         }
 
-    private suspend fun tunToUdp(iface: ParcelFileDescriptor, socket: DatagramSocket) {
+        for (url in TUN_CHECK_URLS) {
+            if (!isRunning || !screenInteractive || !tunEstablished) return@withContext false
+            if (probeUrlThroughNetwork(network, url)) {
+                Log.i(TAG, "tunnel check OK: $url")
+                return@withContext true
+            }
+        }
+        false
+    }
+
+    private suspend fun waitForVpnNetwork(): Network? {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return null
+        var waited = 0L
+        while (isRunning && screenInteractive && tunEstablished && waited <= VPN_NETWORK_WAIT_MS) {
+            val network = cm.allNetworks.firstOrNull { candidate ->
+                cm.getNetworkCapabilities(candidate)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+            if (network != null) return network
+            delay(100L)
+            waited += 100L
+        }
+        return null
+    }
+
+    private fun probeUrlThroughNetwork(network: Network, url: String): Boolean {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = network.openConnection(URL(url)) as HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = HTTP_TIMEOUT_MS
+            conn.readTimeout = HTTP_TIMEOUT_MS
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "LaLune-TunnelCheck/1.0")
+            conn.setRequestProperty("Range", "bytes=0-0")
+            val code = conn.responseCode
+            code in 200..399
+        } catch (e: Exception) {
+            Log.w(TAG, "tunnel check failed for $url: ${e.message}")
+            false
+        } finally {
+            try { conn?.inputStream?.close() } catch (_: Exception) {}
+            try { conn?.errorStream?.close() } catch (_: Exception) {}
+            conn?.disconnect()
+        }
+    }
+
+    private suspend fun tunToUdp(
+        iface: ParcelFileDescriptor,
+        socket: DatagramSocket,
+        generation: Long,
+    ) {
         val input = FileInputStream(iface.fileDescriptor)
         val buf = ByteArray(65535)
-        while (isRunning && tunEstablished) {
+        while (isRunning && tunEstablished && generation == tunnelGeneration) {
             try {
                 val n = input.read(buf)
                 if (n > 0) socket.send(DatagramPacket(buf.copyOf(n), n))
             } catch (e: Exception) {
-                Log.w(TAG, "tunToUdp: ${e.message}"); break
+                if (isRunning && generation == tunnelGeneration) Log.w(TAG, "tunToUdp: ${e.message}")
+                break
             }
         }
     }
 
-    private suspend fun udpToTun(iface: ParcelFileDescriptor, socket: DatagramSocket) {
+    private suspend fun udpToTun(
+        iface: ParcelFileDescriptor,
+        socket: DatagramSocket,
+        generation: Long,
+    ) {
         val output = FileOutputStream(iface.fileDescriptor)
         val buf = ByteArray(65535)
-        while (isRunning && tunEstablished) {
+        while (isRunning && tunEstablished && generation == tunnelGeneration) {
             try {
                 val packet = DatagramPacket(buf, buf.size)
                 socket.receive(packet)
                 output.write(packet.data, 0, packet.length)
             } catch (e: Exception) {
-                Log.w(TAG, "udpToTun: ${e.message}"); break
+                if (isRunning && generation == tunnelGeneration) Log.w(TAG, "udpToTun: ${e.message}")
+                break
             }
         }
+    }
+
+    private suspend fun teardownTunnelOnly(reason: String) = tunnelMutex.withLock {
+        teardownTunnelOnlyLocked(reason)
+    }
+
+    private fun teardownTunnelOnlyLocked(reason: String) {
+        if (tunEstablished || vpnInterface != null || udpSocket != null) {
+            Log.i(TAG, "closing TUN only ($reason); core remains running")
+        }
+        tunnelGeneration++
+        tunEstablished = false
+        bridgeJobs.forEach { it.cancel() }
+        bridgeJobs.clear()
+        try { udpSocket?.close() } catch (_: Exception) {}
+        udpSocket = null
+        try { vpnInterface?.close() } catch (_: Exception) {}
+        vpnInterface = null
     }
 
     private fun stopFlow() {
         Log.d(TAG, "stopFlow")
         isRunning = false
-        tunEstablished = false
         establishing = false
-
+        flowJob?.cancel()
+        flowJob = null
         notificationTickerJob?.cancel()
         notificationTickerJob = null
 
+        tunnelGeneration++
+        tunEstablished = false
+        bridgeJobs.forEach { it.cancel() }
+        bridgeJobs.clear()
         try { udpSocket?.close() } catch (_: Exception) {}
         udpSocket = null
         try { vpnInterface?.close() } catch (_: Exception) {}
@@ -391,13 +611,19 @@ class LaLuneVpnService : VpnService() {
         activeSessions = 0
         consecutiveActiveTicks = 0
         trafficMB = "0.00"
-
-        notifyStatus(this, false)
+        detectedTunIP = null
+        detectedDNS = null
+        fastTunRebuild = false
+        hadTunnel = false
+        connectionState = "disconnected"
+        connectionMessage = ""
+        notifyStatus(this, false, "disconnected", "")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
+        try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
         stopFlow()
         scope.cancel()
         super.onDestroy()
@@ -430,9 +656,12 @@ class LaLuneVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val text = if (tunEstablished || activeSessions > 0 || trafficMB != "0.00") {
-            "Активных: $activeSessions | Трафик: $trafficMB МБ"
-        } else "Подключение..."
+        val text = when (connectionState) {
+            "checking" -> "Проверка"
+            "checking_tunnel" -> "Проверка туннеля"
+            "connected" -> "Активных: $activeSessions | Трафик: $trafficMB МБ"
+            else -> "Подключение"
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("LaLune")
