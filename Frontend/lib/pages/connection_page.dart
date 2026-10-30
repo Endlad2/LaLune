@@ -31,8 +31,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
     if (vpn.state == 'disconnecting') return;
     if (vpn.connected ||
         vpn.state == 'connecting' ||
-        vpn.state == 'checking' ||
-        vpn.state == 'checking_tunnel') {
+        vpn.state == 'checking') {
       final ok = await ref.read(vpnProvider.notifier).disconnect();
       if (!mounted) return;
       Toast.show(
@@ -141,7 +140,6 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                     children: [
                       if (vpn.state == 'connecting' ||
                           vpn.state == 'checking' ||
-                          vpn.state == 'checking_tunnel' ||
                           vpn.state == 'disconnecting') ...[
                         SizedBox(
                           width: 13,
@@ -162,13 +160,11 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                             ? 'Подключено'
                             : (vpn.state == 'checking'
                                 ? 'Проверка'
-                                : (vpn.state == 'checking_tunnel'
-                                    ? 'Проверка туннеля'
-                                    : (vpn.state == 'connecting'
+                                : (vpn.state == 'connecting'
                                         ? 'Подключение'
                                         : (vpn.state == 'disconnecting'
                                             ? 'Отключение...'
-                                            : 'Отключено')))),
+                                            : 'Отключено'))),
                         style: TextStyle(
                           fontSize: 16,
                           color: vpn.connected

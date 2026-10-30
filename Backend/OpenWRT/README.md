@@ -33,23 +33,22 @@ cd Backend/OpenWRT
 
 ## Установка на роутер
 
-```
-# С роутера
-scp lalune-openwrt-backend root@192.168.1.1:/usr/bin/
-ssh root@192.168.1.1
+Запускайте backend от `root`: ему нужны TUN и изменение маршрутов. UI-установщик при необходимости пытается подготовить `kmod-tun`, `ip` и CA/download-инструменты.
 
+```
 # На роутере
-mkdir -p ~/.la-lune
-mkdir -p ~/.la-lune/core
-# Положить ядро
+mkdir -p ~/la-lune ~/.la-lune
+wget -O ~/la-lune/lalune-openwrt-backend \
+  https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend
+chmod +x ~/la-lune/lalune-openwrt-backend
+
+# Ядро нужно только если его ещё нет.
 wget -O ~/.la-lune/csqtt-client-aarch64 \
   https://github.com/Endlad2/csqtt-core/releases/latest/download/client-linux-arm64
 chmod +x ~/.la-lune/csqtt-client-aarch64
 
-# Положить wintun? — на Linux не нужен.
-
-# Запустить backend
-nohup lalune-openwrt-backend > ~/.la-lune/LaLuneManager.log 2>&1 &
+# На Linux Wintun не нужен.
+nohup ~/la-lune/lalune-openwrt-backend > ~/.la-lune/LaLuneManager.log 2>&1 &
 
 # Проверить
 curl http://192.168.1.1:1062/ping

@@ -169,8 +169,9 @@ class RouterNotifier extends StateNotifier<RouterState> {
       return null;
     }
 
-    if (info.platform.isEmpty) {
-      state = state.copyWith(error: 'Не LaLune-бэкенд на $trimmed');
+    final platform = info.platform.toLowerCase();
+    if (platform != 'openwrt' && platform != 'linux') {
+      state = state.copyWith(error: 'На $trimmed не найден OpenWRT LaLune backend');
       return null;
     }
 

@@ -25,6 +25,7 @@ import '../state/vk_notifier.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/input_row.dart';
+import '../widgets/openwrt_install_modal.dart';
 import '../widgets/router_modal.dart';
 import '../widgets/toast.dart';
 
@@ -262,6 +263,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
     Toast.show(context, 'Открываю авторизацию ВК...');
     await ref.read(vkProvider.notifier).login();
+  }
+
+  Future<void> _onOpenWrtTap() async {
+    final action = await showOpenWrtActionDialog(context);
+    if (action == null || !mounted) return;
+    if (action == 'install') {
+      await showOpenWrtInstallFlow(context);
+      return;
+    }
+    if (action == 'connect') {
+      await _onConnectRouter();
+    }
   }
 
   Future<void> _onConnectRouter() async {
@@ -869,7 +882,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: _onConnectRouter,
+            onPressed: _onOpenWrtTap,
             icon: const Icon(Icons.router, size: 16),
             label: const Text('Подключить OpenWRT'),
             style: ElevatedButton.styleFrom(

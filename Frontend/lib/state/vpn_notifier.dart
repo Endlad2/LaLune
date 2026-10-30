@@ -22,7 +22,6 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
   static const _connectTransitionStates = {
     'connecting',
     'checking',
-    'checking_tunnel',
   };
 
   bool _isConnectTransition(String value) =>
@@ -110,7 +109,7 @@ class VpnNotifier extends StateNotifier<VpnStatus> {
         state = next;
       } else if (_isConnectTransition(next.state)) {
         // Backend owns the detailed startup state machine (Подключение ->
-        // Проверка -> Проверка туннеля), so preserve it verbatim.
+        // Проверка), so preserve it verbatim.
         state = next;
       } else if (_isTransitionPending(_connectingSince)) {
         // Keep the initial transitional UI only while the backend still reports

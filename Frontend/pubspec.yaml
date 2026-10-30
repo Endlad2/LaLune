@@ -14,6 +14,9 @@ dependencies:
   # HTTP
   http: ^1.2.2
 
+  # SSH installer for OpenWRT
+  dartssh2: ^4.1.0
+
   # State
   flutter_riverpod: ^2.5.1
 

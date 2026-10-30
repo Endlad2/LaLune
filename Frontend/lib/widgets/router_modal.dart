@@ -2,7 +2,7 @@
 //
 // Модалка «Подключить OpenWRT».
 //
-// Сверху — заголовок, кнопка «Сканировать» / индикатор «Ищем роутеры...».
+// Сверху — заголовок, кнопка «Сканировать» / индикатор проверки API :1062.
 // Список найденных + сохранённых роутеров. Клик по роутеру — вернуть его
 // из модалки.
 // Снизу — кнопка «Ввести IP роутера вручную».
@@ -123,7 +123,7 @@ class _RouterModalState extends ConsumerState<_RouterModal> {
                     ),
                     const SizedBox(width: 10),
                     Text(
-                      'Ищем роутеры...',
+                      'Ищем LaLune API на :1062...',
                       style: TextStyle(
                         fontSize: 12.5,
                         color: Colors.white.withOpacity(0.7),
@@ -161,7 +161,7 @@ class _RouterModalState extends ConsumerState<_RouterModal> {
                     ? Center(
                         child: Text(
                           st.scanning
-                              ? 'Пожалуйста, подождите...'
+                              ? 'Сканируем локальную сеть и проверяем /ping...'
                               : 'Роутеры не найдены',
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.5),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 class VpnStatus {
-  final String state; // connected | disconnected | connecting | checking | checking_tunnel | disconnecting | error
+  final String state; // connected | disconnected | connecting | checking | disconnecting | error
   final bool connected;
   final int uptimeSec;
   final int configId;

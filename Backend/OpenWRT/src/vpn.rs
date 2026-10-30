@@ -124,28 +124,30 @@ pub fn setup_routes(tun_ip: &str, tun_dns: &str, events: &EventBus) {
     for dns in tun_dns.split(',') {
         let dns = dns.trim();
         if dns.is_empty() { continue; }
-        run_sudo(&format!("echo 'nameserver {}' >> /etc/resolv.conf", dns), events);
+        run_privileged(&format!("echo 'nameserver {}' >> /etc/resolv.conf", dns), events);
     }
-    run_sudo(&format!("ip route add default dev {}", TUN_NAME), events);
+    run_privileged(&format!("ip route add default dev {}", TUN_NAME), events);
     let _ = tun_ip;
 }
 
 pub fn cleanup_routes(events: &EventBus) {
-    run_sudo(&format!("ip route del default dev {} 2>/dev/null || true", TUN_NAME), events);
+    run_privileged(&format!("ip route del default dev {} 2>/dev/null || true", TUN_NAME), events);
 }
 
-fn run_sudo(command: &str, events: &EventBus) {
-    let result = Command::new("sh").args(["-c", &format!("sudo {}", command)]).output();
+fn run_privileged(command: &str, events: &EventBus) {
+    // OpenWRT backend запускается от root. На типичном OpenWRT `sudo` вообще
+    // не установлен, поэтому выполняем маршрутизацию напрямую.
+    let result = Command::new("sh").args(["-c", command]).output();
     match result {
         Ok(out) if out.status.success() => {
-            events.emit(Event::log(format!("[TUN][sudo] OK: {}", command)));
+            events.emit(Event::log(format!("[TUN][root] OK: {}", command)));
         }
         Ok(out) => {
             let err = String::from_utf8_lossy(&out.stderr);
-            events.emit(Event::log(format!("[TUN][sudo] failed: {} — {}", command, err.trim())));
+            events.emit(Event::log(format!("[TUN][root] failed: {} — {}", command, err.trim())));
         }
         Err(e) => {
-            events.emit(Event::log(format!("[TUN][sudo] spawn error: {} — {}", command, e)));
+            events.emit(Event::log(format!("[TUN][root] spawn error: {} — {}", command, e)));
         }
     }
 }

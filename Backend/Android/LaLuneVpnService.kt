@@ -6,12 +6,9 @@
 //
 // Порядок подключения:
 //   1. Ядро запускается Backend'ом до startForegroundService.
-//   2. После первого "Активных: N>0" показываем «Проверка» и ждём ещё 3
-//      положительных тика подряд.
-//   3. Поднимаем TUN + UDP-мост, показываем «Проверка туннеля» и проверяем
-//      telegram.org / youtube.com именно через Android VPN Network.
-//   4. Если оба запроса не прошли — закрываем только TUN, перечитываем
-//      TUN-параметры из logs.log и повторяем. Ядро при этом не останавливается.
+//   2. Ждём 3 подряд строки статистики с «Активных: N>0».
+//   3. Сразу поднимаем TUN + UDP-мост и считаем соединение установленным.
+//      Отдельной HTTP-проверки работоспособности туннеля больше нет.
 //
 // Уведомление: отдельный тикер каждые 2 сек обновляет notification,
 // чтобы статистика (Активных / Трафик) не "застывала".
@@ -27,10 +24,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.net.ConnectivityManager
 import android.net.IpPrefix
-import android.net.Network
-import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -54,9 +48,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.HttpURLConnection
 import java.net.InetAddress
-import java.net.URL
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -72,17 +64,9 @@ class LaLuneVpnService : VpnService() {
         private const val DEFAULT_DNS_1 = "8.8.8.8"
         private const val DEFAULT_DNS_2 = "8.8.4.4"
         private const val MTU = 1300
-        private const val REQUIRED_ACTIVE_TICKS = 4 // первый >0 + ещё 3 проверки
+        private const val REQUIRED_ACTIVE_TICKS = 3
         private const val LOG_POLL_MS = 500L
         private const val TUN_RETRY_DELAY_MS = 1_000L
-        private const val VPN_NETWORK_WAIT_MS = 3_000L
-        private const val HTTP_TIMEOUT_MS = 6_000
-
-        private val TUN_CHECK_URLS = listOf(
-            "https://telegram.org/",
-            "https://youtube.com/",
-        )
-
         /** Периодичность обновления уведомления (2 сек). */
         private const val NOTIFICATION_TICK_MS = 2_000L
 
@@ -116,8 +100,6 @@ class LaLuneVpnService : VpnService() {
     @Volatile private var connectionMessage: String = ""
     @Volatile private var screenInteractive: Boolean = true
     @Volatile private var rescanLogsRequested: Boolean = false
-    @Volatile private var fastTunRebuild: Boolean = false
-    @Volatile private var hadTunnel: Boolean = false
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var udpSocket: DatagramSocket? = null
@@ -144,7 +126,6 @@ class LaLuneVpnService : VpnService() {
                         consecutiveActiveTicks = 0
                         detectedTunIP = null
                         detectedDNS = null
-                        fastTunRebuild = hadTunnel
                         rescanLogsRequested = true
                         if (isRunning) publishState("connecting", false, "Подключение")
                     }
@@ -155,7 +136,6 @@ class LaLuneVpnService : VpnService() {
                     consecutiveActiveTicks = 0
                     detectedTunIP = null
                     detectedDNS = null
-                    fastTunRebuild = hadTunnel
                     rescanLogsRequested = true
                     if (isRunning) publishState("connecting", false, "Подключение")
                 }
@@ -259,7 +239,7 @@ class LaLuneVpnService : VpnService() {
                                 trafficMB = String.format("%.2f", traffic)
                                 updateNotification()
 
-                                if (!tunEstablished && !establishing && !fastTunRebuild) {
+                                if (!tunEstablished && !establishing) {
                                     if (active > 0) {
                                         consecutiveActiveTicks++
                                         if (consecutiveActiveTicks == 1) {
@@ -279,8 +259,7 @@ class LaLuneVpnService : VpnService() {
             }
 
             val readyForTun = !tunEstablished && !establishing &&
-                detectedTunIP != null && detectedDNS != null &&
-                (fastTunRebuild || consecutiveActiveTicks >= REQUIRED_ACTIVE_TICKS)
+                consecutiveActiveTicks >= REQUIRED_ACTIVE_TICKS
 
             if (readyForTun) {
                 establishing = true
@@ -288,22 +267,8 @@ class LaLuneVpnService : VpnService() {
                 establishing = false
 
                 if (established && isRunning && screenInteractive) {
-                    publishState("checking_tunnel", false, "Проверка туннеля")
-                    val internetOk = verifyTunnelConnectivity()
-                    if (internetOk && isRunning && screenInteractive && tunEstablished) {
-                        publishState("connected", true, "Подключено")
-                        Log.i(TAG, "tunnel connectivity verified")
-                    } else if (isRunning) {
-                        Log.w(TAG, "tunnel check failed; rebuilding TUN without stopping core")
-                        teardownTunnelOnly("connectivity check failed")
-                        consecutiveActiveTicks = 0
-                        detectedTunIP = null
-                        detectedDNS = null
-                        fastTunRebuild = true
-                        rescanLogsRequested = true
-                        publishState("checking_tunnel", false, "Проверка туннеля")
-                        delay(TUN_RETRY_DELAY_MS)
-                    }
+                    publishState("connected", true, "Подключено")
+                    Log.i(TAG, "TUN created after $REQUIRED_ACTIVE_TICKS active ticks")
                 } else if (isRunning) {
                     consecutiveActiveTicks = 0
                     rescanLogsRequested = true
@@ -465,8 +430,6 @@ class LaLuneVpnService : VpnService() {
             vpnInterface = iface
             udpSocket = socket
             tunEstablished = true
-            hadTunnel = true
-            fastTunRebuild = false
             Log.i(TAG, "TUN up: IP=$tunIP, UDP bridge to 127.0.0.1:$CORE_PORT")
 
             bridgeJobs.forEach { it.cancel() }
@@ -479,59 +442,6 @@ class LaLuneVpnService : VpnService() {
             Log.e(TAG, "establishTun: ${e.message}", e)
             teardownTunnelOnlyLocked("establish failed")
             false
-        }
-    }
-
-    private suspend fun verifyTunnelConnectivity(): Boolean = withContext(Dispatchers.IO) {
-        val network = waitForVpnNetwork() ?: run {
-            Log.w(TAG, "VPN Network not visible for tunnel check")
-            return@withContext false
-        }
-
-        for (url in TUN_CHECK_URLS) {
-            if (!isRunning || !screenInteractive || !tunEstablished) return@withContext false
-            if (probeUrlThroughNetwork(network, url)) {
-                Log.i(TAG, "tunnel check OK: $url")
-                return@withContext true
-            }
-        }
-        false
-    }
-
-    private suspend fun waitForVpnNetwork(): Network? {
-        val cm = getSystemService(ConnectivityManager::class.java) ?: return null
-        var waited = 0L
-        while (isRunning && screenInteractive && tunEstablished && waited <= VPN_NETWORK_WAIT_MS) {
-            val network = cm.allNetworks.firstOrNull { candidate ->
-                cm.getNetworkCapabilities(candidate)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-            }
-            if (network != null) return network
-            delay(100L)
-            waited += 100L
-        }
-        return null
-    }
-
-    private fun probeUrlThroughNetwork(network: Network, url: String): Boolean {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = network.openConnection(URL(url)) as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            conn.connectTimeout = HTTP_TIMEOUT_MS
-            conn.readTimeout = HTTP_TIMEOUT_MS
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "LaLune-TunnelCheck/1.0")
-            conn.setRequestProperty("Range", "bytes=0-0")
-            val code = conn.responseCode
-            code in 200..399
-        } catch (e: Exception) {
-            Log.w(TAG, "tunnel check failed for $url: ${e.message}")
-            false
-        } finally {
-            try { conn?.inputStream?.close() } catch (_: Exception) {}
-            try { conn?.errorStream?.close() } catch (_: Exception) {}
-            conn?.disconnect()
         }
     }
 
@@ -613,8 +523,6 @@ class LaLuneVpnService : VpnService() {
         trafficMB = "0.00"
         detectedTunIP = null
         detectedDNS = null
-        fastTunRebuild = false
-        hadTunnel = false
         connectionState = "disconnected"
         connectionMessage = ""
         notifyStatus(this, false, "disconnected", "")
@@ -658,7 +566,6 @@ class LaLuneVpnService : VpnService() {
 
         val text = when (connectionState) {
             "checking" -> "Проверка"
-            "checking_tunnel" -> "Проверка туннеля"
             "connected" -> "Активных: $activeSessions | Трафик: $trafficMB МБ"
             else -> "Подключение"
         }

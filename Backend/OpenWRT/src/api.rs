@@ -440,9 +440,9 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                 }
             }
 
-            if tun_ip.is_some() && tun_dns.is_some() && consecutive_active_ticks >= 2 {
-                let ip = tun_ip.clone().unwrap();
-                let dns = tun_dns.clone().unwrap();
+            if consecutive_active_ticks >= 3 {
+                let ip = tun_ip.clone().unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
+                let dns = tun_dns.clone().unwrap_or_else(|| vpn::DEFAULT_DNS.to_string());
                 state2.log(format!("[VPN] TUN params: ip={} dns={}", ip, dns));
 
                 if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
@@ -460,7 +460,7 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
         }
 
         if !tun_started {
-            state2.log("[VPN] timeout: TUNCONF or Активных>0 not seen within 90s");
+            state2.log("[VPN] timeout: 3 consecutive Активных>0 ticks not seen within 90s");
             state2.events.emit(Event::status(false));
         }
     });
