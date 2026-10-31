@@ -688,6 +688,7 @@ public final class Backend {
 
     private func vpnConnect(body: String) -> (Int, String) {
         let settings = loadSettings()
+        var protocolName = settings["protocol"] as? String ?? "CSQTT"
         var peer = settings["peer"] as? String ?? ""
         var password = settings["password"] as? String ?? ""
         var cfgHashes = settings["vkHashes"] as? String ?? ""
@@ -696,6 +697,7 @@ public final class Backend {
            let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let configId = b["configId"] as? Int64,
            let c = findConfig(id: configId) {
+            protocolName = c["protocol"] as? String ?? protocolName
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
             let h = c["hashes"] as? String ?? ""
@@ -703,6 +705,7 @@ public final class Backend {
         } else if let sel = readSelectedConfigJson(),
                   let data = sel.data(using: .utf8),
                   let c = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            protocolName = c["protocol"] as? String ?? protocolName
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
             let h = c["hashes"] as? String ?? ""
@@ -715,7 +718,8 @@ public final class Backend {
         let hashes = cfgHashes
 
         CoreManager.shared.writeSharedSettings(
-            from: settings, peer: peer, password: password, hashes: hashes
+            from: settings, protocol: protocolName, peer: peer,
+            password: password, hashes: hashes
         )
 
         if CoreManager.shared.corePath() == nil {

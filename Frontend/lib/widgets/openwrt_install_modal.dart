@@ -46,6 +46,13 @@ Future<void> showOpenWrtInstallFlow(BuildContext context) async {
   final credentials = await _showCredentialsDialog(context, host);
   if (credentials == null || !context.mounted) return;
 
+  // showDialog completes as soon as Navigator.pop is called, while the route can
+  // still be in its exit transition. Waiting for the frame prevents a second
+  // overlay route from being pushed while inherited dependencies of the first
+  // dialog are still deactivating on some Flutter/Android combinations.
+  await WidgetsBinding.instance.endOfFrame;
+  if (!context.mounted) return;
+
   await showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -68,88 +75,107 @@ class _SshCredentials {
 Future<_SshCredentials?> _showCredentialsDialog(
   BuildContext context,
   String host,
-) async {
-  final userCtl = TextEditingController(text: 'root');
-  final passCtl = TextEditingController();
-  var obscure = true;
-
-  final result = await showDialog<_SshCredentials>(
+) {
+  return showDialog<_SshCredentials>(
     context: context,
     barrierColor: Colors.black.withOpacity(0.65),
-    builder: (context) => StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        backgroundColor: const Color(0xFF21142B),
-        title: Text('SSH · $host'),
-        content: SizedBox(
-          width: 380,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: userCtl,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'Логин SSH',
-                  hintText: 'root',
-                ),
+    builder: (_) => _SshCredentialsDialog(host: host),
+  );
+}
+
+class _SshCredentialsDialog extends StatefulWidget {
+  final String host;
+
+  const _SshCredentialsDialog({required this.host});
+
+  @override
+  State<_SshCredentialsDialog> createState() => _SshCredentialsDialogState();
+}
+
+class _SshCredentialsDialogState extends State<_SshCredentialsDialog> {
+  late final TextEditingController _userCtl;
+  late final TextEditingController _passCtl;
+  bool _obscure = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _userCtl = TextEditingController(text: 'root');
+    _passCtl = TextEditingController();
+  }
+
+  void _submit() {
+    final user = _userCtl.text.trim();
+    if (user.isEmpty) return;
+    FocusScope.of(context).unfocus();
+    Navigator.pop(context, _SshCredentials(user, _passCtl.text));
+  }
+
+  @override
+  void dispose() {
+    _userCtl.dispose();
+    _passCtl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF21142B),
+      title: Text('SSH · ${widget.host}'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _userCtl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Логин SSH',
+                hintText: 'root',
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: passCtl,
-                obscureText: obscure,
-                decoration: InputDecoration(
-                  labelText: 'Пароль SSH (может быть пустым)',
-                  suffixIcon: IconButton(
-                    onPressed: () => setState(() => obscure = !obscure),
-                    icon: Icon(
-                      obscure ? Icons.visibility : Icons.visibility_off,
-                    ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _passCtl,
+              obscureText: _obscure,
+              decoration: InputDecoration(
+                labelText: 'Пароль SSH (может быть пустым)',
+                suffixIcon: IconButton(
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                  icon: Icon(
+                    _obscure ? Icons.visibility : Icons.visibility_off,
                   ),
                 ),
-                onSubmitted: (_) {
-                  final user = userCtl.text.trim();
-                  if (user.isNotEmpty) {
-                    Navigator.pop(
-                      context,
-                      _SshCredentials(user, passCtl.text),
-                    );
-                  }
-                },
               ),
-              const SizedBox(height: 10),
-              Text(
-                'Клиент подключится к порту 22, создаст ~/la-lune/, '
-                'установит backend и при необходимости CSQTT-ядро.',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  height: 1.45,
-                  color: Colors.white.withOpacity(0.55),
-                ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Клиент подключится к порту 22, создаст ~/la-lune/, '
+              'установит backend и при необходимости CSQTT-ядро.',
+              style: TextStyle(
+                fontSize: 11.5,
+                height: 1.45,
+                color: Colors.white.withOpacity(0.55),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final user = userCtl.text.trim();
-              if (user.isEmpty) return;
-              Navigator.pop(context, _SshCredentials(user, passCtl.text));
-            },
-            child: const Text('Продолжить'),
-          ),
-        ],
       ),
-    ),
-  );
-
-  userCtl.dispose();
-  passCtl.dispose();
-  return result;
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        ElevatedButton(
+          onPressed: _submit,
+          child: const Text('Продолжить'),
+        ),
+      ],
+    );
+  }
 }
 
 class _SshHostModal extends StatefulWidget {
