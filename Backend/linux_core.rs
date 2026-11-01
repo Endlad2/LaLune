@@ -19,6 +19,14 @@ impl CoreUser {
         if unsafe { libc::geteuid() } != 0 {
             bail!("Для Linux TUN запустите backend от root: нужны TUN, смена UID и ip rule");
         }
+        // После смены UID сигнал ядру требует CAP_KILL, иначе остаётся старый процесс.
+        let status = fs::read_to_string("/proc/self/status")?;
+        let capabilities = status.lines().find_map(|line| line.strip_prefix("CapEff:"))
+            .context("Не удалось проверить права остановки ядра")?;
+        let capabilities = u64::from_str_radix(capabilities.trim(), 16)?;
+        if capabilities & (1 << 5) == 0 {
+            bail!("Нужна CAP_KILL для остановки CSQTT под отдельным UID");
+        }
         let lease = OpenOptions::new()
             .read(true)
             .write(true)

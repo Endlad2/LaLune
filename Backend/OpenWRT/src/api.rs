@@ -372,8 +372,6 @@ struct ConnectBody { #[serde(rename = "configId")] config_id: Option<i64> }
 
 async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<ConnectBody>) -> impl IntoResponse {
     let _operation = state.vpn.operation.lock().await;
-    state.vpn.stop().await;
-    finish_vpn(&state).await;
     let config = if let Some(id) = body.config_id {
         state.configs.get(id).ok().flatten()
     } else {
@@ -381,6 +379,8 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     };
     let config = match config { Some(c) => c, None => return err(400, "no config selected") };
 
+    state.vpn.stop().await;
+    finish_vpn(&state).await;
     state.log(format!("[VPN] connecting to {}", config.name));
 
     if !state.core_path.exists() {

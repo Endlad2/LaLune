@@ -533,8 +533,6 @@ async fn vpn_connect(
     Json(body): Json<ConnectBody>,
 ) -> axum::response::Response {
     let _operation = state.vpn.operation.lock().await;
-    state.vpn.stop().await;
-    finish_vpn(&state).await;
     let config = if let Some(id) = body.config_id {
         state.configs.get(id).ok().flatten()
     } else {
@@ -546,6 +544,8 @@ async fn vpn_connect(
         None => return err(400, "no config selected"),
     };
 
+    state.vpn.stop().await;
+    finish_vpn(&state).await;
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 

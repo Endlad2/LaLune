@@ -43,7 +43,7 @@ while True:
  s.sendto(h+udp,a)
 '''
 
-CASES=['routes','packet','disconnect','cancel','setup_failure','dns_failure','dns_changed','core_exit','reconnect','group_conflict','table_alias']
+CASES=['routes','packet','disconnect','cancel','setup_failure','dns_failure','dns_changed','core_exit','reconnect','group_conflict','table_alias','missing_kill','invalid_connect']
 DESKTOP_CASES=['paperflux_compat','csqttr_compat']
 
 
@@ -107,14 +107,24 @@ def inside(binary, case):
         if case=='dns_failure':
             cmd('mount','-o','remount,bind,ro','/etc/resolv.conf')
         log=(root/'backend.log').open('w')
-        process=subprocess.Popen([binary],env=environment,stdout=log,stderr=log)
+        command=['setpriv','--bounding-set=-kill',binary] if case=='missing_kill' else [binary]
+        process=subprocess.Popen(command,env=environment,stdout=log,stderr=log)
         try:
             wait_for(lambda:api('/ping'))
             protocol={'paperflux_compat':'PaperFlux','csqttr_compat':'CSQTTR'}.get(case,'CSQTT')
             conf=api('/configs',{'name':'Kernel regression','protocol':protocol,
                  'peer':'192.0.2.1:46000','password':'local-test','hashes':'local-test'})
-            api('/vpn/connect',{'configId':conf['id']})
-            if case=='cancel':
+            if case=='missing_kill':
+                try:api('/vpn/connect',{'configId':conf['id']})
+                except urllib.error.HTTPError as error:
+                    assert error.code==500 and 'CAP_KILL' in error.read().decode()
+                else:raise AssertionError('CSQTT started without permission to stop its core')
+            else:api('/vpn/connect',{'configId':conf['id']})
+            if case=='missing_kill':
+                assert not api('/vpn/status')['connected']
+                children={p for f in Path(f'/proc/{process.pid}/task').glob('*/children') for p in f.read_text().split()}
+                assert not children,'Permission failure left a core process'
+            elif case=='cancel':
                 wait_for(lambda:(app/'logs.log').read_text().count('Активных:')>=3)
                 api('/vpn/disconnect',{})
                 time.sleep(2.5)
@@ -128,6 +138,12 @@ def inside(binary, case):
                 children={int(pid) for f in Path(f'/proc/{process.pid}/task').glob('*/children')
                           for pid in f.read_text().split()}
                 child=next(iter(children))
+                if case=='invalid_connect':
+                    try:api('/vpn/connect',{'configId':999999})
+                    except urllib.error.HTTPError as error:assert error.code==400
+                    else:raise AssertionError('Invalid config was accepted')
+                    assert api('/vpn/status')['connected'],'Invalid connect stopped the active VPN'
+                    assert Path(f'/proc/{child}').exists(),'Invalid connect killed the active core'
                 identity=Path(f'/proc/{child}/status').read_text()
                 if case in DESKTOP_CASES:
                     assert '\nUid:\t0\t' in identity,'Legacy core identity changed'
@@ -184,6 +200,11 @@ def inside(binary, case):
             assert Path('/etc/resolv.conf').is_symlink()==symlink,'Resolver symlink replaced'
             print(json.dumps({'case':case,'passed':True}),flush=True)
         finally:
+            if case=='missing_kill':
+                for f in Path(f'/proc/{process.pid}/task').glob('*/children'):
+                    for pid in f.read_text().split():
+                        try:os.kill(int(pid),signal.SIGKILL)
+                        except ProcessLookupError:pass
             process.terminate()
             try:process.wait(timeout=2)
             except subprocess.TimeoutExpired:process.kill();process.wait()

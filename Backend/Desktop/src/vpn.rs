@@ -536,3 +536,42 @@ pub fn extract_ipv4_addrs(line: &str) -> Vec<String> {
 
     result
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_lifecycle_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_cancels_watchdog_and_clears_runtime_without_tun() {
+        struct OnDrop(Arc<AtomicBool>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+        }
+
+        let runtime = VpnRuntime::new();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let started_task = started.clone();
+        let cancelled_task = cancelled.clone();
+        *runtime.watchdog.lock() = Some(tokio::spawn(async move {
+            let _on_drop = OnDrop(cancelled_task);
+            started_task.notify_one();
+            std::future::pending::<()>().await;
+        }));
+        started.notified().await;
+        runtime.running.store(true, Ordering::Release);
+        *runtime.started_at.lock() = Some(Instant::now());
+        *runtime.tun_conf.lock() = Some(TunConf {
+            ip: "192.0.2.1".into(), dns: "192.0.2.53".into(), mtu: TUN_MTU,
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), runtime.stop()).await.unwrap();
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!runtime.running.load(Ordering::Acquire));
+        assert!(runtime.watchdog.lock().is_none());
+        assert!(runtime.wintun.lock().is_none());
+        assert!(runtime.started_at.lock().is_none());
+        assert!(runtime.tun_conf.lock().is_none());
+        runtime.stop().await;
+    }
+}
