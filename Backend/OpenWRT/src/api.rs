@@ -371,6 +371,9 @@ async fn device_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 struct ConnectBody { #[serde(rename = "configId")] config_id: Option<i64> }
 
 async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<ConnectBody>) -> impl IntoResponse {
+    let _operation = state.vpn.operation.lock().await;
+    state.vpn.stop().await;
+    finish_vpn(&state).await;
     let config = if let Some(id) = body.config_id {
         state.configs.get(id).ok().flatten()
     } else {
@@ -398,6 +401,8 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     let core = match CoreProcess::spawn(&state.core_path, &args, &state.logs_path, state.events.clone()).await {
         Ok(c) => c, Err(e) => return err(500, format!("spawn failed: {}", e)),
     };
+    #[cfg(target_os = "linux")]
+    state.vpn.core_uid.store(core.user.uid, std::sync::atomic::Ordering::Release);
     *state.core.lock() = Some(core);
 
     if settings.share_vpn {
@@ -412,7 +417,7 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     }
 
     let state2 = state.clone();
-    tokio::spawn(async move {
+    let watchdog = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last_size = 0u64;
         let mut tun_ip: Option<String> = None;
@@ -421,6 +426,8 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
         let mut tun_started = false;
 
         while tokio::time::Instant::now() < deadline && !tun_started {
+            if core_stopped(&state2) { break; }
+
             if let Ok(meta) = tokio::fs::metadata(&state2.logs_path).await {
                 if meta.len() > last_size {
                     if let Ok(content) = tokio::fs::read_to_string(&state2.logs_path).await {
@@ -441,6 +448,7 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
             }
 
             if consecutive_active_ticks >= 3 {
+                let _operation = state2.vpn.operation.lock().await;
                 let ip = tun_ip.clone().unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
                 let dns = tun_dns.clone().unwrap_or_else(|| vpn::DEFAULT_DNS.to_string());
                 state2.log(format!("[VPN] TUN params: ip={} dns={}", ip, dns));
@@ -448,6 +456,7 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                 if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
                     state2.log(format!("[VPN] tun start failed: {}", e));
                     state2.events.emit(Event::error(format!("tun start failed: {}", e)));
+                    finish_vpn(&state2).await;
                     return;
                 }
 
@@ -463,27 +472,41 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
             state2.log("[VPN] timeout: 3 consecutive Активных>0 ticks not seen within 90s");
             state2.events.emit(Event::status(false));
         }
+        if tun_started {
+            while !core_stopped(&state2) && state2.vpn.running.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        let _operation = state2.vpn.operation.lock().await;
+        finish_vpn(&state2).await;
     });
+    *state.vpn.watchdog.lock() = Some(watchdog);
 
     Json(json!({"ok": true, "status": "connecting"})).into_response()
 }
 
-async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    state.log("[VPN] disconnecting...");
-    state.vpn.stop();
-    vpn::cleanup_routes(&state.events);
-
-    crate::socks5::stop(&state);
-
-    let maybe_proc = { let mut core = state.core.lock(); core.take() };
-    if let Some(mut p) = maybe_proc { let _ = p.kill().await; }
-
-    state.events.emit(Event::status(false));
-
-    if let Some(lua) = state.lua() {
-        lua.on_disconnect();
+fn core_stopped(state: &AppState) -> bool {
+    let mut core = state.core.lock();
+    match core.as_mut() {
+        Some(core) => !matches!(core.child.try_wait(), Ok(None)),
+        None => true,
     }
+}
 
+async fn finish_vpn(state: &Arc<AppState>) {
+    state.vpn.stop_tun().await;
+    crate::socks5::stop(state);
+    let core = { state.core.lock().take() };
+    if let Some(mut core) = core { let _ = core.kill().await; }
+    state.events.emit(Event::status(false));
+    if let Some(lua) = state.lua() { lua.on_disconnect(); }
+}
+
+async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let _operation = state.vpn.operation.lock().await;
+    state.log("[VPN] disconnecting...");
+    state.vpn.stop().await;
+    finish_vpn(&state).await;
     Json(json!({"ok": true}))
 }
 

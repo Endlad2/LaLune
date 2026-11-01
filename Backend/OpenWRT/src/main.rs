@@ -20,6 +20,11 @@ mod state;
 mod vk;
 mod vpn;
 
+#[path = "../../linux_core.rs"]
+mod linux_core;
+#[path = "../../linux_tun.rs"]
+mod linux_tun;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

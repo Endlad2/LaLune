@@ -5,16 +5,11 @@
 //   * Маршруты/DNS через `ip` и `/etc/resolv.conf`.
 //   * Никаких bypass — как в Go-версии для Linux.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use parking_lot::Mutex;
-use std::io::{Read, Write};
-use std::net::UdpSocket;
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
-use tun::Configuration;
+use std::time::Instant;
 
 use crate::events::{Event, EventBus};
 
@@ -72,7 +67,10 @@ pub struct VpnRuntime {
     pub tx_bytes: Arc<AtomicU64>,
     pub started_at: Arc<Mutex<Option<Instant>>>,
     pub tun_conf: Arc<Mutex<Option<TunConf>>>,
-    pub handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    pub handle: Mutex<Option<crate::linux_tun::Session>>,
+    pub core_uid: AtomicU32,
+    pub operation: tokio::sync::Mutex<()>,
+    pub watchdog: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl VpnRuntime {
@@ -83,7 +81,10 @@ impl VpnRuntime {
             tx_bytes: Arc::new(AtomicU64::new(0)),
             started_at: Arc::new(Mutex::new(None)),
             tun_conf: Arc::new(Mutex::new(None)),
-            handle: Arc::new(Mutex::new(None)),
+            handle: Mutex::new(None),
+            core_uid: AtomicU32::new(0),
+            operation: tokio::sync::Mutex::new(()),
+            watchdog: Mutex::new(None),
         }
     }
 
@@ -112,129 +113,29 @@ impl VpnRuntime {
         }
     }
 
-    pub fn stop(&self) {
-        self.running.store(false, Ordering::Relaxed);
-        if let Some(h) = self.handle.lock().take() { let _ = h.join(); }
+    pub async fn stop(&self) {
+        let watchdog = { self.watchdog.lock().take() };
+        if let Some(task) = watchdog { task.abort(); let _ = task.await; }
+        self.stop_tun().await;
+    }
+
+    pub async fn stop_tun(&self) {
+        self.running.store(false, Ordering::Release);
+        let session = { self.handle.lock().take() };
+        if let Some(session) = session { session.stop().await; }
         *self.started_at.lock() = None;
         *self.tun_conf.lock() = None;
     }
 }
 
-pub fn setup_routes(tun_ip: &str, tun_dns: &str, events: &EventBus) {
-    for dns in tun_dns.split(',') {
-        let dns = dns.trim();
-        if dns.is_empty() { continue; }
-        run_privileged(&format!("echo 'nameserver {}' >> /etc/resolv.conf", dns), events);
-    }
-    run_privileged(&format!("ip route add default dev {}", TUN_NAME), events);
-    let _ = tun_ip;
-}
-
-pub fn cleanup_routes(events: &EventBus) {
-    run_privileged(&format!("ip route del default dev {} 2>/dev/null || true", TUN_NAME), events);
-}
-
-fn run_privileged(command: &str, events: &EventBus) {
-    // OpenWRT backend запускается от root. На типичном OpenWRT `sudo` вообще
-    // не установлен, поэтому выполняем маршрутизацию напрямую.
-    let result = Command::new("sh").args(["-c", command]).output();
-    match result {
-        Ok(out) if out.status.success() => {
-            events.emit(Event::log(format!("[TUN][root] OK: {}", command)));
-        }
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            events.emit(Event::log(format!("[TUN][root] failed: {} — {}", command, err.trim())));
-        }
-        Err(e) => {
-            events.emit(Event::log(format!("[TUN][root] spawn error: {} — {}", command, e)));
-        }
-    }
-}
-
-pub fn start_tun(
-    runtime: Arc<VpnRuntime>,
-    tun_ip: String,
-    tun_dns: String,
-    events: EventBus,
-) -> Result<()> {
-    let mut config = Configuration::default();
-    config
-        .name(TUN_NAME)
-        .address(&tun_ip)
-        .netmask("255.255.255.255")
-        .mtu(TUN_MTU as i32)
-        .up();
-
-    let dev = tun::create(&config).map_err(|e| anyhow!("tun create failed: {}", e))?;
-    let dev = Arc::new(Mutex::new(dev));
-
-    events.emit(Event::named(
-        "tun_ready",
-        serde_json::json!({ "ip": tun_ip, "dns": tun_dns, "mtu": TUN_MTU }),
-    ));
-
-    *runtime.tun_conf.lock() = Some(TunConf { ip: tun_ip.clone(), dns: tun_dns.clone(), mtu: TUN_MTU });
-
-    let sock = UdpSocket::bind("127.0.0.1:0")?;
-    sock.connect(format!("127.0.0.1:{}", CORE_LISTEN_PORT))?;
-    let sock = Arc::new(sock);
-
-    runtime.running.store(true, Ordering::Relaxed);
+pub fn start_tun(runtime: Arc<VpnRuntime>, tun_ip: String, tun_dns: String, events: EventBus) -> Result<()> {
+    let session = crate::linux_tun::Session::start(TUN_NAME, &tun_ip, &tun_dns, TUN_MTU,
+        CORE_LISTEN_PORT, runtime.core_uid.load(Ordering::Acquire), runtime.running.clone(),
+        runtime.rx_bytes.clone(), runtime.tx_bytes.clone(), events.clone())?;
+    *runtime.handle.lock() = Some(session);
     *runtime.started_at.lock() = Some(Instant::now());
-
-    setup_routes(&tun_ip, &tun_dns, &events);
-
-    let running = runtime.running.clone();
-    let rx = runtime.rx_bytes.clone();
-    let tx = runtime.tx_bytes.clone();
-
-    let dev_w = dev.clone();
-    let sock_w = sock.clone();
-    let running_w = running.clone();
-    let rx_w = rx.clone();
-    let tx_w = tx.clone();
-
-    let handle = thread::spawn(move || {
-        let dev_r = dev_w.clone();
-        let sock_r = sock_w.clone();
-        let running_r = running_w.clone();
-        let tx_r = tx_w.clone();
-        let h1 = thread::spawn(move || {
-            let mut buf = vec![0u8; 65535];
-            while running_r.load(Ordering::Relaxed) {
-                let n = { let mut guard = dev_r.lock(); guard.read(&mut buf).unwrap_or(0) };
-                if n > 0 {
-                    if sock_r.send(&buf[..n]).is_ok() { tx_r.fetch_add(n as u64, Ordering::Relaxed); }
-                } else {
-                    thread::sleep(Duration::from_millis(2));
-                }
-            }
-        });
-
-        let dev_w2 = dev_w.clone();
-        let sock_w2 = sock_w.clone();
-        let running_w2 = running_w.clone();
-        let rx_w2 = rx_w.clone();
-        let h2 = thread::spawn(move || {
-            let mut buf = vec![0u8; 65535];
-            while running_w2.load(Ordering::Relaxed) {
-                match sock_w2.recv(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let mut guard = dev_w2.lock();
-                        if guard.write(&buf[..n]).is_ok() { rx_w2.fetch_add(n as u64, Ordering::Relaxed); }
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
-        });
-
-        let _ = h1.join();
-        let _ = h2.join();
-    });
-
-    *runtime.handle.lock() = Some(handle);
+    *runtime.tun_conf.lock() = Some(TunConf { ip: tun_ip.clone(), dns: tun_dns.clone(), mtu: TUN_MTU });
+    events.emit(Event::named("tun_ready", serde_json::json!({"ip":tun_ip,"dns":tun_dns,"mtu":TUN_MTU})));
     events.emit(Event::log("[TUN] bridge started"));
     Ok(())
 }

@@ -295,6 +295,9 @@ fn truncate(s: &str, max: usize) -> String {
 
 pub struct CoreProcess {
     pub child: Child,
+    log_tasks: Vec<tokio::task::JoinHandle<()>>,
+    #[cfg(target_os = "linux")]
+    pub user: Option<crate::linux_core::CoreUser>,
 }
 
 impl CoreProcess {
@@ -303,19 +306,30 @@ impl CoreProcess {
         args: &[String],
         log_file: &Path,
         events: EventBus,
+        isolate_network: bool,
     ) -> Result<Self> {
         if let Some(parent) = log_file.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
+        #[cfg(target_os = "linux")]
+        let user = if isolate_network { Some(crate::linux_core::CoreUser::prepare(core_path)?) } else { None };
+        #[cfg(target_os = "linux")]
+        let mut cmd = Command::new(user.as_ref().map_or_else(|| core_path.to_path_buf(), |user| user.executable()));
+        #[cfg(not(target_os = "linux"))]
         let mut cmd = Command::new(core_path);
-        cmd.args(args);
+        #[cfg(target_os = "linux")]
+        if let Some(user) = &user { user.configure(&mut cmd, args)?; } else { cmd.args(args); }
+        #[cfg(not(target_os = "linux"))]
+        { let _ = isolate_network; cmd.args(args); }
 
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        tokio::fs::write(log_file, b"").await?;
         let mut child = cmd.spawn()?;
+        let mut log_tasks = Vec::new();
         let pid = child.id();
 
         events.emit(Event::log(format!("[CORE] spawned pid={:?}", pid)));
@@ -324,7 +338,7 @@ impl CoreProcess {
         if let Some(stdout) = child.stdout.take() {
             let log_path = log_file.to_path_buf();
             let events_out = events.clone();
-            tokio::spawn(async move {
+            log_tasks.push(tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout).lines();
                 let mut file = tokio::fs::OpenOptions::new()
                     .create(true)
@@ -341,14 +355,14 @@ impl CoreProcess {
                     }
                     events_out.emit(Event::log(format!("[CORE] {}", line)));
                 }
-            });
+            }));
         }
 
         // --- stderr reader ---
         if let Some(stderr) = child.stderr.take() {
             let log_path = log_file.to_path_buf();
             let events_err = events.clone();
-            tokio::spawn(async move {
+            log_tasks.push(tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr).lines();
                 let mut file = tokio::fs::OpenOptions::new()
                     .create(true)
@@ -365,14 +379,16 @@ impl CoreProcess {
                     }
                     events_err.emit(Event::log(format!("[CORE] {}", line)));
                 }
-            });
+            }));
         }
 
-        Ok(Self { child })
+        Ok(Self { child, log_tasks, #[cfg(target_os = "linux")] user })
     }
 
     pub async fn kill(&mut self) -> Result<()> {
-        self.child.kill().await?;
+        let result = self.child.kill().await;
+        for task in self.log_tasks.drain(..) { task.abort(); let _ = task.await; }
+        result?;
         Ok(())
     }
 }

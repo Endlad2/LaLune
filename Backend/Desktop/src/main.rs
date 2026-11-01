@@ -16,6 +16,13 @@ mod state;
 mod vk;
 mod vpn;
 
+#[cfg(target_os = "linux")]
+#[path = "../../linux_core.rs"]
+mod linux_core;
+#[cfg(target_os = "linux")]
+#[path = "../../linux_tun.rs"]
+mod linux_tun;
+
 #[cfg(target_os = "windows")]
 mod wintun;
 

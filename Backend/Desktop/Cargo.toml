@@ -64,7 +64,8 @@ libloading = "0.8"
 
 # ---------- Linux: крейт tun ----------
 [target.'cfg(target_os = "linux")'.dependencies]
-tun = "0.6"
+tun = { version = "0.6", features = ["async"] }
+libc = "0.2"
 
 [profile.release]
 opt-level = "z"
