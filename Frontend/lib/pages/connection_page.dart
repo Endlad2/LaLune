@@ -87,7 +87,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
       context: context,
       barrierColor: Colors.black.withOpacity(0.55),
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF21142B),
+        backgroundColor: const Color(0xFF0F1540),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: Colors.white.withOpacity(0.1)),
@@ -149,7 +149,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                             valueColor: AlwaysStoppedAnimation<Color>(
                               vpn.state == 'disconnecting'
                                   ? Colors.white70
-                                  : const Color(0xFFFFB347),
+                                  : const Color(0xFFF7E84E),
                             ),
                           ),
                         ),
@@ -168,7 +168,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                         style: TextStyle(
                           fontSize: 16,
                           color: vpn.connected
-                              ? const Color(0xFFB36AE2)
+                              ? const Color(0xFF7CFF9A)
                               : Colors.white.withOpacity(0.6),
                           fontWeight: FontWeight.w600,
                         ),
@@ -235,7 +235,7 @@ class _AddButtonState extends State<_AddButton> {
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFFFF7518)
+                  color: const Color(0xFF4A6CF7)
                       .withOpacity(_hover ? 0.35 : 0.0),
                   blurRadius: 18,
                   spreadRadius: 2,
