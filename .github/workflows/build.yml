@@ -211,74 +211,102 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Use preinstalled Android SDK
+        shell: bash
         run: |
-          if [ -z "$ANDROID_HOME" ] && [ -d "/usr/local/lib/android/sdk" ]; then
-            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          if [ -z "${ANDROID_HOME:-}" ] && [ -d "/usr/local/lib/android/sdk" ]; then
+            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
           fi
           echo "ANDROID_HOME=$ANDROID_HOME"
-      - name: Accept Android licenses
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+      - name: Install Android NDK 27 (verified)
+        shell: bash
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-      - name: Install Android NDK 27
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" >/dev/null 2>&1 || true
-          ls -la "$ANDROID_HOME/ndk/" || true
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found at $SDKMANAGER"
+            ls -la "$ANDROID_HOME" || true
+            ls -la "$ANDROID_HOME/cmdline-tools" || true
+            exit 1
+          fi
+          # Accept licenses (non-fatal if already accepted)
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          # Install NDK WITHOUT suppressing errors
+          "$SDKMANAGER" "ndk;27.0.12077973"
+          NDK_DIR="$ANDROID_HOME/ndk/27.0.12077973"
+          if [ ! -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" ]; then
+            echo "::error::NDK 27.0.12077973 not found or incomplete at $NDK_DIR"
+            ls -la "$ANDROID_HOME/ndk/" || true
+            exit 1
+          fi
+          echo "NDK OK: $NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
 
       # ============================================================
       #  csqtt-link: собрать как бинарник для Android (все ABI)
       #  и положить в jniLibs/<abi>/libcsqtt-link.so
       # ============================================================
       - name: Build csqtt-link for Android (all ABIs)
+        shell: bash
         working-directory: Core/csqtt-link
         run: |
           set -euo pipefail
-          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
-          export TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/27.0.12077973}"
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          test -x "$TOOLCHAIN/bin/aarch64-linux-android24-clang" \
+            || { echo "::error::clang not found in $TOOLCHAIN/bin"; ls -la "$TOOLCHAIN/bin" || true; exit 1; }
           export PATH="$TOOLCHAIN/bin:$PATH"
+
+          JNILIBS="$GITHUB_WORKSPACE/Frontend/android/app/src/main/jniLibs"
 
           # ---- arm64-v8a ----
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android24-clang"
           export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android24-clang"
           export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
           cargo build --release --target aarch64-linux-android
-          mkdir -p ../../Frontend/android/app/src/main/jniLibs/arm64-v8a
-          cp target/aarch64-linux-android/release/csqtt-link \
-             ../../Frontend/android/app/src/main/jniLibs/arm64-v8a/libcsqtt-link.so
+          mkdir -p "$JNILIBS/arm64-v8a"
+          cp target/aarch64-linux-android/release/csqtt-link "$JNILIBS/arm64-v8a/libcsqtt-link.so"
 
           # ---- armeabi-v7a ----
           export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$TOOLCHAIN/bin/armv7a-linux-androideabi24-clang"
           export CC_armv7_linux_androideabi="$TOOLCHAIN/bin/armv7a-linux-androideabi24-clang"
           export AR_armv7_linux_androideabi="$TOOLCHAIN/bin/llvm-ar"
           cargo build --release --target armv7-linux-androideabi
-          mkdir -p ../../Frontend/android/app/src/main/jniLibs/armeabi-v7a
-          cp target/armv7-linux-androideabi/release/csqtt-link \
-             ../../Frontend/android/app/src/main/jniLibs/armeabi-v7a/libcsqtt-link.so
+          mkdir -p "$JNILIBS/armeabi-v7a"
+          cp target/armv7-linux-androideabi/release/csqtt-link "$JNILIBS/armeabi-v7a/libcsqtt-link.so"
 
           # ---- x86_64 ----
           export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/x86_64-linux-android24-clang"
           export CC_x86_64_linux_android="$TOOLCHAIN/bin/x86_64-linux-android24-clang"
           export AR_x86_64_linux_android="$TOOLCHAIN/bin/llvm-ar"
           cargo build --release --target x86_64-linux-android
-          mkdir -p ../../Frontend/android/app/src/main/jniLibs/x86_64
-          cp target/x86_64-linux-android/release/csqtt-link \
-             ../../Frontend/android/app/src/main/jniLibs/x86_64/libcsqtt-link.so
+          mkdir -p "$JNILIBS/x86_64"
+          cp target/x86_64-linux-android/release/csqtt-link "$JNILIBS/x86_64/libcsqtt-link.so"
 
           echo "=== jniLibs after csqtt-link build ==="
-          ls -la ../../Frontend/android/app/src/main/jniLibs/*/libcsqtt-link.so
+          ls -la "$JNILIBS"/*/libcsqtt-link.so
 
       - name: Copy Android backend
+        shell: bash
         run: |
           DST="Frontend/android/app/src/main/kotlin/com/lalune/lalune"
           mkdir -p "$DST"
           cp Backend/Android/*.kt "$DST/"
           ls -la "$DST"
+
       - name: Copy assets
+        shell: bash
         run: |
           rm -rf Frontend/assets
           cp -r Assets Frontend/assets
+
       - name: Download core binaries (jniLibs)
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p Frontend/android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/arm64-v8a/libclient-android-arm64-v8a.so \
             https://github.com/Endlad2/csqtt-core/releases/latest/download/libclient-android-arm64-v8a.so
@@ -295,6 +323,7 @@ jobs:
             https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-armeabi-v7a.so
           curl -L --fail --retry 3 -o Frontend/android/app/src/main/jniLibs/x86_64/libcsqtt219.so \
             https://github.com/Endlad2/csqtt-core/releases/download/2026.09.17.17.36/libclient-android-x86_64.so
+
       - name: Download CSQTTR core binaries (jniLibs)
         shell: bash
         run: |
@@ -312,7 +341,7 @@ jobs:
             rm -f "$DEST/arm64-v8a/libcsqttr-android-arm64-v8a.so" "$DEST/armeabi-v7a/libcsqttr-android-armeabi-v7a.so" "$DEST/x86_64/libcsqttr-android-x86_64.so"
             git clone --depth 1 --branch feat/csqttr-ci-ios-latest https://github.com/Endlad2/csqttr-core.git /tmp/csqttr-core
             cargo install cargo-ndk --locked
-            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+            export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/27.0.12077973}"
             export NDK_HOME="$ANDROID_NDK_HOME"
             cd /tmp/csqttr-core/rust-client
 
@@ -330,7 +359,9 @@ jobs:
           file "$DEST/x86_64/libcsqttr-android-x86_64.so"
 
       - name: Download PaperFlux cores (jniLibs)
+        shell: bash
         run: |
+          set -euo pipefail
           TMP_PF=$(mktemp -d)
           curl -L --fail --retry 3 -o "$TMP_PF/paperflux-android.zip" \
             https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-android.zip
@@ -343,11 +374,14 @@ jobs:
             fi
           done
           rm -rf "$TMP_PF"
+
       - name: Copy Lua scripts to assets
+        shell: bash
         run: |
           mkdir -p Frontend/android/app/src/main/assets
           cp Core/SmartTunnel.lua   Frontend/android/app/src/main/assets/SmartTunnel.lua
           cp Core/csqtt_decode.lua  Frontend/android/app/src/main/assets/csqtt_decode.lua
+
       - name: Install Pillow (для make_icons.py)
         run: python -m pip install --upgrade pip Pillow
 
@@ -367,6 +401,7 @@ jobs:
         run: flutter build apk --debug
 
       - name: Verify csqtt-link in APK
+        shell: bash
         run: |
           set -euo pipefail
           APK=$(find Frontend/build/app/outputs/flutter-apk -name "app-debug.apk" -type f | head -n 1)
@@ -375,13 +410,16 @@ jobs:
 
       - name: Locate & rename APK
         id: find_apk
+        shell: bash
         run: |
+          set -euo pipefail
           APK=$(find Frontend/build/app/outputs/flutter-apk -name "app-debug.apk" -type f | head -n 1)
           [ -z "$APK" ] && exit 1
           mkdir -p Output
           cp "$APK" Output/LaLune-Android.apk
           ls -la Output/LaLune-Android.apk
-          echo "apk=Output/LaLune-Android.apk" >> $GITHUB_OUTPUT
+          echo "apk=Output/LaLune-Android.apk" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Output-Android
@@ -451,6 +489,7 @@ jobs:
             popd >/dev/null
           fi
           ls -la "$ZIP_PATH"
+
       - uses: actions/upload-artifact@v4
         with:
           name: LaLuneTokenFetcher-${{ matrix.platform }}
@@ -538,6 +577,7 @@ jobs:
           for path in sorted(root.iterdir()):
               print(f"{path.name}: {path.stat().st_size} bytes, sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
           PY
+
       - name: Resolve release version
         id: version
         shell: bash
