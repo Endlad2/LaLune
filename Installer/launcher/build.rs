@@ -21,7 +21,7 @@ const CSQTT_219_VERSION: &str = "2026.09.17.17.36";
 const URL_CSQTTR_EXE: &str =
     "https://github.com/Endlad2/csqttr-core/releases/latest/download/client-windows-x86_64.exe";
 const URL_LATEST_CSQTTR: &str =
-    "https://raw.githubusercontent.com/Endlad2/csqttr-core/refs/heads/release-2.5.2/LATEST";
+    "https://raw.githubusercontent.com/Endlad2/csqttr-core/refs/heads/main/LATEST";
 const URL_PAPERFLUX_EXE: &str =
     "https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-windows-amd64.exe";
 const URL_LATEST_CSQTT: &str =
