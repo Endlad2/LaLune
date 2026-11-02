@@ -32,6 +32,17 @@ import 'router_scanner.dart';
 const String _prefsKey = 'lalune.saved_routers';
 const String _prefsActiveKey = 'lalune.active_router';
 
+bool _protocolIdsMatch(String local, String remote) {
+  final a = local.trim().toUpperCase();
+  final b = remote.trim().toUpperCase();
+  if (a == b) return true;
+
+  // Legacy OpenWRT IDs describe the API family, not the installed core version.
+  const csqttVersions = {'CSQTT 2.1.9', 'CSQTT 2.5.1'};
+  return (a == 'CSQTT' && csqttVersions.contains(b)) ||
+      (b == 'CSQTT' && csqttVersions.contains(a));
+}
+
 class RouterState {
   final List<RouterInfo> savedRouters;
   final List<RouterInfo> scannedRouters;
@@ -102,7 +113,8 @@ class RouterNotifier extends StateNotifier<RouterState> {
   Future<void> _saveSaved() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = jsonEncode(state.savedRouters.map((r) => r.toJson()).toList());
+      final raw =
+          jsonEncode(state.savedRouters.map((r) => r.toJson()).toList());
       await prefs.setString(_prefsKey, raw);
     } catch (_) {}
   }
@@ -171,7 +183,8 @@ class RouterNotifier extends StateNotifier<RouterState> {
 
     final platform = info.platform.toLowerCase();
     if (platform != 'openwrt' && platform != 'linux') {
-      state = state.copyWith(error: 'На $trimmed не найден OpenWRT LaLune backend');
+      state =
+          state.copyWith(error: 'На $trimmed не найден OpenWRT LaLune backend');
       return null;
     }
 
@@ -216,7 +229,7 @@ class RouterNotifier extends StateNotifier<RouterState> {
   /// Подключиться к роутеру:
   ///   1. Проверяем /ping роутера.
   ///   2. Читаем /core/protocols роутера и /core/protocols локально.
-  ///   3. Сравниваем — если нет пересечения, блокируем.
+  ///   3. Проверяем совместимость ID, включая старый общий ID CSQTT.
   ///   4. Читаем свой VK-токен и POST'им на роутер /vk/token/submit.
   ///   5. ApiClient.setBaseUrl(router.ip).
   Future<bool> connect(RouterInfo router) async {
@@ -229,20 +242,25 @@ class RouterNotifier extends StateNotifier<RouterState> {
       return false;
     }
 
-    // 2. Проверка протоколов (мягкая — не блокируем при сетевых сбоях).
+    // 2. Проверка протоколов без подстановки возможностей при сетевых сбоях.
     try {
-      final remoteProtocols = await _fetchRemoteProtocols(router.ip);
-      final localProtocols = await _fetchLocalProtocols();
-      final common = remoteProtocols.toSet().intersection(localProtocols.toSet());
-      if (common.isEmpty) {
+      final remoteProtocols = await _fetchProtocols(router.ip);
+      final localProtocols = await _fetchProtocols('127.0.0.1');
+      final compatible = localProtocols.any((local) =>
+          remoteProtocols.any((remote) => _protocolIdsMatch(local, remote)));
+      if (!compatible) {
         state = state.copyWith(
-          error: 'Протоколы не совпадают: локально ${localProtocols.join(",")}, '
+          error:
+              'Протоколы не совпадают: локально ${localProtocols.join(",")}, '
               'на роутере ${remoteProtocols.join(",")}',
         );
         return false;
       }
-    } catch (_) {
-      // Не блокируем, если не удалось получить протоколы.
+    } catch (e) {
+      state = state.copyWith(
+        error: 'Не удалось получить список протоколов: $e',
+      );
+      return false;
     }
 
     // 3. Передаём наш VK-токен на роутер.
@@ -277,21 +295,7 @@ class RouterNotifier extends StateNotifier<RouterState> {
   //  Используют ОТДЕЛЬНЫЙ http.Client, чтобы не трогать baseUrl ApiClient'а.
   // ============================================================
 
-  Future<List<String>> _fetchLocalProtocols() async {
-    try {
-      final api = _ref.read(apiClientProvider);
-      final list = await api.getJsonList('/core/protocols');
-      final ids = list
-          .map((e) => ((e as Map)['id'] ?? '').toString())
-          .where((s) => s.isNotEmpty)
-          .toList();
-      return ids.isEmpty ? const ['CSQTT'] : ids;
-    } catch (_) {
-      return const ['CSQTT'];
-    }
-  }
-
-  Future<List<String>> _fetchRemoteProtocols(String host) async {
+  Future<List<String>> _fetchProtocols(String host) async {
     final client = http.Client();
     try {
       final uri = Uri(
@@ -300,19 +304,22 @@ class RouterNotifier extends StateNotifier<RouterState> {
         port: 1062,
         path: '/core/protocols',
       );
-      final resp = await client
-          .get(uri)
-          .timeout(const Duration(seconds: 4));
-      if (resp.statusCode != 200) return const ['CSQTT'];
+      final resp = await client.get(uri).timeout(const Duration(seconds: 4));
+      if (resp.statusCode != 200) {
+        throw http.ClientException('HTTP ${resp.statusCode}', uri);
+      }
       final decoded = jsonDecode(resp.body);
-      if (decoded is! List) return const ['CSQTT'];
-      final ids = decoded
-          .map((e) => ((e as Map)['id'] ?? '').toString())
-          .where((s) => s.isNotEmpty)
-          .toList();
-      return ids.isEmpty ? const ['CSQTT'] : ids;
-    } catch (_) {
-      return const ['CSQTT'];
+      if (decoded is! List || decoded.isEmpty) {
+        throw FormatException(
+            'Пустой или некорректный список протоколов от $host');
+      }
+      return decoded.map((entry) {
+        final id = entry is Map ? entry['id'] : null;
+        if (id is! String || id.trim().isEmpty) {
+          throw FormatException('Некорректный ID протокола от $host');
+        }
+        return id.trim();
+      }).toList();
     } finally {
       client.close();
     }
