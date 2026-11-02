@@ -5,6 +5,8 @@
 // собственный WKWebView (VkWebViewController).
 //
 // Точка входа: Backend.shared.attach(window:).run()
+//
+// SOCKS5 слушает рандомный свободный порт (не 1080).
 
 import Foundation
 import Network
@@ -21,7 +23,7 @@ public final class Backend {
     private let HOST = "127.0.0.1"
     private let VERSION = "0.6.0"
     private let APP_GROUP = "group.com.lalune"
-    private let TUNNEL_BUNDLE_ID = "com.lalune.app.tunnel"
+    private let TUNNEL_BUNDLE_ID = "com.lalune.lalune.tunnel"
 
     private let DEFAULT_WORKERS = 9
     private let MIN_WORKERS = 1
@@ -49,8 +51,10 @@ public final class Backend {
     }
 
     private var settingsURL: URL { appDir.appendingPathComponent("settings.json") }
+    private var deviceIdURL: URL { appDir.appendingPathComponent("device_id.json") }
     private var tokenURL: URL { appDir.appendingPathComponent("token.json") }
     private var logsURL: URL { appDir.appendingPathComponent("logs.log") }
+    private var tunnelLogsURL: URL { appDir.appendingPathComponent("tunnel.log") }
     private var configsURL: URL { appDir.appendingPathComponent("configs.json") }
     private var selectedConfigURL: URL { appDir.appendingPathComponent("selected_config.json") }
 
@@ -60,9 +64,16 @@ public final class Backend {
     private var httpServer: HttpServer?
     private var running = false
     private var vpnConnected = false
+    private var vpnState = "disconnected"
+    private var activeConfigId: Int64 = 0
+    private var tunnelManager: NETunnelProviderManager?
+    private var vpnStatusObserver: NSObjectProtocol?
     private var smarttunnelRunning = false
     private var coreDownloading = false
     private var activeCallIds: [String] = []
+
+    /// Порт SOCKS5 (0 = не запущен).
+    private var socks5Port: UInt16 = 0
 
     private var vkWebVC: VkWebViewController?
     private var vkLoginInProgress = false
@@ -112,22 +123,71 @@ public final class Backend {
         stopSocks5()
         httpServer?.stop()
         httpServer = nil
+        if let observer = vpnStatusObserver {
+            NotificationCenter.default.removeObserver(observer)
+            vpnStatusObserver = nil
+        }
+    }
+
+    private func vpnState(for status: NEVPNStatus) -> (String, Bool) {
+        switch status {
+        case .connected:
+            return ("connected", true)
+        case .connecting, .reasserting:
+            return ("connecting", false)
+        case .disconnecting:
+            return ("disconnecting", false)
+        case .invalid, .disconnected:
+            return ("disconnected", false)
+        @unknown default:
+            return ("disconnected", false)
+        }
+    }
+
+    private func applyVpnStatus(_ status: NEVPNStatus) {
+        let mapped = vpnState(for: status)
+        vpnState = mapped.0
+        vpnConnected = mapped.1
+        if vpnState == "disconnected" {
+            activeConfigId = 0
+        }
+        emitEvent(json([
+            "type": "status",
+            "state": vpnState,
+            "connected": vpnConnected,
+            "configId": activeConfigId,
+            "ts": Int(Date().timeIntervalSince1970),
+        ]))
     }
 
     private func observeVpnStatus() {
-        NotificationCenter.default.addObserver(
-            forName: .NEVPNStatusDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let self = self,
-                  let conn = note.object as? NEVPNConnection else { return }
-            let connected = conn.status == .connected
-            self.vpnConnected = connected
-            self.emitEvent(self.json([
-                "type": "status", "connected": connected,
-                "ts": Int(Date().timeIntervalSince1970),
-            ]))
+        if vpnStatusObserver == nil {
+            vpnStatusObserver = NotificationCenter.default.addObserver(
+                forName: .NEVPNStatusDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let self = self,
+                      let conn = note.object as? NEVPNConnection else { return }
+                if let manager = self.tunnelManager, conn !== manager.connection {
+                    return
+                }
+                self.applyVpnStatus(conn.status)
+            }
+        }
+
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, _ in
+            guard let self = self else { return }
+            guard let manager = managers?.first(where: { manager in
+                guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+                    return false
+                }
+                return proto.providerBundleIdentifier == self.TUNNEL_BUNDLE_ID
+            }) else {
+                return
+            }
+            self.tunnelManager = manager
+            self.applyVpnStatus(manager.connection.status)
         }
     }
 
@@ -146,7 +206,8 @@ public final class Backend {
             switch (method, path) {
             case ("GET", "/ping"):
                 return (200, json(["ok": true, "version": VERSION,
-                                   "os": "ios", "arch": "arm64", "uptime": 0]))
+                                   "os": "ios", "arch": "arm64", "uptime": 0,
+                                   "socks5Port": Int(socks5Port)]))
             case ("GET", "/version"):
                 return (200, json(["api": 1, "backend": VERSION,
                                    "core": CoreManager.shared.readLatest(),
@@ -175,7 +236,8 @@ public final class Backend {
                 let obj = (try? JSONSerialization.jsonObject(
                     with: body.data(using: .utf8) ?? Data()) as? [String: Any])
                 let link = obj?["link"] as? String ?? ""
-                return (200, jsonString(from: parseLink(link)) ?? "{}")
+                let protocolName = obj?["protocol"] as? String ?? "CSQTT"
+                return (200, jsonString(from: parseLink(link, protocol: protocolName)) ?? "{}")
             case ("POST", "/configs"):
                 return createConfig(body: body)
 
@@ -192,11 +254,12 @@ public final class Backend {
             case ("GET", "/device/id"):
                 return (200, json(["deviceId": getDeviceId()]))
             case ("POST", "/device/id/regenerate"):
-                let new = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                let new = UUID().uuidString.lowercased()
                 updateDeviceId(new)
                 return (200, json(["deviceId": new]))
             case ("GET", "/device/info"):
                 return (200, json(["os": "ios", "arch": "arm64",
+                                   "deviceId": getDeviceId(),
                                    "hostname": UIDevice.current.name,
                                    "cores": ProcessInfo.processInfo.processorCount,
                                    "totalMemMb": Int(ProcessInfo.processInfo.physicalMemory / 1024 / 1024)]))
@@ -207,9 +270,10 @@ public final class Backend {
                 return vpnDisconnect()
             case ("GET", "/vpn/status"):
                 return (200, json([
-                    "state": vpnConnected ? "connected" : "disconnected",
+                    "state": vpnState,
                     "connected": vpnConnected,
-                    "uptimeSec": 0, "configId": 0, "message": "", "since": ""
+                    "uptimeSec": 0, "configId": activeConfigId, "message": "", "since": "",
+                    "socks5Port": Int(socks5Port),
                 ]))
             case ("POST", "/vpn/reconnect"):
                 _ = vpnDisconnect()
@@ -218,7 +282,8 @@ public final class Backend {
             case ("GET", "/vpn/stats"):
                 return (200, json(["rxBytes": 0, "txBytes": 0,
                                    "rxRate": 0, "txRate": 0,
-                                   "activeSessions": vpnConnected ? 1 : 0]))
+                                   "activeSessions": vpnConnected ? 1 : 0,
+                                   "socks5Port": Int(socks5Port)]))
             case ("GET", "/vpn/tunconf"):
                 return (200, "{}")
 
@@ -229,6 +294,8 @@ public final class Backend {
                 return (200, jsonArrayFromLogs(tail: n))
             case ("DELETE", "/logs"):
                 stateQueue.async(flags: .barrier) { self.logs.removeAll() }
+                try? "".write(to: logsURL, atomically: true, encoding: .utf8)
+                try? "".write(to: tunnelLogsURL, atomically: true, encoding: .utf8)
                 return (200, json(["ok": true]))
             case ("GET", "/logs/export"):
                 return (200, currentLogs().joined(separator: "\n"))
@@ -251,7 +318,7 @@ public final class Backend {
                 return (200, json(["path": CoreManager.shared.corePath() ?? ""]))
             case ("GET", "/core/protocols"):
                 return (200, """
-                [{"id":"CSQTT","displayName":"CSQTT (VK Calls)","repo":"Endlad2/csqtt-core","realtime":true,"description":"Оригинальный протокол CSQTT","coreAsset":""}]
+                [{"id":"CSQTT","displayName":"CSQTT 2.5.1","repo":"Endlad2/csqtt-core","realtime":true,"description":"Встроенное iOS-ядро CSQTT","coreAsset":"embedded"},{"id":"CSQTTR","displayName":"CSQTTR 2.5.2","repo":"Endlad2/csqttr-core","realtime":true,"description":"Встроенное iOS-ядро CSQTTR","coreAsset":"embedded"}]
                 """)
             case ("DELETE", "/core"):
                 if let p = CoreManager.shared.corePath() {
@@ -315,25 +382,23 @@ public final class Backend {
             case ("PUT", "/smarttunnel/args"):
                 return (200, json(["ok": true]))
 
-            // Deployment is intentionally unsupported on iOS. Return an explicit
-            // error instead of fake success responses that leave the UI in a
-            // misleading "started" state.
-            case ("POST", "/deploy/run"),
-                 ("GET", "/deploy/status"),
-                 ("GET", "/deploy/log"),
-                 ("POST", "/deploy/cancel"),
-                 ("GET", "/deploy/protocols"):
-                return (501, json([
-                    "error": "unsupported_platform",
-                    "message": "Развёртывание серверов недоступно в iOS-клиенте",
-                    "platform": "ios"
-                ]))
+            case ("POST", "/deploy/run"):
+                return (200, json(["stub": true, "message": "DeployManager not yet implemented"]))
+            case ("GET", "/deploy/status"):
+                return (200, json(["busy": false, "stub": true]))
+            case ("GET", "/deploy/log"):
+                return (200, json(["log": "", "stub": true]))
+            case ("POST", "/deploy/cancel"):
+                return (200, json(["stub": true]))
+            case ("GET", "/deploy/protocols"):
+                return (200, json(["protocols": [], "stub": true]))
 
             case ("GET", "/platform/capabilities"):
                 return (200, json([
                     "canShowWebView": true, "canRunTun": true, "canDeploy": false,
                     "canAutoUpdate": false, "canSendNotifications": true,
-                    "canOpenExternalUrl": true, "os": "ios", "platform": "mobile"
+                    "canOpenExternalUrl": true, "os": "ios", "platform": "mobile",
+                    "socks5Port": Int(socks5Port),
                 ]))
             case ("POST", "/platform/open-url"):
                 if let data = body.data(using: .utf8),
@@ -363,7 +428,8 @@ public final class Backend {
                 return (200, json([
                     "logCount": currentLogs().count,
                     "appDir": appDir.path,
-                    "vpnConnected": vpnConnected
+                    "vpnConnected": vpnConnected,
+                    "socks5Port": Int(socks5Port),
                 ]))
             case ("POST", "/debug/echo"):
                 return (200, body)
@@ -426,6 +492,7 @@ public final class Backend {
 
     private func saveSettings(_ s: [String: Any]) {
         var copy = s
+        copy["deviceId"] = getDeviceId()
         if let w = copy["workers"] as? Int {
             copy["workers"] = min(max(w, MIN_WORKERS), MAX_WORKERS)
         }
@@ -455,20 +522,53 @@ public final class Backend {
         return (200, json(["ok": true]))
     }
 
+    /// Stable UUIDv4 persisted separately from editable settings. Read settings
+    /// directly only for one-time migration to avoid defaultSettings recursion.
     private func getDeviceId() -> String {
-        var s = loadSettings()
-        var id = s["deviceId"] as? String ?? ""
-        if id.isEmpty {
-            id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            s["deviceId"] = id
-            saveSettings(s)
+        func canonicalUuid(_ raw: String?) -> String? {
+            guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+            let expanded: String
+            if raw.range(of: "^[0-9a-fA-F]{32}$", options: .regularExpression) != nil {
+                let chars = Array(raw)
+                expanded = String(chars[0..<8]) + "-" + String(chars[8..<12]) + "-" +
+                    String(chars[12..<16]) + "-" + String(chars[16..<20]) + "-" + String(chars[20..<32])
+            } else {
+                expanded = raw
+            }
+            guard let uuid = UUID(uuidString: expanded) else { return nil }
+            let canonical = uuid.uuidString.lowercased()
+            guard canonical.dropFirst(14).first == "4" else { return nil }
+            return canonical
+        }
+
+        let fromFile: String? = {
+            guard let data = try? Data(contentsOf: deviceIdURL),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return canonicalUuid(object["deviceId"] as? String)
+        }()
+        let legacyId: String? = {
+            guard let data = try? Data(contentsOf: settingsURL),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return canonicalUuid(object["deviceId"] as? String)
+        }()
+        let id = fromFile ?? legacyId ?? UUID().uuidString.lowercased()
+        let payload = ["deviceId": id]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
+            try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+            try? data.write(to: deviceIdURL, options: .atomic)
         }
         return id
     }
 
     private func updateDeviceId(_ new: String) {
+        let canonical = UUID(uuidString: new)?.uuidString.lowercased() ?? UUID().uuidString.lowercased()
+        if let data = try? JSONSerialization.data(withJSONObject: ["deviceId": canonical], options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: deviceIdURL, options: .atomic)
+        }
         var s = loadSettings()
-        s["deviceId"] = new
+        s["deviceId"] = canonical
         saveSettings(s)
     }
 
@@ -507,6 +607,17 @@ public final class Backend {
     private func currentLogs() -> [String] {
         var out: [String] = []
         stateQueue.sync { out = self.logs }
+
+        if let raw = try? String(contentsOf: tunnelLogsURL, encoding: .utf8) {
+            let tunnelLines = raw
+                .split(whereSeparator: \.isNewline)
+                .map { "[TUNNEL] " + String($0) }
+            out.append(contentsOf: tunnelLines)
+        }
+
+        if out.count > 1000 {
+            out = Array(out.suffix(1000))
+        }
         return out
     }
 
@@ -575,7 +686,7 @@ public final class Backend {
 
         var parsed: [String: Any]
         if let link = b["link"] as? String, !link.isEmpty {
-            parsed = parseLink(link)
+            parsed = parseLink(link, protocol: b["protocol"] as? String ?? "CSQTT")
         } else {
             parsed = [
                 "protocol": b["protocol"] as? String ?? "CSQTT",
@@ -607,9 +718,9 @@ public final class Backend {
         try? FileManager.default.removeItem(at: selectedConfigURL)
     }
 
-    private func parseLink(_ link: String) -> [String: Any] {
+    private func parseLink(_ link: String, protocol protocolName: String = "CSQTT") -> [String: Any] {
         var out: [String: Any] = [
-            "protocol": "CSQTT", "peer": "", "password": "", "hashes": "", "name": ""
+            "protocol": protocolName, "peer": "", "password": "", "hashes": "", "name": ""
         ]
         guard link.lowercased().hasPrefix("csqtt://") else {
             out["peer"] = link
@@ -642,102 +753,192 @@ public final class Backend {
     //  VPN
     // ============================================================
 
+    private func loadTunnelManager() -> (NETunnelProviderManager?, Error?) {
+        let sem = DispatchSemaphore(value: 0)
+        var selected: NETunnelProviderManager?
+        var loadError: Error?
+
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+            defer { sem.signal() }
+            guard let self = self else { return }
+            if let error = error {
+                loadError = error
+                return
+            }
+            selected = managers?.first(where: { manager in
+                guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+                    return false
+                }
+                return proto.providerBundleIdentifier == self.TUNNEL_BUNDLE_ID
+            }) ?? NETunnelProviderManager()
+        }
+
+        if sem.wait(timeout: .now() + 10) == .timedOut {
+            return (nil, NSError(
+                domain: "LaLune.VPN", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "VPN preferences load timed out"]
+            ))
+        }
+        if let error = loadError { return (nil, error) }
+        if let selected = selected {
+            tunnelManager = selected
+        }
+        return (selected, nil)
+    }
+
     private func vpnConnect(body: String) -> (Int, String) {
         let settings = loadSettings()
-        var proto = settings["protocol"] as? String ?? "CSQTT"
+        var protocolName = settings["protocol"] as? String ?? "CSQTT"
         var peer = settings["peer"] as? String ?? ""
         var password = settings["password"] as? String ?? ""
-        var hashes = settings["vkHashes"] as? String ?? ""
+        var cfgHashes = settings["vkHashes"] as? String ?? ""
+        var requestedConfigId: Int64 = 0
 
         if let data = body.data(using: .utf8),
            let b = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let configId = b["configId"] as? Int64,
-           let c = findConfig(id: configId) {
-            proto = c["protocol"] as? String ?? proto
+           let number = b["configId"] as? NSNumber,
+           let c = findConfig(id: number.int64Value) {
+            requestedConfigId = number.int64Value
+            protocolName = c["protocol"] as? String ?? protocolName
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
-            hashes = c["hashes"] as? String ?? hashes
+            let h = c["hashes"] as? String ?? ""
+            if !h.isEmpty { cfgHashes = h }
         } else if let sel = readSelectedConfigJson(),
                   let data = sel.data(using: .utf8),
                   let c = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            proto = c["protocol"] as? String ?? proto
+            requestedConfigId = (c["id"] as? NSNumber)?.int64Value ?? 0
+            protocolName = c["protocol"] as? String ?? protocolName
             peer = c["peer"] as? String ?? peer
             password = c["password"] as? String ?? password
-            hashes = c["hashes"] as? String ?? hashes
+            let h = c["hashes"] as? String ?? ""
+            if !h.isEmpty { cfgHashes = h }
         }
 
-        if peer.isEmpty { return (400, err("no config selected")) }
+        let upperProtocol = protocolName.uppercased()
+        guard upperProtocol.hasPrefix("CSQTT") || upperProtocol.hasPrefix("CSQTTR") else {
+            return (400, err("unsupported iOS protocol: \(protocolName)"))
+        }
+        guard !peer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return (400, err("no config selected"))
+        }
+        guard !password.isEmpty else {
+            return (400, err("CSQTT password is empty"))
+        }
+        let hashes = cfgHashes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hashes.isEmpty else {
+            return (400, err("VK hashes are empty"))
+        }
 
         CoreManager.shared.writeSharedSettings(
-            from: settings, protocol: proto, peer: peer,
+            from: settings, protocol: protocolName, peer: peer,
             password: password, hashes: hashes
         )
 
-        if CoreManager.shared.corePath() == nil {
-            log("[VPN] core not installed, downloading...")
-            if !CoreManager.shared.downloadCore() {
-                return (500, err("core download failed"))
-            }
+        guard CoreManager.shared.corePath(protocol: protocolName) != nil else {
+            return (400, err("unsupported iOS protocol: \(protocolName)"))
         }
 
-        // Если включена раздача — запускаем SOCKS5.
         if settings["shareVpn"] as? Bool == true {
             startSocks5()
         }
 
-        log("[VPN] starting NETunnelProviderManager")
+        log("[VPN] starting NETunnelProviderManager protocol=\(protocolName)")
 
-        let manager = NETunnelProviderManager()
-        let proto = NETunnelProviderProtocol()
+        let loaded = loadTunnelManager()
+        if let error = loaded.1 {
+            log("[VPN] load preferences failed: \(error.localizedDescription)")
+            return (500, err("load VPN preferences failed: \(error.localizedDescription)"))
+        }
+        guard let manager = loaded.0 else {
+            return (500, err("failed to create VPN manager"))
+        }
+
+        let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol)
+            ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = TUNNEL_BUNDLE_ID
         proto.serverAddress = peer
+        proto.disconnectOnSleep = false
 
         manager.protocolConfiguration = proto
         manager.localizedDescription = "LaLune"
+        manager.isEnabled = true
+        tunnelManager = manager
 
-        let sem = DispatchSemaphore(value: 0)
-        var finalError: Error?
-
+        let saveSem = DispatchSemaphore(value: 0)
+        var saveError: Error?
         manager.saveToPreferences { error in
-            if let error = error {
-                finalError = error
-                sem.signal()
-                return
-            }
-            manager.loadFromPreferences { _ in
-                do {
-                    try manager.connection.startVPNTunnel()
-                } catch {
-                    finalError = error
-                }
-                sem.signal()
-            }
+            saveError = error
+            saveSem.signal()
         }
-        sem.wait()
+        if saveSem.wait(timeout: .now() + 10) == .timedOut {
+            return (500, err("save VPN preferences timed out"))
+        }
+        if let error = saveError {
+            log("[VPN] save failed: \(error.localizedDescription)")
+            return (500, err("save VPN preferences failed: \(error.localizedDescription)"))
+        }
 
-        if let error = finalError {
+        let reloadSem = DispatchSemaphore(value: 0)
+        var reloadError: Error?
+        manager.loadFromPreferences { error in
+            reloadError = error
+            reloadSem.signal()
+        }
+        if reloadSem.wait(timeout: .now() + 10) == .timedOut {
+            return (500, err("reload VPN preferences timed out"))
+        }
+        if let error = reloadError {
+            log("[VPN] reload failed: \(error.localizedDescription)")
+            return (500, err("reload VPN preferences failed: \(error.localizedDescription)"))
+        }
+
+        do {
+            try manager.connection.startVPNTunnel()
+        } catch {
             log("[VPN] start failed: \(error.localizedDescription)")
             return (500, err("start tunnel failed: \(error.localizedDescription)"))
         }
 
-        vpnConnected = true
+        activeConfigId = requestedConfigId
+        vpnState = "connecting"
+        vpnConnected = false
+        emitEvent(json([
+            "type": "status",
+            "state": "connecting",
+            "connected": false,
+            "configId": activeConfigId,
+            "message": "Подключение",
+            "ts": Int(Date().timeIntervalSince1970),
+        ]))
         return (200, json(["ok": true, "status": "connecting"]))
     }
 
     private func vpnDisconnect() -> (Int, String) {
-        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
-            managers?.forEach { $0.connection.stopVPNTunnel() }
-        }
-        stopSocks5()
+        vpnState = "disconnecting"
         vpnConnected = false
-        emitEvent(json(["type": "status", "connected": false,
-                        "ts": Int(Date().timeIntervalSince1970)]))
+        emitEvent(json([
+            "type": "status",
+            "state": "disconnecting",
+            "connected": false,
+            "configId": activeConfigId,
+            "ts": Int(Date().timeIntervalSince1970),
+        ]))
+
+        if let manager = tunnelManager {
+            manager.connection.stopVPNTunnel()
+        } else {
+            let loaded = loadTunnelManager()
+            loaded.0?.connection.stopVPNTunnel()
+        }
+
+        stopSocks5()
         log("[VPN] disconnect")
         return (200, json(["ok": true]))
     }
 
     // ============================================================
-    //  SOCKS5 (раздача VPN)
+    //  SOCKS5 (раздача VPN) — рандомный порт
     // ============================================================
 
     private func startSocks5() {
@@ -745,12 +946,14 @@ public final class Backend {
             log("[PROXY] already running")
             return
         }
-        let server = Socks5Server(port: 1080) { [weak self] line in
+        let server = Socks5Server(port: 0) { [weak self] line in
             self?.log(line)
         }
         do {
-            try server.start()
+            let port = try server.start()
             socks5Server = server
+            socks5Port = port
+            log("[PROXY] SOCKS5 listening on 0.0.0.0:\(port)")
         } catch {
             log("[PROXY] failed to start: \(error.localizedDescription)")
         }
@@ -759,6 +962,7 @@ public final class Backend {
     private func stopSocks5() {
         socks5Server?.stop()
         socks5Server = nil
+        socks5Port = 0
     }
 
     // ============================================================

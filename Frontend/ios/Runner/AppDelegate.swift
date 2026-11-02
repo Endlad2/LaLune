@@ -29,14 +29,20 @@ import UserNotifications
     }
 
     private let API_URL = URL(string: "http://127.0.0.1:1062/ping")!
-    private let BG_TASK_ID = "com.lalune.app.refresh"
+    private let BG_TASK_ID = "com.lalune.lalune.refresh"
 
     override func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         registerBackgroundTask()
+        scheduleBackgroundRefresh()
         requestNotificationPermission()
+
+        // При сборке через flutter build ios-framework плагины не регистрируются
+        // автоматически нашим кастомным AppDelegate. Без этого shared_preferences
+        // и другие Flutter-плагины дают MissingPluginException.
+        GeneratedPluginRegistrant.register(with: self)
 
         // Стартуем Backend (HTTP API).
         let b = Backend.shared

@@ -17,7 +17,7 @@ import UserNotifications
 
     private var watchdogTimer: Timer?
     private let API_URL = URL(string: "http://127.0.0.1:1062/ping")!
-    private let BG_TASK_ID = "com.lalune.app.refresh"
+    private let BG_TASK_ID = "com.lalune.lalune.refresh"
 
     override func application(
         _ application: UIApplication,

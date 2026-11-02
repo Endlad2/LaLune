@@ -11,6 +11,8 @@ final class CoreManager {
     static let shared = CoreManager()
 
     private let APP_GROUP = "group.com.lalune"
+    private let EMBEDDED_CSQTT_VERSION = "2.5.1"
+    private let EMBEDDED_CSQTTR_VERSION = "2.5.2"
 
     private let LATEST_CSQTT_URL =
         "https://raw.githubusercontent.com/Endlad2/csqtt-core/refs/heads/main/LATEST"
@@ -53,6 +55,10 @@ final class CoreManager {
     // MARK: - Чтение локальной версии
 
     func readLatest(protocol proto: String = "CSQTT") -> String {
+        let upper = proto.uppercased()
+        if upper.hasPrefix("CSQTTR") { return EMBEDDED_CSQTTR_VERSION }
+        if upper.hasPrefix("CSQTT") { return EMBEDDED_CSQTT_VERSION }
+
         let f = latestFile(protocol: proto)
         return (try? String(contentsOf: f, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -64,9 +70,14 @@ final class CoreManager {
     }
 
     func corePath(protocol proto: String = "CSQTT") -> String? {
-        let filename = proto.lowercased() == "paperflux" ? "paperflux-core" : (proto.uppercased().hasPrefix("CSQTTR") ? "libcsqttr_ios_core.a" : "csqtt-core")
-        let f = coreDir.appendingPathComponent(filename)
-        return FileManager.default.fileExists(atPath: f.path) ? f.path : nil
+        let upper = proto.uppercased()
+        if upper.hasPrefix("CSQTTR") {
+            return "embedded://csqttr/\(EMBEDDED_CSQTTR_VERSION)"
+        }
+        if upper.hasPrefix("CSQTT") {
+            return "embedded://csqtt/\(EMBEDDED_CSQTT_VERSION)"
+        }
+        return nil
     }
 
     // MARK: - LATEST
@@ -104,7 +115,10 @@ final class CoreManager {
     // MARK: - Download
 
     func downloadCore(protocol proto: String = "CSQTT") -> Bool {
-        return proto.lowercased() == "paperflux" ? downloadPaperFlux() : (proto.uppercased().hasPrefix("CSQTTR") ? downloadCsqttr() : downloadCsqtt())
+        let upper = proto.uppercased()
+        // CSQTT and CSQTTR are embedded into LaLuneTunnel.appex at build time.
+        // iOS must not download/execute replacement core binaries at runtime.
+        return upper.hasPrefix("CSQTT") || upper.hasPrefix("CSQTTR")
     }
 
     private func downloadCsqtt() -> Bool {
@@ -228,6 +242,8 @@ final class CoreManager {
         shared?.set(settingsJson["clientIds"] as? String ?? "8202606,6287487", forKey: "clientIds")
         shared?.set(settingsJson["vkAuthMode"] as? String ?? "vkcalls", forKey: "vkAuthMode")
         shared?.set(settingsJson["captchaMode"] as? String ?? "auto", forKey: "captchaMode")
+        shared?.set(settingsJson["turnTransport"] as? String ?? "udp", forKey: "turnTransport")
+        shared?.set(settingsJson["validateVkHashes"] as? Bool ?? false, forKey: "validateVkHashes")
 
         // PaperFlux-поля
         shared?.set(paperfluxArgs, forKey: "paperfluxArgs")

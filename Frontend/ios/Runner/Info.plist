@@ -36,7 +36,7 @@
 	<!-- BGTaskScheduler identifier (должен совпадать с AppDelegate). -->
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.lalune.app.refresh</string>
+		<string>com.lalune.lalune.refresh</string>
 	</array>
 
 	<!-- Разрешения на сеть, локальный сервер, ATS -->
