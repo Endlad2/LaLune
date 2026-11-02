@@ -12,7 +12,7 @@ Future<String?> showOpenWrtActionDialog(BuildContext context) {
     context: context,
     barrierColor: Colors.black.withOpacity(0.65),
     builder: (context) => AlertDialog(
-      backgroundColor: const Color(0xFF21142B),
+      backgroundColor: const Color(0xFF0F1540),
       title: const Text('OpenWRT'),
       content: const Text('Что сделать с роутером?'),
       actions: [
@@ -121,7 +121,7 @@ class _SshCredentialsDialogState extends State<_SshCredentialsDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      backgroundColor: const Color(0xFF21142B),
+      backgroundColor: const Color(0xFF0F1540),
       title: Text('SSH · ${widget.host}'),
       content: SizedBox(
         width: 380,
@@ -271,7 +271,7 @@ class _SshHostModalState extends State<_SshHostModal> {
   @override
   Widget build(BuildContext context) {
     return Dialog(
-      backgroundColor: const Color(0xFF21142B),
+      backgroundColor: const Color(0xFF0F1540),
       insetPadding: const EdgeInsets.all(20),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
@@ -472,7 +472,7 @@ class _InstallProgressDialogState extends State<_InstallProgressDialog> {
     return PopScope(
       canPop: result != null,
       child: AlertDialog(
-        backgroundColor: const Color(0xFF21142B),
+        backgroundColor: const Color(0xFF0F1540),
         title: Text(result == null
             ? 'Установка OpenWRT'
             : (result.ok ? 'Готово' : 'Ошибка установки')),

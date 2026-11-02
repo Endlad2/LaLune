@@ -38,7 +38,7 @@ class RouterBanner extends ConsumerWidget {
         },
         child: Container(
           width: double.infinity,
-          color: const Color(0xFF8E44AD),
+          color: const Color(0xFF2E7D32),
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
           child: Row(
             children: [

@@ -80,7 +80,7 @@ class _AddConfigDialogState extends State<_AddConfigDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      backgroundColor: const Color(0xFF21142B),
+      backgroundColor: const Color(0xFF0F1540),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: Colors.white.withOpacity(0.1)),
@@ -101,7 +101,7 @@ class _AddConfigDialogState extends State<_AddConfigDialog> {
               DropdownButtonFormField<String>(
                 value: _protocol,
                 isExpanded: true,
-                dropdownColor: const Color(0xFF21142B),
+                dropdownColor: const Color(0xFF0F1540),
                 style: const TextStyle(fontSize: 13, color: Colors.white),
                 decoration: const InputDecoration(
                   isDense: true,
@@ -129,7 +129,7 @@ class _AddConfigDialogState extends State<_AddConfigDialog> {
                             ),
                             icon: const Icon(
                               Icons.warning_amber_rounded,
-                              color: Color(0xFFFFB347),
+                              color: Color(0xFFF7E84E),
                               size: 19,
                             ),
                           ),

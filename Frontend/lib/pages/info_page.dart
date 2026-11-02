@@ -72,7 +72,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xFF21142B),
+            color: const Color(0xFF0F1540),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: Colors.white.withOpacity(0.12)),
           ),
@@ -157,7 +157,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
                   style: TextStyle(
                       fontSize: 26,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFFFFB347))),
+                      color: Color(0xFFF7E84E))),
               const SizedBox(height: 4),
               Text('Client v$_laluneVersion',
                   style: TextStyle(color: Colors.white.withOpacity(0.5))),
@@ -295,7 +295,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
       child: ElevatedButton(
         onPressed: onTap,
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFFFFB347),
+          backgroundColor: const Color(0xFFF7E84E),
           foregroundColor: Colors.black,
           padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(

@@ -74,8 +74,8 @@ class _ConfigRowState extends State<_ConfigRow> {
   Widget build(BuildContext context) {
     // Цвет бейджа зависит от протокола.
     final badgeColor = widget.config.isPaperFlux
-        ? const Color(0xFFFFB347)
-        : const Color(0xFFFF7518);
+        ? const Color(0xFFF7E84E)
+        : const Color(0xFF4A6CF7);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
@@ -153,7 +153,7 @@ class _ConfigRowState extends State<_ConfigRow> {
                       height: 20,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFFFB347),
+                        color: const Color(0xFFF7E84E),
                         borderRadius: BorderRadius.circular(5),
                       ),
                       child: const Text(
@@ -169,7 +169,7 @@ class _ConfigRowState extends State<_ConfigRow> {
                 ),
               if (widget.selected)
                 const Icon(Icons.check_circle,
-                    size: 16, color: Color(0xFFB36AE2)),
+                    size: 16, color: Color(0xFF7CFF9A)),
               const SizedBox(width: 6),
               IconButton(
                 onPressed: widget.onDelete,
