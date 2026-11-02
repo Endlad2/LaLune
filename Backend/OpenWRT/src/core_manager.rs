@@ -158,7 +158,11 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max { s.to_string() } else { format!("{}...", &s[..max]) }
 }
 
-pub struct CoreProcess { pub child: Child }
+pub struct CoreProcess {
+    pub child: Child,
+    log_tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub user: crate::linux_core::CoreUser,
+}
 
 impl CoreProcess {
     pub async fn spawn(
@@ -170,19 +174,21 @@ impl CoreProcess {
         let log = std::fs::File::create(log_file)?;
         let log_err = log.try_clone()?;
 
-        let mut cmd = Command::new(core_path);
-        cmd.args(args);
+        let user = crate::linux_core::CoreUser::prepare(core_path)?;
+        let mut cmd = Command::new(user.executable());
+        user.configure(&mut cmd, args)?;
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let mut child = cmd.spawn()?;
+        let mut log_tasks = Vec::new();
         events.emit(Event::log(format!("[CORE] spawned pid={:?}", child.id())));
 
         if let Some(stdout) = child.stdout.take() {
             let log_path = log_file.to_path_buf();
             let events_out = events.clone();
-            tokio::spawn(async move {
+            log_tasks.push(tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout).lines();
                 let mut file = tokio::fs::OpenOptions::new()
                     .create(true).append(true).open(&log_path).await.ok();
@@ -194,13 +200,13 @@ impl CoreProcess {
                     }
                     events_out.emit(Event::log(format!("[CORE] {}", line)));
                 }
-            });
+            }));
         }
 
         if let Some(stderr) = child.stderr.take() {
             let log_path = log_file.to_path_buf();
             let events_err = events.clone();
-            tokio::spawn(async move {
+            log_tasks.push(tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr).lines();
                 let mut file = tokio::fs::OpenOptions::new()
                     .create(true).append(true).open(&log_path).await.ok();
@@ -212,17 +218,19 @@ impl CoreProcess {
                     }
                     events_err.emit(Event::log(format!("[CORE] {}", line)));
                 }
-            });
+            }));
         }
 
         drop(log);
         drop(log_err);
 
-        Ok(Self { child })
+        Ok(Self { child, log_tasks, user })
     }
 
     pub async fn kill(&mut self) -> Result<()> {
-        self.child.kill().await?;
+        let result = self.child.kill().await;
+        for task in self.log_tasks.drain(..) { task.abort(); let _ = task.await; }
+        result?;
         Ok(())
     }
 }

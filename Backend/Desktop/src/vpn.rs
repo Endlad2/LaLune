@@ -9,11 +9,17 @@
 // ВАЖНО: для PaperFlux --mode proxy мы подсовываем ОС маршруты через TUN,
 // а TUN-мост сам подключается к SOCKS5 127.0.0.1:{CORE_LISTEN_PORT}.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+#[cfg(target_os = "windows")]
+use anyhow::anyhow;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(target_os = "windows")]
+use std::time::Duration;
 
 use crate::events::{Event, EventBus};
 
@@ -77,7 +83,11 @@ pub struct VpnRuntime {
     pub wintun: crate::wintun::SharedWintunSession,
 
     #[cfg(target_os = "linux")]
-    pub handle: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    pub handle: Mutex<Option<crate::linux_tun::Session>>,
+    #[cfg(target_os = "linux")]
+    pub core_uid: AtomicU32,
+    pub operation: tokio::sync::Mutex<()>,
+    pub watchdog: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl VpnRuntime {
@@ -95,7 +105,11 @@ impl VpnRuntime {
             wintun: crate::wintun::new_shared_session(),
 
             #[cfg(target_os = "linux")]
-            handle: Arc::new(Mutex::new(None)),
+            handle: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            core_uid: AtomicU32::new(0),
+            operation: tokio::sync::Mutex::new(()),
+            watchdog: Mutex::new(None),
         }
     }
 
@@ -127,22 +141,21 @@ impl VpnRuntime {
         }
     }
 
-    pub fn stop(&self) {
-        self.running.store(false, Ordering::Relaxed);
+    pub async fn stop(&self) {
+        let watchdog = { self.watchdog.lock().take() };
+        if let Some(task) = watchdog { task.abort(); let _ = task.await; }
+        self.stop_tun().await;
+    }
 
+    pub async fn stop_tun(&self) {
+        self.running.store(false, Ordering::Release);
         #[cfg(target_os = "windows")]
-        {
-            let mut guard = self.wintun.lock();
-            *guard = None;
-        }
-
+        { *self.wintun.lock() = None; }
         #[cfg(target_os = "linux")]
         {
-            if let Some(h) = self.handle.lock().take() {
-                let _ = h.join();
-            }
+            let session = { self.handle.lock().take() };
+            if let Some(session) = session { session.stop().await; }
         }
-
         *self.started_at.lock() = None;
         *self.tun_conf.lock() = None;
     }
@@ -194,54 +207,16 @@ pub fn add_bypass_route(_runtime: &VpnRuntime, _ip: &str) {}
 //  Маршруты и DNS
 // ============================================================
 
+#[cfg(target_os = "windows")]
 pub fn setup_routes(runtime: &VpnRuntime, tun_ip: &str, tun_dns: &str, events: &EventBus) {
-    #[cfg(target_os = "linux")]
-    setup_routes_linux(tun_ip, tun_dns, events);
-
     #[cfg(target_os = "windows")]
     setup_routes_windows(runtime, tun_ip, tun_dns, events);
 }
 
+#[cfg(target_os = "windows")]
 pub fn cleanup_routes(runtime: &VpnRuntime, events: &EventBus) {
-    #[cfg(target_os = "linux")]
-    cleanup_routes_linux(events);
-
     #[cfg(target_os = "windows")]
     cleanup_routes_windows(runtime, events);
-}
-
-#[cfg(target_os = "linux")]
-fn setup_routes_linux(tun_ip: &str, tun_dns: &str, events: &EventBus) {
-    for dns in tun_dns.split(',') {
-        let dns = dns.trim();
-        if dns.is_empty() { continue; }
-        run_sudo(&format!("echo 'nameserver {}' >> /etc/resolv.conf", dns), events);
-    }
-    run_sudo(&format!("ip route add default dev {}", "csqtt0"), events);
-    let _ = tun_ip;
-}
-
-#[cfg(target_os = "linux")]
-fn cleanup_routes_linux(events: &EventBus) {
-    run_sudo("ip route del default dev csqtt0 2>/dev/null || true", events);
-}
-
-#[cfg(target_os = "linux")]
-fn run_sudo(command: &str, events: &EventBus) {
-    use std::process::Command;
-    let result = Command::new("sh").args(["-c", &format!("sudo {}", command)]).output();
-    match result {
-        Ok(out) if out.status.success() => {
-            events.emit(Event::log(format!("[TUN][sudo] OK: {}", command)));
-        }
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            events.emit(Event::log(format!("[TUN][sudo] failed: {} — {}", command, err.trim())));
-        }
-        Err(e) => {
-            events.emit(Event::log(format!("[TUN][sudo] spawn error: {} — {}", command, e)));
-        }
-    }
 }
 
 #[cfg(target_os = "windows")]
@@ -450,98 +425,13 @@ pub fn start_tun(
 // ============================================================
 
 #[cfg(target_os = "linux")]
-pub fn start_tun(
-    runtime: Arc<VpnRuntime>,
-    tun_ip: String,
-    tun_dns: String,
-    events: EventBus,
-) -> Result<()> {
-    use std::io::{Read, Write};
-    use std::net::UdpSocket;
-    use std::thread;
-    use tun::Configuration;
-
-    let mut config = Configuration::default();
-    config
-        .name("csqtt0")
-        .address(&tun_ip)
-        .netmask("255.255.255.255")
-        .mtu(TUN_MTU as i32)
-        .up();
-
-    let dev = tun::create(&config).map_err(|e| anyhow!("tun create failed: {}", e))?;
-    let dev = Arc::new(Mutex::new(dev));
-
-    *runtime.tun_conf.lock() = Some(TunConf {
-        ip: tun_ip.clone(),
-        dns: tun_dns.clone(),
-        mtu: TUN_MTU,
-    });
-
-    let sock = UdpSocket::bind("127.0.0.1:0")?;
-    sock.connect(format!("127.0.0.1:{}", CORE_LISTEN_PORT))?;
-    let sock = Arc::new(sock);
-
-    runtime.running.store(true, Ordering::Relaxed);
+pub fn start_tun(runtime: Arc<VpnRuntime>, tun_ip: String, tun_dns: String, events: EventBus) -> Result<()> {
+    let session = crate::linux_tun::Session::start("csqtt0", &tun_ip, &tun_dns, TUN_MTU,
+        CORE_LISTEN_PORT, runtime.core_uid.load(Ordering::Acquire), runtime.running.clone(),
+        runtime.rx_bytes.clone(), runtime.tx_bytes.clone(), events.clone())?;
+    *runtime.handle.lock() = Some(session);
     *runtime.started_at.lock() = Some(Instant::now());
-
-    setup_routes(&runtime, &tun_ip, &tun_dns, &events);
-
-    let running = runtime.running.clone();
-    let rx = runtime.rx_bytes.clone();
-    let tx = runtime.tx_bytes.clone();
-
-    let dev_w = dev.clone();
-    let sock_w = sock.clone();
-    let running_w = running.clone();
-    let rx_w = rx.clone();
-    let tx_w = tx.clone();
-
-    let handle = thread::spawn(move || {
-        let dev_r = dev_w.clone();
-        let sock_r = sock_w.clone();
-        let running_r = running_w.clone();
-        let tx_r = tx_w.clone();
-        let h1 = thread::spawn(move || {
-            let mut buf = vec![0u8; 65535];
-            while running_r.load(Ordering::Relaxed) {
-                let n = {
-                    let mut guard = dev_r.lock();
-                    guard.read(&mut buf).unwrap_or(0)
-                };
-                if n > 0 {
-                    if sock_r.send(&buf[..n]).is_ok() {
-                        tx_r.fetch_add(n as u64, Ordering::Relaxed);
-                    }
-                }
-            }
-        });
-
-        let dev_w2 = dev_w.clone();
-        let sock_w2 = sock_w.clone();
-        let running_w2 = running_w.clone();
-        let rx_w2 = rx_w.clone();
-        let h2 = thread::spawn(move || {
-            let mut buf = vec![0u8; 65535];
-            while running_w2.load(Ordering::Relaxed) {
-                match sock_w2.recv(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let mut guard = dev_w2.lock();
-                        if guard.write(&buf[..n]).is_ok() {
-                            rx_w2.fetch_add(n as u64, Ordering::Relaxed);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
-        });
-
-        let _ = h1.join();
-        let _ = h2.join();
-    });
-
-    *runtime.handle.lock() = Some(handle);
+    *runtime.tun_conf.lock() = Some(TunConf { ip: tun_ip, dns: tun_dns, mtu: TUN_MTU });
     events.emit(Event::log("[TUN] bridge started (Linux)"));
     Ok(())
 }
@@ -645,4 +535,43 @@ pub fn extract_ipv4_addrs(line: &str) -> Vec<String> {
     }
 
     result
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_lifecycle_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_cancels_watchdog_and_clears_runtime_without_tun() {
+        struct OnDrop(Arc<AtomicBool>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+        }
+
+        let runtime = VpnRuntime::new();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let started_task = started.clone();
+        let cancelled_task = cancelled.clone();
+        *runtime.watchdog.lock() = Some(tokio::spawn(async move {
+            let _on_drop = OnDrop(cancelled_task);
+            started_task.notify_one();
+            std::future::pending::<()>().await;
+        }));
+        started.notified().await;
+        runtime.running.store(true, Ordering::Release);
+        *runtime.started_at.lock() = Some(Instant::now());
+        *runtime.tun_conf.lock() = Some(TunConf {
+            ip: "192.0.2.1".into(), dns: "192.0.2.53".into(), mtu: TUN_MTU,
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), runtime.stop()).await.unwrap();
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!runtime.running.load(Ordering::Acquire));
+        assert!(runtime.watchdog.lock().is_none());
+        assert!(runtime.wintun.lock().is_none());
+        assert!(runtime.started_at.lock().is_none());
+        assert!(runtime.tun_conf.lock().is_none());
+        runtime.stop().await;
+    }
 }

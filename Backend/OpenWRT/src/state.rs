@@ -196,13 +196,14 @@ impl AppState {
     }
 
     pub async fn cleanup(&self) {
+        let _operation = self.vpn.operation.lock().await;
         {
             let handle = { self.socks5.lock().take() };
             if let Some(h) = handle { h.abort(); }
         }
         *self.socks5_port.write() = 0;
 
-        self.vpn.stop();
+        self.vpn.stop().await;
 
         let maybe_proc = {
             let mut core = self.core.lock();
