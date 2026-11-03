@@ -121,21 +121,24 @@ pub fn settings_keys_for(kind: ProtocolKind) -> Vec<&'static str> {
             "authMode", "obfs", "fingerprint", "clientIds",
             "captchaMode", "vkAuthMode", "turnTransport",
             "allowHashRedistribution", "validateVkHashes",
-            "shareVpn", "showCoreLogs",
+            "shareVpn", "desktopSocks5Mode", "showCoreLogs",
+            "ipRoutingMode", "ipRoutingIps",
         ],
         ProtocolKind::Csqttr => vec![
             "peer", "vkHashes", "password", "workers", "autoApiWorkers",
             "authMode", "obfs", "fingerprint", "clientIds",
             "captchaMode", "vkAuthMode", "turnTransport",
             "allowHashRedistribution", "validateVkHashes",
-            "shareVpn", "showCoreLogs",
+            "shareVpn", "desktopSocks5Mode", "showCoreLogs",
+            "ipRoutingMode", "ipRoutingIps",
         ],
         ProtocolKind::PaperFlux => vec![
             "pfTransport", "pfUrl", "pfUrls", "pfVolgaUrl",
             "pfMode", "pfSocks5", "pfTcpRecovery",
             "pfRelayUrl", "pfRelayToken", "pfRelayUser", "pfRelaySession",
             "pfMaxToken", "pfMaxUid",
-            "workers", "shareVpn", "showCoreLogs",
+            "workers", "shareVpn", "desktopSocks5Mode", "showCoreLogs",
+            "ipRoutingMode", "ipRoutingIps",
         ],
     }
 }

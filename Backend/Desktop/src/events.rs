@@ -18,6 +18,8 @@ pub enum Event {
     /// Изменение статуса VPN.
     Status {
         connected: bool,
+        state: String,
+        message: String,
         ts: i64,
     },
     /// Прогресс длительной операции.
@@ -47,8 +49,20 @@ impl Event {
     }
 
     pub fn status(connected: bool) -> Self {
+        let state = if connected { "connected" } else { "disconnected" };
+        let message = if connected { "Подключено" } else { "" };
+        Self::status_detail(connected, state, message)
+    }
+
+    pub fn status_detail(
+        connected: bool,
+        state: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Event::Status {
             connected,
+            state: state.into(),
+            message: message.into(),
             ts: Utc::now().timestamp(),
         }
     }

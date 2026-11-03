@@ -135,6 +135,10 @@ def inside(binary, case):
                 assert not api('/vpn/status')['connected'],'Setup failure reported connected'
             else:
                 wait_for(lambda:api('/vpn/status')['connected'])
+                link=cmd('ip','-details','link','show','dev','csqtt0').stdout
+                assert 'UP' in link,'csqtt0 exists but is not UP: '+link
+                tun_addr=cmd('ip','-4','addr','show','dev','csqtt0').stdout
+                assert 'inet 10.66.67.2/32' in tun_addr,'csqtt0 has no tunnel address: '+tun_addr
                 children={int(pid) for f in Path(f'/proc/{process.pid}/task').glob('*/children')
                           for pid in f.read_text().split()}
                 child=next(iter(children))

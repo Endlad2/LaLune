@@ -57,6 +57,7 @@ class Settings {
   final bool enableSmartTunnel;
   final bool showCoreLogs;
   final bool shareVpn;
+  final bool desktopSocks5Mode;
 
   // Global split tunneling (shared by all protocols).
   final String ipRoutingMode; // blacklist: listed IPs bypass VPN; whitelist: only listed IPs use VPN.
@@ -108,6 +109,7 @@ class Settings {
     this.enableSmartTunnel = false,
     this.showCoreLogs = false,
     this.shareVpn = false,
+    this.desktopSocks5Mode = false,
     this.ipRoutingMode = 'blacklist',
     this.ipRoutingIps = '',
     this.androidAppRoutingMode = 'blacklist',
@@ -167,6 +169,7 @@ class Settings {
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
       shareVpn: (j['shareVpn'] ?? false) as bool,
+      desktopSocks5Mode: (j['desktopSocks5Mode'] ?? false) as bool,
       ipRoutingMode: (j['ipRoutingMode'] ?? 'blacklist') as String,
       ipRoutingIps: (j['ipRoutingIps'] ?? '') as String,
       androidAppRoutingMode: (j['androidAppRoutingMode'] ?? 'blacklist') as String,
@@ -218,6 +221,7 @@ class Settings {
         'enableSmartTunnel': enableSmartTunnel,
         'showCoreLogs': showCoreLogs,
         'shareVpn': shareVpn,
+        'desktopSocks5Mode': desktopSocks5Mode,
         'ipRoutingMode': ipRoutingMode,
         'ipRoutingIps': ipRoutingIps,
         'androidAppRoutingMode': androidAppRoutingMode,
@@ -268,6 +272,7 @@ class Settings {
     bool? enableSmartTunnel,
     bool? showCoreLogs,
     bool? shareVpn,
+    bool? desktopSocks5Mode,
     String? ipRoutingMode,
     String? ipRoutingIps,
     String? androidAppRoutingMode,
@@ -318,6 +323,7 @@ class Settings {
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
         shareVpn: shareVpn ?? this.shareVpn,
+        desktopSocks5Mode: desktopSocks5Mode ?? this.desktopSocks5Mode,
         ipRoutingMode: ipRoutingMode ?? this.ipRoutingMode,
         ipRoutingIps: ipRoutingIps ?? this.ipRoutingIps,
         androidAppRoutingMode: androidAppRoutingMode ?? this.androidAppRoutingMode,

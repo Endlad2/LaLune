@@ -83,6 +83,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   List<Map<String, dynamic>> _installedApps = [];
   bool _loadingApps = false;
   bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
+  bool get _isDesktop =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.linux;
 
   String _pfTransport = 'yandex';
   String _pfMode = 'proxy';
@@ -92,6 +95,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _enableSmartTunnel = false;
   bool _showCoreLogs = false;
   bool _shareVpn = false;
+  bool _desktopSocks5Mode = false;
 
   bool get _isPaperFlux => _selectedConfig?.isPaperFlux == true;
   bool get _isCsqtt219 => _selectedConfig?.isCsqtt219 == true;
@@ -155,7 +159,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _enableSmartTunnel = s.enableSmartTunnel;
     _showCoreLogs = s.showCoreLogs;
     _shareVpn = s.shareVpn;
-    _ipRoutingMode = s.ipRoutingMode;
+    _desktopSocks5Mode = s.desktopSocks5Mode;
+    _ipRoutingMode = _isDesktop ? 'blacklist' : s.ipRoutingMode;
     _ipRoutingIpsCtl.text = s.ipRoutingIps;
     _androidAppRoutingMode = s.androidAppRoutingMode;
     _androidVpnApps = s.androidVpnApps.toSet();
@@ -215,6 +220,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       enableSmartTunnel: _enableSmartTunnel,
       showCoreLogs: _showCoreLogs,
       shareVpn: _shareVpn,
+      desktopSocks5Mode: _desktopSocks5Mode,
       ipRoutingMode: _ipRoutingMode,
       ipRoutingIps: _ipRoutingIpsCtl.text.trim(),
       androidAppRoutingMode: _androidAppRoutingMode,
@@ -526,10 +532,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         Text('Настройка общая для CSQTT и PaperFlux. Можно указывать IPv4, IPv6 и CIDR — по одному на строку.',
             style: TextStyle(fontSize: 11.5, height: 1.45, color: Colors.white.withOpacity(0.55))),
         const SizedBox(height: 10),
-        _rowDropdown('Режим IP', _ipRoutingMode == 'whitelist' ? 'Белый список' : 'Чёрный список', const ['Чёрный список', 'Белый список'], (v) {
-          setState(() => _ipRoutingMode = v == 'Белый список' ? 'whitelist' : 'blacklist');
-          _markDirty();
-        }),
+        _rowDropdown(
+          'Режим IP',
+          _ipRoutingMode == 'whitelist' ? 'Белый список' : 'Чёрный список',
+          _isDesktop ? const ['Чёрный список'] : const ['Чёрный список', 'Белый список'],
+          (v) {
+            setState(() => _ipRoutingMode = v == 'Белый список' ? 'whitelist' : 'blacklist');
+            _markDirty();
+          },
+        ),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: TextField(
@@ -543,7 +554,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               hintText: '192.168.1.10\n10.0.0.0/8\n2001:db8::/32',
               helperText: _ipRoutingMode == 'whitelist'
                   ? 'Белый список: только эти IP идут через VPN.'
-                  : 'Чёрный список: эти IP должны идти напрямую, остальные — через VPN. Исключение IP поддерживается на Android 13+.',
+                  : (_isDesktop
+                      ? 'Чёрный список: эти IP идут напрямую, остальные — через VPN. На Windows/Linux применяются IPv4 и IPv4/CIDR; IPv6 у текущего desktop TUN и так не перехватывается.'
+                      : 'Чёрный список: эти IP должны идти напрямую, остальные — через VPN. Исключение IP поддерживается на Android 13+.'),
               helperMaxLines: 3,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             ),
@@ -845,6 +858,23 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_isDesktop && !_isPaperFlux) ...[
+          _toggleRow('Режим SOCKS5 вместо TUN', _desktopSocks5Mode, (v) {
+            setState(() => _desktopSocks5Mode = v);
+            _markDirty();
+          }),
+          Padding(
+            padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
+            child: Text(
+              'Только Windows/Linux, для CSQTT/CSQTTR. Ядро по-прежнему отдаёт raw IP через локальный UDP, '
+              'но системный default route не меняется: трафик SOCKS5 направляется в этот UDP-туннель через служебный TUN.',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  height: 1.5,
+                  color: Colors.white.withOpacity(0.55)),
+            ),
+          ),
+        ],
         _toggleRow('Раздавать VPN', _shareVpn, (v) {
           setState(() => _shareVpn = v);
           _markDirty();
@@ -852,8 +882,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         Padding(
           padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
           child: Text(
-            'Открывает SOCKS5-прокси на случайном свободном порту '
-            '(не 1080). Порт виден в /vpn/status как socks5Port.',
+            _isDesktop
+                ? (!_isPaperFlux && _desktopSocks5Mode
+                    ? 'В режиме SOCKS5: выключено — слушает только 127.0.0.1; включено — 0.0.0.0 для устройств в LAN. Порт виден в /vpn/status как socks5Port.'
+                    : 'На ПК «Раздавать VPN» используется вместе с режимом SOCKS5 для CSQTT/CSQTTR.')
+                : 'Открывает SOCKS5-прокси на случайном свободном порту (не 1080). Порт виден в /vpn/status как socks5Port.',
             style: TextStyle(
                 fontSize: 11.5,
                 height: 1.5,

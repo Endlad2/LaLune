@@ -64,6 +64,14 @@ pub struct Settings {
     pub enable_smart_tunnel: bool,
     pub show_core_logs: bool,
     pub share_vpn: bool,
+    /// Desktop-only: expose a SOCKS5 endpoint backed by the CSQTT/CSQTTR raw-IP UDP tunnel.
+    pub desktop_socks5_mode: bool,
+
+    // -------- Split tunneling (Desktop) --------
+    /// blacklist: listed IPv4/CIDR destinations bypass VPN.
+    /// whitelist is preserved for API compatibility; desktop currently only applies blacklist.
+    pub ip_routing_mode: String,
+    pub ip_routing_ips: String,
 }
 
 impl Default for Settings {
@@ -115,6 +123,9 @@ impl Default for Settings {
             enable_smart_tunnel: false,
             show_core_logs: false,
             share_vpn: false,
+            desktop_socks5_mode: false,
+            ip_routing_mode: "blacklist".into(),
+            ip_routing_ips: String::new(),
         }
     }
 }
@@ -140,6 +151,10 @@ impl Settings {
         if self.pf_socks5.is_empty() { self.pf_socks5 = "127.0.0.1:1080".into(); }
         if self.pf_tcp_recovery.is_empty() { self.pf_tcp_recovery = "auto".into(); }
         if self.pf_client_ip.is_empty() { self.pf_client_ip = "10.10.10.2".into(); }
+
+        if self.ip_routing_mode != "whitelist" {
+            self.ip_routing_mode = "blacklist".into();
+        }
     }
 
     pub fn merge_from_json(&mut self, value: serde_json::Value) -> anyhow::Result<()> {

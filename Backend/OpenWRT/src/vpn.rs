@@ -131,7 +131,7 @@ impl VpnRuntime {
 pub fn start_tun(runtime: Arc<VpnRuntime>, tun_ip: String, tun_dns: String, events: EventBus) -> Result<()> {
     let session = crate::linux_tun::Session::start(TUN_NAME, &tun_ip, &tun_dns, TUN_MTU,
         CORE_LISTEN_PORT, runtime.core_uid.load(Ordering::Acquire), runtime.running.clone(),
-        runtime.rx_bytes.clone(), runtime.tx_bytes.clone(), events.clone())?;
+        runtime.rx_bytes.clone(), runtime.tx_bytes.clone(), events.clone(), true, Vec::new())?;
     *runtime.handle.lock() = Some(session);
     *runtime.started_at.lock() = Some(Instant::now());
     *runtime.tun_conf.lock() = Some(TunConf { ip: tun_ip.clone(), dns: tun_dns.clone(), mtu: TUN_MTU });

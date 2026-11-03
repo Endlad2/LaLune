@@ -18,7 +18,7 @@ URL_LALUNE_ZIP="https://github.com/${REPO_LALUNE}/releases/latest/download/LaLun
 URL_BACKEND_ZIP="https://github.com/${REPO_LALUNE}/releases/latest/download/Backend-Linux.zip"
 URL_LATEST_CSQTT="https://raw.githubusercontent.com/${REPO_CSQTT}/refs/heads/main/LATEST"
 URL_LATEST_PF="https://raw.githubusercontent.com/${REPO_PAPERFLUX}/refs/heads/main/LATEST"
-URL_CSQTTR_LATEST="https://raw.githubusercontent.com/${REPO_CSQTTR}/refs/heads/main/LATEST"
+URL_CSQTTR_LATEST="https://raw.githubusercontent.com/${REPO_CSQTTR}/refs/heads/release-2.5.2/LATEST"
 URL_ICON="https://raw.githubusercontent.com/${REPO_LALUNE}/refs/heads/main/icon.ico"
 
 HOME_DIR="${HOME}"

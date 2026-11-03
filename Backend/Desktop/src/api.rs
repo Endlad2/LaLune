@@ -547,6 +547,8 @@ async fn vpn_connect(
     state.vpn.stop().await;
     finish_vpn(&state).await;
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
+    state.vpn.set_phase("connecting", "Подключение");
+    state.events.emit(Event::status_detail(false, "connecting", "Подключение"));
     state.log(format!("[VPN] connecting to {} ({})", config.name, kind.id()));
 
     let core_path = state::core_path_for(&state.app_dir, &config.protocol);
@@ -604,10 +606,36 @@ async fn vpn_connect(
     }
 
     let settings = state.settings.read().clone();
+    vpn::configure_bypass_routes(
+        &state.vpn,
+        &settings.ip_routing_mode,
+        &settings.ip_routing_ips,
+        &state.events,
+    );
+    let desktop_socks5_mode = settings.desktop_socks5_mode
+        && matches!(kind, ProtocolKind::Csqtt | ProtocolKind::Csqttr);
+    let share_socks5 = settings.share_vpn;
+
+    if settings.desktop_socks5_mode && kind == ProtocolKind::PaperFlux {
+        state.log("[PROXY] desktop SOCKS5 mode is only available for CSQTT/CSQTTR; using normal VPN mode");
+    }
+
+    // Every fresh core start gets a fresh core log. This is intentionally done
+    // before spawn so reconnecting cannot expose stale readiness/stat lines.
+    if let Err(e) = tokio::fs::write(&state.logs_path, b"").await {
+        return err(500, format!("cannot clear core log before start: {}", e));
+    }
+
     let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
     state.log(format!("[VPN] core args: {}", args.join(" ")));
 
-    let core = match CoreProcess::spawn(&core_path, &args, &state.logs_path, state.events.clone(), kind == ProtocolKind::Csqtt)
+    let core = match CoreProcess::spawn(
+        &core_path,
+        &args,
+        &state.logs_path,
+        state.events.clone(),
+        matches!(kind, ProtocolKind::Csqtt | ProtocolKind::Csqttr),
+    )
         .await
     {
         Ok(c) => c,
@@ -616,13 +644,6 @@ async fn vpn_connect(
     #[cfg(target_os = "linux")]
     state.vpn.core_uid.store(core.user.as_ref().map_or(0, |user| user.uid), std::sync::atomic::Ordering::Release);
     *state.core.lock() = Some(core);
-
-    if kind == ProtocolKind::Csqtt && settings.share_vpn {
-        match crate::socks5::start(state.clone()) {
-            Ok(port) => state.log(format!("[PROXY] socks5 on port {}", port)),
-            Err(e) => state.log(format!("[PROXY] failed to start: {}", e)),
-        }
-    }
 
     if let Some(lua) = state.lua() {
         lua.on_connect();
@@ -654,7 +675,23 @@ async fn vpn_connect(
                             if let Some((active, _traffic)) = vpn::parse_stats(line) {
                                 if active > 0 {
                                     consecutive_active_ticks += 1;
+                                    if consecutive_active_ticks == 1 {
+                                        state2.vpn.set_phase("checking", "Проверка...");
+                                        state2.events.emit(Event::status_detail(
+                                            false,
+                                            "checking",
+                                            "Проверка...",
+                                        ));
+                                    }
                                 } else {
+                                    if consecutive_active_ticks > 0 {
+                                        state2.vpn.set_phase("connecting", "Подключение");
+                                        state2.events.emit(Event::status_detail(
+                                            false,
+                                            "connecting",
+                                            "Подключение",
+                                        ));
+                                    }
                                     consecutive_active_ticks = 0;
                                 }
                             }
@@ -689,19 +726,58 @@ async fn vpn_connect(
                     kind_for_watchdog.id()
                 ));
 
-                if let Err(e) =
-                    vpn::start_tun(state2.vpn.clone(), ip.clone(), dns.clone(), state2.events.clone())
-                {
-                    state2.log(format!("[VPN] tun start failed: {}", e));
+                let tunnel_result = if desktop_socks5_mode {
+                    vpn::start_proxy_tun(
+                        state2.vpn.clone(),
+                        ip.clone(),
+                        dns.clone(),
+                        state2.events.clone(),
+                    )
+                } else {
+                    vpn::start_tun(
+                        state2.vpn.clone(),
+                        ip.clone(),
+                        dns.clone(),
+                        state2.events.clone(),
+                    )
+                };
+
+                if let Err(e) = tunnel_result {
+                    state2.log(format!("[VPN] tunnel start failed: {}", e));
                     state2
                         .events
-                        .emit(Event::error(format!("tun start failed: {}", e)));
+                        .emit(Event::error(format!("tunnel start failed: {}", e)));
+                    state2.vpn.set_phase("error", &format!("Ошибка запуска туннеля: {}", e));
                     finish_vpn(&state2).await;
                     return;
                 }
 
-                state2.events.emit(Event::status(true));
-                state2.log("[VPN] connected");
+                if desktop_socks5_mode {
+                    match crate::socks5::start(state2.clone(), share_socks5) {
+                        Ok(port) => state2.log(format!(
+                            "[PROXY] tunneled SOCKS5 ready on {}:{}",
+                            if share_socks5 { "0.0.0.0" } else { "127.0.0.1" },
+                            port
+                        )),
+                        Err(e) => {
+                            state2.log(format!("[PROXY] failed to start tunneled SOCKS5: {}", e));
+                            state2.events.emit(Event::error(format!(
+                                "SOCKS5 start failed: {}",
+                                e
+                            )));
+                            finish_vpn(&state2).await;
+                            return;
+                        }
+                    }
+                }
+
+                state2.vpn.set_phase("connected", "Подключено");
+                state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
+                state2.log(if desktop_socks5_mode {
+                    "[VPN] connected (SOCKS5 mode)"
+                } else {
+                    "[VPN] connected"
+                });
                 tun_started = true;
 
             }
@@ -713,7 +789,12 @@ async fn vpn_connect(
 
         if !tun_started {
             state2.log("[VPN] timeout waiting for 3 consecutive active ticks");
-            state2.events.emit(Event::status(false));
+            state2.vpn.set_phase("error", "Таймаут проверки подключения");
+            state2.events.emit(Event::status_detail(
+                false,
+                "error",
+                "Таймаут проверки подключения",
+            ));
         }
         if tun_started {
             while !core_stopped(&state2) && state2.vpn.running.load(std::sync::atomic::Ordering::Acquire) {
@@ -740,15 +821,20 @@ async fn finish_vpn(state: &Arc<AppState>) {
     state.vpn.stop_tun().await;
     #[cfg(target_os = "windows")]
     vpn::cleanup_routes(&state.vpn, &state.events);
+    #[cfg(target_os = "linux")]
+    state.vpn.proxy_routes.lock().clear();
     crate::socks5::stop(state);
     let core = { state.core.lock().take() };
     if let Some(mut core) = core { let _ = core.kill().await; }
-    state.events.emit(Event::status(false));
+    state.vpn.set_phase("disconnected", "");
+    state.events.emit(Event::status_detail(false, "disconnected", ""));
     if let Some(lua) = state.lua() { lua.on_disconnect(); }
 }
 
 async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let _operation = state.vpn.operation.lock().await;
+    state.vpn.set_phase("disconnecting", "Отключение...");
+    state.events.emit(Event::status_detail(false, "disconnecting", "Отключение..."));
     state.log("[VPN] disconnecting...");
     state.vpn.stop().await;
     finish_vpn(&state).await;
@@ -764,6 +850,14 @@ async fn vpn_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .unwrap_or(0);
     let s = state.vpn.status(cfg_id);
     let socks5_port = *state.socks5_port.read();
+    let settings = state.settings.read();
+    let socks5_host = if socks5_port == 0 {
+        ""
+    } else if settings.desktop_socks5_mode && settings.share_vpn {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
     Json(json!({
         "state": s.state,
         "connected": s.connected,
@@ -772,6 +866,8 @@ async fn vpn_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "message": s.message,
         "since": s.since,
         "socks5Port": socks5_port,
+        "socks5Host": socks5_host,
+        "socks5Mode": settings.desktop_socks5_mode,
     }))
 }
 
@@ -823,6 +919,25 @@ fn filter_logs(all: &[String], source: Option<&str>) -> Vec<String> {
     }
 }
 
+async fn logs_snapshot_with_core(state: &AppState) -> Vec<String> {
+    let mut logs = state.logs_snapshot();
+    if let Ok(content) = tokio::fs::read_to_string(&state.logs_path).await {
+        logs.extend(
+            content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    if line.starts_with(CORE_PREFIX) {
+                        line.to_string()
+                    } else {
+                        format!("{}{}", CORE_PREFIX, line)
+                    }
+                }),
+        );
+    }
+    logs
+}
+
 #[derive(Deserialize)]
 struct LogsQuery {
     lines: Option<usize>,
@@ -833,7 +948,7 @@ async fn logs_all(
     State(state): State<Arc<AppState>>,
     Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let logs = state.logs_snapshot();
+    let logs = logs_snapshot_with_core(&state).await;
     let filtered = filter_logs(&logs, q.source.as_deref());
     Json(json!(filtered))
 }
@@ -843,7 +958,7 @@ async fn logs_tail(
     Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
     let n = q.lines.unwrap_or(100);
-    let logs = state.logs_snapshot();
+    let logs = logs_snapshot_with_core(&state).await;
     let filtered = filter_logs(&logs, q.source.as_deref());
     let start = filtered.len().saturating_sub(n);
     Json(json!(filtered[start..].to_vec()))
@@ -866,7 +981,7 @@ async fn logs_export(
     State(state): State<Arc<AppState>>,
     Query(q): Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let logs = state.logs_snapshot();
+    let logs = logs_snapshot_with_core(&state).await;
     let filtered = filter_logs(&logs, q.source.as_deref());
     let body = filtered.join("\n");
     (

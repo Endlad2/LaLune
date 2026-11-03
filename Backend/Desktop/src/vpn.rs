@@ -12,7 +12,8 @@
 use anyhow::Result;
 #[cfg(target_os = "windows")]
 use anyhow::anyhow;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::atomic::AtomicU32;
@@ -77,7 +78,10 @@ pub struct VpnRuntime {
     pub started_at: Arc<Mutex<Option<Instant>>>,
     pub tun_conf: Arc<Mutex<Option<TunConf>>>,
     pub bypass_routes: Arc<Mutex<Vec<String>>>,
+    pub proxy_routes: Arc<Mutex<Vec<String>>>,
     pub physical_gateway: Arc<Mutex<String>>,
+    pub phase: Arc<RwLock<String>>,
+    pub phase_message: Arc<RwLock<String>>,
 
     #[cfg(target_os = "windows")]
     pub wintun: crate::wintun::SharedWintunSession,
@@ -99,7 +103,10 @@ impl VpnRuntime {
             started_at: Arc::new(Mutex::new(None)),
             tun_conf: Arc::new(Mutex::new(None)),
             bypass_routes: Arc::new(Mutex::new(Vec::new())),
+            proxy_routes: Arc::new(Mutex::new(Vec::new())),
             physical_gateway: Arc::new(Mutex::new(String::new())),
+            phase: Arc::new(RwLock::new("disconnected".into())),
+            phase_message: Arc::new(RwLock::new(String::new())),
 
             #[cfg(target_os = "windows")]
             wintun: crate::wintun::new_shared_session(),
@@ -121,14 +128,21 @@ impl VpnRuntime {
             .map(|_| chrono::Utc::now().to_rfc3339())
             .unwrap_or_default();
 
+        let phase = self.phase.read().clone();
+        let message = self.phase_message.read().clone();
         VpnStatus {
-            state: if running { "connected".into() } else { "disconnected".into() },
+            state: if running && phase == "disconnected" { "connected".into() } else { phase },
             connected: running,
             uptime_sec: uptime,
             config_id,
-            message: String::new(),
+            message,
             since,
         }
+    }
+
+    pub fn set_phase(&self, state: &str, message: &str) {
+        *self.phase.write() = state.to_string();
+        *self.phase_message.write() = message.to_string();
     }
 
     pub fn stats(&self) -> VpnStats {
@@ -158,12 +172,64 @@ impl VpnRuntime {
         }
         *self.started_at.lock() = None;
         *self.tun_conf.lock() = None;
+        self.set_phase("disconnected", "");
     }
 }
 
 // ============================================================
-//  Bypass-маршруты (Windows only)
+//  Desktop routing helpers
 // ============================================================
+
+fn parse_ipv4_prefix(input: &str) -> Option<(Ipv4Addr, u8, Ipv4Addr)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() { return None; }
+    let (ip_text, prefix) = match trimmed.split_once('/') {
+        Some((ip, prefix)) => (ip, prefix.parse::<u8>().ok()?),
+        None => (trimmed, 32),
+    };
+    if prefix > 32 { return None; }
+    let ip = ip_text.parse::<Ipv4Addr>().ok()?;
+    let mask_u32 = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    let network = Ipv4Addr::from(u32::from(ip) & mask_u32);
+    let mask = Ipv4Addr::from(mask_u32);
+    Some((network, prefix, mask))
+}
+
+pub fn configure_bypass_routes(
+    runtime: &VpnRuntime,
+    mode: &str,
+    raw: &str,
+    events: &EventBus,
+) {
+    runtime.bypass_routes.lock().clear();
+    if mode == "whitelist" {
+        events.emit(Event::log(
+            "[ROUTE] desktop whitelist mode is not applied yet; use blacklist for direct-IP exclusions",
+        ));
+        return;
+    }
+
+    let mut routes = runtime.bypass_routes.lock();
+    for value in raw.lines().flat_map(|line| line.split(',')) {
+        let value = value.trim();
+        if value.is_empty() { continue; }
+        if let Some((network, prefix, _)) = parse_ipv4_prefix(value) {
+            let normalized = format!("{}/{}", network, prefix);
+            if !routes.iter().any(|existing| existing == &normalized) {
+                routes.push(normalized);
+            }
+        } else if value.parse::<std::net::Ipv6Addr>().is_ok() || value.contains(':') {
+            // Current desktop tunnel is IPv4-only, therefore IPv6 traffic already
+            // stays on the physical network and does not need a bypass route.
+            events.emit(Event::log(format!(
+                "[ROUTE] IPv6 exclusion {} is already direct (desktop tunnel is IPv4-only)",
+                value
+            )));
+        } else {
+            events.emit(Event::log(format!("[ROUTE] ignored invalid IP/CIDR: {}", value)));
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn get_physical_gateway() -> String {
@@ -184,24 +250,104 @@ fn get_physical_gateway() -> String {
 }
 
 #[cfg(target_os = "windows")]
-pub fn add_bypass_route(runtime: &VpnRuntime, ip: &str) {
-    use std::net::Ipv4Addr;
+fn add_windows_bypass(prefix: &str, gateway: &str) {
     use std::process::Command;
-    if ip.parse::<Ipv4Addr>().is_err() { return; }
-    {
-        let existing = runtime.bypass_routes.lock();
-        if existing.iter().any(|x| x == ip) { return; }
-    }
-    let gateway = runtime.physical_gateway.lock().clone();
+    let Some((network, _plen, mask)) = parse_ipv4_prefix(prefix) else { return; };
     if gateway.is_empty() { return; }
+    let destination = network.to_string();
     let _ = Command::new("route")
-        .args(["ADD", ip, "MASK", "255.255.255.255", &gateway, "METRIC", "1"])
+        .args([
+            "ADD",
+            &destination,
+            "MASK",
+            &mask.to_string(),
+            gateway,
+            "METRIC",
+            "1",
+        ])
         .output();
-    runtime.bypass_routes.lock().push(ip.to_string());
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn add_bypass_route(_runtime: &VpnRuntime, _ip: &str) {}
+#[cfg(target_os = "windows")]
+fn remove_windows_bypass(prefix: &str) {
+    use std::process::Command;
+    let Some((network, _plen, mask)) = parse_ipv4_prefix(prefix) else { return; };
+    let _ = Command::new("route")
+        .args(["DELETE", &network.to_string(), "MASK", &mask.to_string()])
+        .output();
+}
+
+pub fn tunnel_ipv4(runtime: &VpnRuntime) -> Result<Ipv4Addr> {
+    let conf = runtime.tun_conf.lock().clone()
+        .ok_or_else(|| anyhow::anyhow!("tunnel parameters are not ready"))?;
+    conf.ip.parse::<Ipv4Addr>()
+        .map_err(|e| anyhow::anyhow!("invalid tunnel IPv4 {}: {}", conf.ip, e))
+}
+
+pub fn tunnel_dns_ipv4(runtime: &VpnRuntime) -> Option<Ipv4Addr> {
+    runtime.tun_conf.lock().as_ref().and_then(|conf| {
+        conf.dns.split(',').map(str::trim).find_map(|v| v.parse::<Ipv4Addr>().ok())
+    })
+}
+
+pub fn ensure_proxy_route(runtime: &VpnRuntime, target: IpAddr, events: &EventBus) -> Result<()> {
+    let IpAddr::V4(ip) = target else {
+        anyhow::bail!("desktop SOCKS5 tunnel currently supports IPv4 destinations only");
+    };
+    let prefix = format!("{}/32", ip);
+    {
+        let routes = runtime.proxy_routes.lock();
+        if routes.iter().any(|existing| existing == &prefix) {
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("netsh")
+            .args([
+                "interface", "ipv4", "add", "route",
+                &format!("prefix={}", prefix),
+                "interface=\"CSQTT\"",
+                "nexthop=0.0.0.0",
+                "metric=1",
+                "store=active",
+            ])
+            .output()
+            .map_err(|e| anyhow::anyhow!("netsh route {}: {}", prefix, e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            anyhow::bail!("netsh route {} failed: {}{}", prefix, stdout.trim(), stderr.trim());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let source = tunnel_ipv4(runtime)?;
+        let output = Command::new("ip")
+            .args([
+                "-4", "route", "replace", &prefix,
+                "dev", "csqtt0",
+                "src", &source.to_string(),
+            ])
+            .output()
+            .map_err(|e| anyhow::anyhow!("ip route {}: {}", prefix, e))?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "ip route {} failed: {}",
+                prefix,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+
+    runtime.proxy_routes.lock().push(prefix.clone());
+    events.emit(Event::log(format!("[PROXY] tunnel route ready: {}", prefix)));
+    Ok(())
+}
 
 // ============================================================
 //  Маршруты и DNS
@@ -230,11 +376,8 @@ fn setup_routes_windows(runtime: &VpnRuntime, tun_ip: &str, tun_dns: &str, event
     *runtime.physical_gateway.lock() = gateway.clone();
 
     let bypass_list = runtime.bypass_routes.lock().clone();
-    for ip in &bypass_list {
-        if gateway.is_empty() { break; }
-        let _ = Command::new("route")
-            .args(["ADD", ip, "MASK", "255.255.255.255", &gateway, "METRIC", "1"])
-            .output();
+    for prefix in &bypass_list {
+        add_windows_bypass(prefix, &gateway);
     }
 
     let _ = Command::new("netsh")
@@ -281,10 +424,23 @@ fn cleanup_routes_windows(runtime: &VpnRuntime, events: &EventBus) {
         .output();
 
     let bypass_list = runtime.bypass_routes.lock().clone();
-    for ip in &bypass_list {
-        let _ = Command::new("route").args(["DELETE", ip]).output();
+    for prefix in &bypass_list {
+        remove_windows_bypass(prefix);
     }
     runtime.bypass_routes.lock().clear();
+
+    let proxy_routes = runtime.proxy_routes.lock().clone();
+    for prefix in &proxy_routes {
+        let _ = Command::new("netsh")
+            .args([
+                "interface", "ipv4", "delete", "route",
+                &format!("prefix={}", prefix),
+                "interface=\"CSQTT\"",
+                "store=active",
+            ])
+            .output();
+    }
+    runtime.proxy_routes.lock().clear();
     *runtime.physical_gateway.lock() = String::new();
 
     events.emit(Event::log("[TUN] Windows routes cleaned"));
@@ -300,6 +456,57 @@ pub fn start_tun(
     tun_ip: String,
     tun_dns: String,
     events: EventBus,
+) -> Result<()> {
+    start_tun_windows(runtime, tun_ip, tun_dns, events, true)
+}
+
+#[cfg(target_os = "windows")]
+pub fn start_proxy_tun(
+    runtime: Arc<VpnRuntime>,
+    tun_ip: String,
+    tun_dns: String,
+    events: EventBus,
+) -> Result<()> {
+    start_tun_windows(runtime, tun_ip, tun_dns, events, false)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_proxy_adapter_windows(tun_ip: &str, events: &EventBus) {
+    use std::process::Command;
+
+    let _ = Command::new("netsh")
+        .args([
+            "interface", "ipv4", "set", "address",
+            "name=\"CSQTT\"", "source=static",
+            &format!("address={}", tun_ip), "mask=255.255.255.255",
+        ])
+        .output();
+
+    let _ = Command::new("netsh")
+        .args([
+            "interface", "ipv4", "set", "subinterface",
+            "\"CSQTT\"", &format!("mtu={}", TUN_MTU), "store=active",
+        ])
+        .output();
+
+    // Proxy mode deliberately has no default route and does not replace system DNS.
+    let _ = Command::new("netsh")
+        .args([
+            "interface", "ipv4", "delete", "route",
+            "prefix=0.0.0.0/0", "interface=\"CSQTT\"", "store=active",
+        ])
+        .output();
+
+    events.emit(Event::log("[TUN] Windows proxy adapter configured without default route"));
+}
+
+#[cfg(target_os = "windows")]
+fn start_tun_windows(
+    runtime: Arc<VpnRuntime>,
+    tun_ip: String,
+    tun_dns: String,
+    events: EventBus,
+    full_tunnel: bool,
 ) -> Result<()> {
     use std::net::UdpSocket;
     use std::path::PathBuf;
@@ -318,24 +525,21 @@ pub fn start_tun(
     let sock = UdpSocket::bind("127.0.0.1:0")?;
     sock.connect(format!("127.0.0.1:{}", CORE_LISTEN_PORT))?;
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawSocket;
-        const SOL_SOCKET: i32 = 0xFFFF;
-        const SO_RCVBUF: i32 = 0x1002;
-        const SO_SNDBUF: i32 = 0x1001;
-        const BUFSIZE: i32 = 8 * 1024 * 1024;
+    use std::os::windows::io::AsRawSocket;
+    const SOL_SOCKET: i32 = 0xFFFF;
+    const SO_RCVBUF: i32 = 0x1002;
+    const SO_SNDBUF: i32 = 0x1001;
+    const BUFSIZE: i32 = 8 * 1024 * 1024;
 
-        extern "system" {
-            fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i8, optlen: i32) -> i32;
-        }
+    extern "system" {
+        fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i8, optlen: i32) -> i32;
+    }
 
-        let raw = sock.as_raw_socket();
-        unsafe {
-            let v = BUFSIZE;
-            setsockopt(raw as usize, SOL_SOCKET, SO_RCVBUF, &v as *const i32 as *const i8, std::mem::size_of::<i32>() as i32);
-            setsockopt(raw as usize, SOL_SOCKET, SO_SNDBUF, &v as *const i32 as *const i8, std::mem::size_of::<i32>() as i32);
-        }
+    let raw = sock.as_raw_socket();
+    unsafe {
+        let v = BUFSIZE;
+        setsockopt(raw as usize, SOL_SOCKET, SO_RCVBUF, &v as *const i32 as *const i8, std::mem::size_of::<i32>() as i32);
+        setsockopt(raw as usize, SOL_SOCKET, SO_SNDBUF, &v as *const i32 as *const i8, std::mem::size_of::<i32>() as i32);
     }
 
     let sock = Arc::new(sock);
@@ -351,10 +555,16 @@ pub fn start_tun(
         *guard = Some(session);
     }
 
-    runtime.running.store(true, Ordering::Relaxed);
+    runtime.rx_bytes.store(0, Ordering::Relaxed);
+    runtime.tx_bytes.store(0, Ordering::Relaxed);
+    runtime.running.store(true, Ordering::Release);
     *runtime.started_at.lock() = Some(Instant::now());
 
-    setup_routes(&runtime, &tun_ip, &tun_dns, &events);
+    if full_tunnel {
+        setup_routes(&runtime, &tun_ip, &tun_dns, &events);
+    } else {
+        configure_proxy_adapter_windows(&tun_ip, &events);
+    }
 
     let running_a = runtime.running.clone();
     let tx_bytes = runtime.tx_bytes.clone();
@@ -366,7 +576,6 @@ pub fn start_tun(
     let sock_b = sock.clone();
     let running_b = runtime.running.clone();
     let rx_bytes = runtime.rx_bytes.clone();
-    let events_b = events.clone();
 
     std::thread::Builder::new()
         .name("wintun->udp".into())
@@ -416,7 +625,11 @@ pub fn start_tun(
         })
         .map_err(|e| anyhow!("spawn udp->wintun: {}", e))?;
 
-    events.emit(Event::log("[TUN] Wintun bridge started (2 threads)"));
+    events.emit(Event::log(if full_tunnel {
+        "[TUN] Wintun bridge started (full tunnel)"
+    } else {
+        "[TUN] Wintun bridge started (SOCKS5 proxy mode)"
+    }));
     Ok(())
 }
 
@@ -425,14 +638,56 @@ pub fn start_tun(
 // ============================================================
 
 #[cfg(target_os = "linux")]
-pub fn start_tun(runtime: Arc<VpnRuntime>, tun_ip: String, tun_dns: String, events: EventBus) -> Result<()> {
-    let session = crate::linux_tun::Session::start("csqtt0", &tun_ip, &tun_dns, TUN_MTU,
-        CORE_LISTEN_PORT, runtime.core_uid.load(Ordering::Acquire), runtime.running.clone(),
-        runtime.rx_bytes.clone(), runtime.tx_bytes.clone(), events.clone())?;
+pub fn start_tun(
+    runtime: Arc<VpnRuntime>,
+    tun_ip: String,
+    tun_dns: String,
+    events: EventBus,
+) -> Result<()> {
+    start_tun_linux(runtime, tun_ip, tun_dns, events, true)
+}
+
+#[cfg(target_os = "linux")]
+pub fn start_proxy_tun(
+    runtime: Arc<VpnRuntime>,
+    tun_ip: String,
+    tun_dns: String,
+    events: EventBus,
+) -> Result<()> {
+    start_tun_linux(runtime, tun_ip, tun_dns, events, false)
+}
+
+#[cfg(target_os = "linux")]
+fn start_tun_linux(
+    runtime: Arc<VpnRuntime>,
+    tun_ip: String,
+    tun_dns: String,
+    events: EventBus,
+    full_tunnel: bool,
+) -> Result<()> {
+    let bypass = runtime.bypass_routes.lock().clone();
+    let session = crate::linux_tun::Session::start(
+        "csqtt0",
+        &tun_ip,
+        &tun_dns,
+        TUN_MTU,
+        CORE_LISTEN_PORT,
+        runtime.core_uid.load(Ordering::Acquire),
+        runtime.running.clone(),
+        runtime.rx_bytes.clone(),
+        runtime.tx_bytes.clone(),
+        events.clone(),
+        full_tunnel,
+        bypass,
+    )?;
     *runtime.handle.lock() = Some(session);
     *runtime.started_at.lock() = Some(Instant::now());
     *runtime.tun_conf.lock() = Some(TunConf { ip: tun_ip, dns: tun_dns, mtu: TUN_MTU });
-    events.emit(Event::log("[TUN] bridge started (Linux)"));
+    events.emit(Event::log(if full_tunnel {
+        "[TUN] bridge started (Linux full tunnel)"
+    } else {
+        "[TUN] bridge started (Linux SOCKS5 proxy mode)"
+    }));
     Ok(())
 }
 

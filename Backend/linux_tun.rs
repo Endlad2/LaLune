@@ -34,6 +34,23 @@ fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).to_owned()).collect()
 }
 
+fn physical_default_route() -> Result<(Option<String>, String)> {
+    let output = ip(&strings(&["-4", "route", "show", "default"]))?;
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.first().copied() != Some("default") { continue; }
+        let gateway = fields.windows(2)
+            .find(|w| w[0] == "via")
+            .map(|w| w[1].to_string());
+        let dev = fields.windows(2)
+            .find(|w| w[0] == "dev")
+            .map(|w| w[1].to_string())
+            .context("В default route не найден dev")?;
+        return Ok((gateway, dev));
+    }
+    bail!("Не найден физический IPv4 default route")
+}
+
 struct Routes {
     undo: Vec<Vec<String>>,
     dns: Option<(PathBuf, Vec<u8>, Vec<u8>)>,
@@ -41,13 +58,43 @@ struct Routes {
 }
 
 impl Routes {
-    fn install(name: &str, dns: &str, uid: u32, events: EventBus) -> Result<Self> {
-        let installed = dns_content(dns)?;
+    fn install(
+        name: &str,
+        dns: &str,
+        uid: u32,
+        full_tunnel: bool,
+        bypass: &[String],
+        events: EventBus,
+    ) -> Result<Self> {
         let mut routes = Self {
             undo: Vec::new(),
             dns: None,
             events,
         };
+
+        if !full_tunnel {
+            return Ok(routes);
+        }
+
+        let installed = dns_content(dns)?;
+
+        if !bypass.is_empty() {
+            let (gateway, dev) = physical_default_route()?;
+            for prefix in bypass {
+                let mut args = vec!["-4".to_string(), "route".to_string(), "add".to_string(), prefix.clone()];
+                if let Some(gateway) = &gateway {
+                    args.extend(["via".to_string(), gateway.clone()]);
+                }
+                args.extend(["dev".to_string(), dev.clone(), "metric".to_string(), "1".to_string()]);
+                if let Err(error) = routes.add(args) {
+                    routes.events.emit(Event::error(format!(
+                        "Не удалось добавить bypass-маршрут {}: {}",
+                        prefix, error
+                    )));
+                }
+            }
+        }
+
         if uid != 0 {
             let rules = ip(&strings(&["-N", "-4", "rule", "show"]))?;
             for line in rules.lines() {
@@ -174,24 +221,70 @@ impl Session {
         rx: Arc<AtomicU64>,
         tx: Arc<AtomicU64>,
         events: EventBus,
+        full_tunnel: bool,
+        bypass: Vec<String>,
     ) -> Result<Self> {
+        if unsafe { libc::geteuid() } != 0 {
+            bail!("Создание Linux TUN требует root/CAP_NET_ADMIN");
+        }
+
+        // На обычных desktop-дистрибутивах модуль tun может ещё не быть
+        // загружен к моменту первого подключения. Пробуем загрузить его до
+        // обращения к /dev/net/tun и возвращаем понятную ошибку, если узла
+        // устройства всё равно нет.
+        if !std::path::Path::new("/dev/net/tun").exists() {
+            let _ = Command::new("modprobe").arg("tun").status();
+        }
+        if !std::path::Path::new("/dev/net/tun").exists() {
+            bail!("/dev/net/tun недоступен; загрузите модуль tun (modprobe tun)");
+        }
+
         let address: Ipv4Addr = address.parse().context("Некорректный адрес TUN")?;
         let mut config = tun::Configuration::default();
-        config
-            .name(name)
-            .address(address)
-            .netmask(Ipv4Addr::new(255, 255, 255, 255))
-            .mtu(mtu as i32)
-            .up();
+        // На Linux crate нужен только для открытия fd TUN. Адрес, MTU и UP
+        // задаём через iproute2 ниже: так состояние csqtt0 не зависит от
+        // особенностей применения platform settings в конкретной версии tun.
+        config.name(name);
+
         let dev = tun::create_as_async(&config)
-            .context("Создание Linux TUN (нужны root и /dev/net/tun)")?;
+            .context("Создание Linux TUN (нужны root/CAP_NET_ADMIN и /dev/net/tun)")?;
+
+        // Конфигурируем и проверяем интерфейс ДО смены default route.
+        // Если хоть один шаг не удался, функция вернёт ошибку, fd закроется и
+        // физическая сеть останется основным маршрутом.
+        ip(&vec![
+            "-4".into(), "addr".into(), "replace".into(),
+            format!("{address}/32"), "dev".into(), name.into(),
+        ]).context("Назначение IPv4-адреса Linux TUN")?;
+        ip(&vec![
+            "link".into(), "set".into(), "dev".into(), name.into(),
+            "mtu".into(), mtu.to_string(), "up".into(),
+        ]).context("Поднятие Linux TUN")?;
+
+        let link = ip(&vec![
+            "-details".into(), "link".into(), "show".into(), "dev".into(), name.into(),
+        ]).context("Проверка созданного Linux TUN")?;
+        if !link.contains("UP") {
+            bail!("Linux TUN {name} создан, но интерфейс не перешёл в состояние UP");
+        }
+        let addr = ip(&vec![
+            "-4".into(), "addr".into(), "show".into(), "dev".into(), name.into(),
+        ]).context("Проверка адреса Linux TUN")?;
+        if !addr.contains(&format!("inet {address}/32")) {
+            bail!("Linux TUN {name} создан без ожидаемого адреса {address}/32");
+        }
+
+        events.emit(Event::log(format!(
+            "[TUN] Linux interface ready: {name} {address}/32 mtu={mtu}"
+        )));
+
         let socket = UdpSocket::from_std({
             let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
             socket.connect((Ipv4Addr::LOCALHOST, core_port))?;
             socket.set_nonblocking(true)?;
             socket
         })?;
-        let routes = Routes::install(name, dns, uid, events.clone())?;
+        let routes = Routes::install(name, dns, uid, full_tunnel, &bypass, events.clone())?;
         rx.store(0, Ordering::Relaxed);
         tx.store(0, Ordering::Relaxed);
         running.store(true, Ordering::Release);

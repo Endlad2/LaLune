@@ -159,7 +159,7 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
                         vpn.connected
                             ? 'Подключено'
                             : (vpn.state == 'checking'
-                                ? 'Проверка'
+                                ? 'Проверка...'
                                 : (vpn.state == 'connecting'
                                         ? 'Подключение'
                                         : (vpn.state == 'disconnecting'
