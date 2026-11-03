@@ -444,13 +444,15 @@ async fn settings_patch(
     Json(json!({"ok": true})).into_response()
 }
 
-async fn settings_reset(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn settings_reset(State(state): State<Arc<AppState>>) -> axum::response::Response {
     let mut s = crate::settings::Settings::default();
     s.device_id = state.settings.read().device_id.clone();
     s.normalize();
     *state.settings.write() = s;
-    let _ = state.save_settings();
-    Json(json!({"ok": true}))
+    if let Err(e) = state.save_settings() {
+        return err(500, e.to_string());
+    }
+    Json(json!({"ok": true})).into_response()
 }
 
 async fn settings_get_key(
@@ -475,7 +477,9 @@ async fn settings_put_key(
     }
     s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
-    let _ = state.save_settings();
+    if let Err(e) = state.save_settings() {
+        return err(500, e.to_string());
+    }
     Json(json!({"ok": true})).into_response()
 }
 
@@ -1800,4 +1804,163 @@ async fn debug_lua_eval(
 fn err(code: u16, msg: impl Into<String>) -> axum::response::Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json(json!({"error": msg.into(), "code": code}))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::{to_bytes, Body}, http::Request};
+    use tower::ServiceExt;
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("lalune-api-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path.canonicalize().unwrap())
+        }
+
+        async fn state(&self) -> Arc<AppState> {
+            Arc::new(AppState::new_in(self.0.clone()).await.unwrap())
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            assert_eq!(self.0.canonicalize().unwrap(), self.0);
+            assert_eq!(self.0.parent().unwrap(), std::env::temp_dir().canonicalize().unwrap());
+            assert!(self.0.file_name().unwrap().to_string_lossy().starts_with("lalune-api-test-"));
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    async fn request(state: &Arc<AppState>, method: &str, uri: &str, body: Value) -> (StatusCode, String) {
+        let response = router(state.clone()).oneshot(
+            Request::builder().method(method).uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string())).unwrap(),
+        ).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    async fn get_json(state: &Arc<AppState>, uri: &str) -> Value {
+        let (status, body) = request(state, "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn settings_proxy_and_ip_routing_survive_api_save_and_restart() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        let patch = json!({
+            "desktopSocks5Mode": true,
+            "ipRoutingMode": "blacklist",
+            "ipRoutingIps": "192.168.1.0/24\n8.8.8.8",
+        });
+        let (status, body) = request(&state, "PUT", "/settings", patch.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&state.settings_path).unwrap()).unwrap();
+        for (key, value) in patch.as_object().unwrap() {
+            assert_eq!(&saved[key], value);
+        }
+        drop(state);
+        let reloaded = dir.state().await;
+        let actual = get_json(&reloaded, "/settings").await;
+        for (key, value) in patch.as_object().unwrap() {
+            assert_eq!(&actual[key], value);
+        }
+    }
+
+    #[tokio::test]
+    async fn old_settings_file_keeps_existing_values_and_defaults_new_fields() {
+        let dir = TestDir::new();
+        std::fs::write(dir.0.join("settings.json"), r#"{"workers":12,"peer":"legacy-peer"}"#).unwrap();
+        let state = dir.state().await;
+        let settings = get_json(&state, "/settings").await;
+        assert_eq!(settings["peer"], "legacy-peer");
+        assert_eq!(settings["workers"], 12);
+        assert_eq!(settings["desktopSocks5Mode"], false);
+        assert_eq!(settings["ipRoutingMode"], "blacklist");
+        assert_eq!(settings["ipRoutingIps"], "");
+    }
+
+    #[tokio::test]
+    async fn missing_or_empty_core_file_preserves_backend_logs() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        state.log("[INFO] backend");
+        assert!(!state.logs_path.exists());
+        assert_eq!(get_json(&state, "/logs").await, json!(["[INFO] backend"]));
+        std::fs::write(&state.logs_path, "").unwrap();
+        assert_eq!(get_json(&state, "/logs").await, json!(["[INFO] backend"]));
+        assert_eq!(get_json(&state, "/logs?source=core").await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn file_only_core_logs_support_utf8_prefix_filter_tail_and_export() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        // No core events are emitted: history must come from logs.log alone.
+        std::fs::write(&state.logs_path, "ядро подключено\r\n\n  \n[CORE] уже помечено\nпоследняя строка\n").unwrap();
+        let core = json!(["[CORE] ядро подключено", "[CORE] уже помечено", "[CORE] последняя строка"]);
+        assert_eq!(get_json(&state, "/logs").await, core);
+        state.log("[INFO] backend");
+        assert_eq!(get_json(&state, "/logs?source=core").await, core);
+        assert_eq!(get_json(&state, "/logs?source=backend").await, json!(["[INFO] backend"]));
+        assert_eq!(get_json(&state, "/logs/tail?source=core&lines=1").await, json!(["[CORE] последняя строка"]));
+        assert_eq!(get_json(&state, "/logs/tail?source=core&lines=0").await, json!([]));
+        let (status, exported) = request(&state, "GET", "/logs/export?source=core", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(exported, "[CORE] ядро подключено\n[CORE] уже помечено\n[CORE] последняя строка");
+    }
+
+    #[tokio::test]
+    async fn clearing_logs_truncates_file_and_clears_history() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        for content in [None, Some("ядро\n")] {
+            if let Some(content) = content {
+                std::fs::write(&state.logs_path, content).unwrap();
+            }
+            state.log("[INFO] backend");
+            let (status, body) = request(&state, "DELETE", "/logs", Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(std::fs::read_to_string(&state.logs_path).unwrap(), "");
+            assert_eq!(get_json(&state, "/logs").await, json!([]));
+        }
+    }
+
+    #[tokio::test]
+    async fn clearing_logs_reports_file_errors() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        std::fs::create_dir(&state.logs_path).unwrap();
+        let (status, body) = request(&state, "DELETE", "/logs", Value::Null).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body.contains("failed to clear log file"));
+    }
+
+    #[tokio::test]
+    async fn settings_key_update_reports_file_errors() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        std::fs::remove_file(&state.settings_path).unwrap();
+        std::fs::create_dir(&state.settings_path).unwrap();
+        let (status, body) = request(&state, "PUT", "/settings/desktopSocks5Mode", json!(true)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    }
+
+    #[tokio::test]
+    async fn settings_reset_reports_file_errors() {
+        let dir = TestDir::new();
+        let state = dir.state().await;
+        std::fs::remove_file(&state.settings_path).unwrap();
+        std::fs::create_dir(&state.settings_path).unwrap();
+        let (status, body) = request(&state, "POST", "/settings/reset", Value::Null).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    }
 }

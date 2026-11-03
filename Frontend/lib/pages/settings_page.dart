@@ -243,10 +243,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (!mounted) return;
     setState(() {
       _busy = false;
-      _s = s;
+      if (ok) _s = ref.read(settingsProvider).data;
     });
     Toast.show(context,
-        ok ? 'Настройки сохранены' : 'Ошибка сохранения настроек',
+        ok
+            ? 'Настройки сохранены'
+            : (ref.read(settingsProvider).error ?? 'Ошибка сохранения настроек'),
         isError: !ok);
   }
 

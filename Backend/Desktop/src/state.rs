@@ -106,7 +106,10 @@ pub fn ensure_device_id(app_dir: &std::path::Path, preferred: &str) -> Result<St
 
 impl AppState {
     pub async fn new() -> Result<Self> {
-        let app_dir = app_dir()?;
+        Self::new_in(app_dir()?).await
+    }
+
+    pub(crate) async fn new_in(app_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&app_dir)?;
 
         let configs_path = app_dir.join("configs.db");
