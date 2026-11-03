@@ -33,6 +33,21 @@ CSQTT запускается под отдельными свободными UI
 
 ## Windows
 
+Обычные `cargo test` Desktop также проверяют сохранение `desktopSocks5Mode`,
+`ipRoutingMode` и `ipRoutingIps` через API в `settings.json` с повторным созданием
+AppState, загрузку старого файла настроек, чтение UTF-8 логов только из
+`logs.log`, фильтры, tail, экспорт, очистку и ошибки записи файлов.
+Каждый тест использует отдельный временный каталог; пользовательские
+настройки и системная сеть не меняются.
+
+Проверки UI подтверждают значения после сохранения, обнаруживают backend,
+который отбрасывает поля, и проверяют переключение `showCoreLogs`:
+
+```sh
+cd Frontend
+flutter test
+```
+
 ```powershell
 cargo test --manifest-path Backend/Desktop/Cargo.toml --locked
 cargo build --manifest-path Backend/Desktop/Cargo.toml --release --locked
