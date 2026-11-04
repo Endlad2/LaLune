@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       stable_version:
-        description: 'Stable release version, e.g. 0.9 (without commit hash)'
+        description: 'Stable release version in X.Y.Z format, e.g. 0.9.4 (without v/commit hash)'
         required: true
         type: string
 
@@ -36,6 +36,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Stamp manual release version
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -81,6 +85,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Stamp manual release version
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -156,6 +164,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stamp manual release version
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -193,6 +209,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Stamp manual release version
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
 
       - uses: subosito/flutter-action@v2
         with:
@@ -511,6 +531,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Download each named artifact to a deterministic path. Do not flatten with
       # find/cp: that can silently select a stale duplicate with the same filename.
@@ -585,8 +607,8 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             VERSION="${{ inputs.stable_version }}"
-            if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
-              echo "Stable version must look like 0.9 or 0.9.1, without a commit hash." >&2
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Stable version must look like 0.9.4 (X.Y.Z), without v or a commit hash." >&2
               exit 1
             fi
             PRERELEASE=false
@@ -603,6 +625,29 @@ jobs:
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Publishing version: $VERSION (prerelease=$PRERELEASE)"
+
+      - name: Push synchronized version files
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.stable_version }}"
+          BRANCH="$GITHUB_REF_NAME"
+
+          python .github/scripts/stamp_version.py "$VERSION"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+
+          if git diff --cached --quiet; then
+            echo "Version files are already synchronized to $VERSION."
+          else
+            git commit -m "chore: sync LaLune version to $VERSION [skip ci]"
+            git fetch origin "$BRANCH"
+            git rebase "origin/$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -625,21 +670,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update STABLE after manual release
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          VERSION="${{ inputs.stable_version }}"
-          BRANCH="$GITHUB_REF_NAME"
-          CONTENT="$(printf '%s\n' "$VERSION" | base64 -w 0)"
-          SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/STABLE?ref=$BRANCH" --jq .sha)"
-          gh api "repos/$GITHUB_REPOSITORY/contents/STABLE" \
-            -X PUT \
-            -f message="chore: update STABLE to $VERSION [skip ci]" \
-            -f content="$CONTENT" \
-            -f sha="$SHA" \
-            -f branch="$BRANCH" >/dev/null
-          echo "STABLE updated to $VERSION on $BRANCH"

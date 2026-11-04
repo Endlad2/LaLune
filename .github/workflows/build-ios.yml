@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       stable_version:
-        description: 'Release version (empty uses STABLE-shortsha)'
+        description: 'Stable release version in X.Y.Z format, e.g. 0.9.4 (empty uses STABLE-shortsha)'
         required: false
         type: string
   push:
@@ -16,6 +16,9 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main, master]
+
+permissions:
+  contents: write
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -37,6 +40,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Resolve release version
         shell: bash
@@ -44,28 +54,29 @@ jobs:
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.stable_version }}" ]]; then
             VERSION="${{ inputs.stable_version }}"
+            python3 .github/scripts/stamp_version.py "$VERSION"
           else
             STABLE="$(tr -d '\\r\\n' < STABLE)"
             VERSION="${STABLE}-$(git rev-parse --short=7 HEAD)"
-          fi
-          echo "LALUNE_VERSION=$VERSION" >> "$GITHUB_ENV"
-          python3 - "$VERSION" <<'PY'
+            python3 - "$VERSION" <<'PY'
           from pathlib import Path
+          import re
           import sys
           path = Path('Backend/iOS/Backend.swift')
           source = path.read_text(encoding='utf-8')
-          import re
-          updated, count = re.subn(r'private let VERSION = "[^"]*"', f'private let VERSION = "{sys.argv[1]}"', source, count=1)
+          updated, count = re.subn(
+              r'private let VERSION = "[^"]*"',
+              f'private let VERSION = "{sys.argv[1]}"',
+              source,
+              count=1,
+          )
           if count != 1:
               raise SystemExit('Could not stamp iOS backend version')
           path.write_text(updated, encoding='utf-8')
           PY
+          fi
+          echo "LALUNE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Building iOS version: $VERSION"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Select Xcode
         run: |
@@ -217,3 +228,40 @@ jobs:
         with:
           files: Frontend/ios/build/LaLune.ipa
           fail_on_unmatched_files: true
+
+  persist-manual-version:
+    name: Persist manual version
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.stable_version != '' }}
+    needs: build-ios
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout clean source tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Push synchronized version files
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.stable_version }}"
+          BRANCH="$GITHUB_REF_NAME"
+
+          python .github/scripts/stamp_version.py "$VERSION"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+
+          if git diff --cached --quiet; then
+            echo "Version files are already synchronized to $VERSION."
+          else
+            git commit -m "chore: sync LaLune version to $VERSION [skip ci]"
+            git fetch origin "$BRANCH"
+            git rebase "origin/$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
