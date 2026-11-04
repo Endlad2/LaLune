@@ -21,7 +21,7 @@ public final class Backend {
 
     private let PORT: UInt16 = 1062
     private let HOST = "127.0.0.1"
-    private let VERSION = "0.6.0"
+    private let VERSION = "0.9.6"
     private let APP_GROUP = "group.com.lalune"
     private let TUNNEL_BUNDLE_ID = "com.lalune.lalune.tunnel"
 
