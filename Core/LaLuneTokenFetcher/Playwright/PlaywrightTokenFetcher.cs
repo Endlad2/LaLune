@@ -45,7 +45,7 @@ public sealed class PlaywrightTokenFetcher : ITokenFetcher
 {
     /// <summary>
     /// Бросается, когда Playwright установлен, но сам браузер Chromium —
-    /// нет (обычно нужно `playwright install chromium`).
+    /// нет (Program.cs обычно устанавливает его автоматически до запуска fetcher).
     /// </summary>
     public sealed class ChromiumMissingException : Exception
     {
@@ -299,7 +299,7 @@ public sealed class PlaywrightTokenFetcher : ITokenFetcher
         catch (PlaywrightException ex) when (IsBrowserMissing(ex))
         {
             throw new ChromiumMissingException(
-                "Chromium не установлен. Запустите `playwright install chromium`.", ex);
+                "Chromium недоступен после автоматической проверки/установки.", ex);
         }
     }
 

@@ -118,6 +118,8 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
   Widget build(BuildContext context) {
     final configsState = ref.watch(configsProvider);
     final vpn = ref.watch(vpnProvider);
+    final tunChecking = vpn.state == 'checking' && vpn.message == 'Проверка TUN';
+    final visuallyConnected = vpn.connected || tunChecking;
 
     return Stack(
       children: [
@@ -127,52 +129,69 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                MoonButton(connected: vpn.connected, onTap: _toggle),
+                MoonButton(connected: visuallyConnected, onTap: _toggle),
                 const SizedBox(height: 20),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 220),
                   switchInCurve: Curves.easeOut,
                   switchOutCurve: Curves.easeIn,
-                  child: Row(
-                    key: ValueKey(vpn.state),
+                  child: Column(
+                    key: ValueKey('${vpn.state}:${vpn.message}'),
                     mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      if (vpn.state == 'connecting' ||
-                          vpn.state == 'checking' ||
-                          vpn.state == 'disconnecting') ...[
-                        SizedBox(
-                          width: 13,
-                          height: 13,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              vpn.state == 'disconnecting'
-                                  ? Colors.white70
-                                  : const Color(0xFFF7E84E),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (!tunChecking &&
+                              (vpn.state == 'connecting' ||
+                                  vpn.state == 'checking' ||
+                                  vpn.state == 'disconnecting')) ...[
+                            SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  vpn.state == 'disconnecting'
+                                      ? Colors.white70
+                                      : const Color(0xFFF7E84E),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 9),
+                          ],
+                          Text(
+                            visuallyConnected
+                                ? 'Подключено'
+                                : (vpn.state == 'checking'
+                                    ? 'Проверка...'
+                                    : (vpn.state == 'connecting'
+                                            ? 'Подключение'
+                                            : (vpn.state == 'disconnecting'
+                                                ? 'Отключение...'
+                                                : 'Отключено'))),
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: visuallyConnected
+                                  ? const Color(0xFF7CFF9A)
+                                  : Colors.white.withOpacity(0.6),
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 9),
-                      ],
-                      Text(
-                        vpn.connected
-                            ? 'Подключено'
-                            : (vpn.state == 'checking'
-                                ? 'Проверка...'
-                                : (vpn.state == 'connecting'
-                                        ? 'Подключение'
-                                        : (vpn.state == 'disconnecting'
-                                            ? 'Отключение...'
-                                            : 'Отключено'))),
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: vpn.connected
-                              ? const Color(0xFF7CFF9A)
-                              : Colors.white.withOpacity(0.6),
-                          fontWeight: FontWeight.w600,
-                        ),
+                        ],
                       ),
+                      if (tunChecking) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Проверка TUN',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.white.withOpacity(0.5),
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

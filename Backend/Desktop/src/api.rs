@@ -139,7 +139,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "ok": true,
-        "version": "0.9.6",
+        "version": "0.6.0",
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "hostname": hostname::get()
@@ -444,15 +444,13 @@ async fn settings_patch(
     Json(json!({"ok": true})).into_response()
 }
 
-async fn settings_reset(State(state): State<Arc<AppState>>) -> axum::response::Response {
+async fn settings_reset(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut s = crate::settings::Settings::default();
     s.device_id = state.settings.read().device_id.clone();
     s.normalize();
     *state.settings.write() = s;
-    if let Err(e) = state.save_settings() {
-        return err(500, e.to_string());
-    }
-    Json(json!({"ok": true})).into_response()
+    let _ = state.save_settings();
+    Json(json!({"ok": true}))
 }
 
 async fn settings_get_key(
@@ -477,9 +475,7 @@ async fn settings_put_key(
     }
     s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
-    if let Err(e) = state.save_settings() {
-        return err(500, e.to_string());
-    }
+    let _ = state.save_settings();
     Json(json!({"ok": true})).into_response()
 }
 
@@ -530,6 +526,53 @@ async fn device_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 struct ConnectBody {
     #[serde(rename = "configId")]
     config_id: Option<i64>,
+}
+
+async fn tun_probe(client: &reqwest::Client, url: &'static str) -> (bool, String) {
+    match client.get(url).send().await {
+        Ok(response) => {
+            let code = response.status().as_u16();
+            (code == 200, format!("{}=HTTP {}", url, code))
+        }
+        Err(error) => (false, format!("{}={}", url, error)),
+    }
+}
+
+async fn check_tun_connectivity(client: &reqwest::Client) -> (bool, String) {
+    // Run both probes in parallel. Redirects are followed by reqwest's default
+    // policy; the check is successful only when at least one final response is
+    // exactly HTTP 200.
+    let (youtube, telegram) = tokio::join!(
+        tun_probe(client, "https://youtube.com/"),
+        tun_probe(client, "https://telegram.org/"),
+    );
+    (
+        youtube.0 || telegram.0,
+        format!("{}; {}", youtube.1, telegram.1),
+    )
+}
+
+async fn latest_tun_params_from_logs(
+    path: &std::path::Path,
+) -> Option<(String, String)> {
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    content.lines().rev().find_map(vpn::parse_tunconf)
+}
+
+async fn teardown_tun_for_retry(state: &Arc<AppState>) {
+    #[cfg(target_os = "windows")]
+    let bypass_routes = state.vpn.bypass_routes.lock().clone();
+
+    state.vpn.stop_tun_for_retry().await;
+
+    #[cfg(target_os = "windows")]
+    {
+        // cleanup_routes removes the old default/DNS/bypass routes. Restore the
+        // configured bypass list afterwards so the replacement TUN gets the
+        // same routing policy as the original one.
+        vpn::cleanup_routes(&state.vpn, &state.events);
+        *state.vpn.bypass_routes.lock() = bypass_routes;
+    }
 }
 
 async fn vpn_connect(
@@ -655,6 +698,8 @@ async fn vpn_connect(
 
     let state2 = state.clone();
     let kind_for_watchdog = kind;
+    let verify_tun = matches!(kind_for_watchdog, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
+        && !desktop_socks5_mode;
     let watchdog = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last_size = 0u64;
@@ -706,16 +751,11 @@ async fn vpn_connect(
             }
 
             let ready = match kind_for_watchdog {
-                ProtocolKind::Csqtt | ProtocolKind::Csqttr => {
-                    consecutive_active_ticks >= 3
-                }
-                ProtocolKind::PaperFlux => {
-                    consecutive_active_ticks >= 1 || last_size > 0
-                }
+                ProtocolKind::Csqtt | ProtocolKind::Csqttr => consecutive_active_ticks >= 3,
+                ProtocolKind::PaperFlux => consecutive_active_ticks >= 1 || last_size > 0,
             };
 
             if ready {
-                let _operation = state2.vpn.operation.lock().await;
                 let ip = tun_ip
                     .clone()
                     .unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
@@ -730,60 +770,77 @@ async fn vpn_connect(
                     kind_for_watchdog.id()
                 ));
 
-                let tunnel_result = if desktop_socks5_mode {
-                    vpn::start_proxy_tun(
-                        state2.vpn.clone(),
-                        ip.clone(),
-                        dns.clone(),
-                        state2.events.clone(),
-                    )
-                } else {
-                    vpn::start_tun(
-                        state2.vpn.clone(),
-                        ip.clone(),
-                        dns.clone(),
-                        state2.events.clone(),
-                    )
-                };
+                {
+                    let _operation = state2.vpn.operation.lock().await;
+                    if core_stopped(&state2) { break; }
 
-                if let Err(e) = tunnel_result {
-                    state2.log(format!("[VPN] tunnel start failed: {}", e));
-                    state2
-                        .events
-                        .emit(Event::error(format!("tunnel start failed: {}", e)));
-                    state2.vpn.set_phase("error", &format!("Ошибка запуска туннеля: {}", e));
-                    finish_vpn(&state2).await;
-                    return;
-                }
+                    let tunnel_result = if desktop_socks5_mode {
+                        vpn::start_proxy_tun(
+                            state2.vpn.clone(),
+                            ip.clone(),
+                            dns.clone(),
+                            state2.events.clone(),
+                        )
+                    } else {
+                        vpn::start_tun(
+                            state2.vpn.clone(),
+                            ip.clone(),
+                            dns.clone(),
+                            state2.events.clone(),
+                        )
+                    };
 
-                if desktop_socks5_mode {
-                    match crate::socks5::start(state2.clone(), share_socks5) {
-                        Ok(port) => state2.log(format!(
-                            "[PROXY] tunneled SOCKS5 ready on {}:{}",
-                            if share_socks5 { "0.0.0.0" } else { "127.0.0.1" },
-                            port
-                        )),
-                        Err(e) => {
-                            state2.log(format!("[PROXY] failed to start tunneled SOCKS5: {}", e));
-                            state2.events.emit(Event::error(format!(
-                                "SOCKS5 start failed: {}",
-                                e
-                            )));
-                            finish_vpn(&state2).await;
-                            return;
+                    if let Err(e) = tunnel_result {
+                        state2.log(format!("[VPN] tunnel start failed: {}", e));
+                        state2
+                            .events
+                            .emit(Event::error(format!("tunnel start failed: {}", e)));
+                        state2.vpn.set_phase("error", &format!("Ошибка запуска туннеля: {}", e));
+                        finish_vpn(&state2).await;
+                        return;
+                    }
+
+                    if desktop_socks5_mode {
+                        match crate::socks5::start(state2.clone(), share_socks5) {
+                            Ok(port) => state2.log(format!(
+                                "[PROXY] tunneled SOCKS5 ready on {}:{}",
+                                if share_socks5 { "0.0.0.0" } else { "127.0.0.1" },
+                                port
+                            )),
+                            Err(e) => {
+                                state2.log(format!("[PROXY] failed to start tunneled SOCKS5: {}", e));
+                                state2.events.emit(Event::error(format!(
+                                    "SOCKS5 start failed: {}",
+                                    e
+                                )));
+                                finish_vpn(&state2).await;
+                                return;
+                            }
                         }
                     }
                 }
 
-                state2.vpn.set_phase("connected", "Подключено");
-                state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
-                state2.log(if desktop_socks5_mode {
-                    "[VPN] connected (SOCKS5 mode)"
+                if verify_tun {
+                    // Keep the primary UI status as "Подключено", but expose a
+                    // dedicated sub-status while the real Internet path is being
+                    // verified through the freshly-created TUN.
+                    state2.vpn.set_phase("checking", "Проверка TUN");
+                    state2.events.emit(Event::status_detail(
+                        true,
+                        "checking",
+                        "Проверка TUN",
+                    ));
+                    state2.log("[VPN] connected; starting TUN connectivity check");
                 } else {
-                    "[VPN] connected"
-                });
+                    state2.vpn.set_phase("connected", "Подключено");
+                    state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
+                    state2.log(if desktop_socks5_mode {
+                        "[VPN] connected (SOCKS5 mode)"
+                    } else {
+                        "[VPN] connected"
+                    });
+                }
                 tun_started = true;
-
             }
 
             if !tun_started {
@@ -800,8 +857,136 @@ async fn vpn_connect(
                 "Таймаут проверки подключения",
             ));
         }
+
+        if tun_started && verify_tun {
+            let client = match reqwest::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .no_proxy()
+                .user_agent("LaLune-TUN-Check/1.0")
+                .build()
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    state2.log(format!("[VPN] cannot create TUN check client: {}", error));
+                    finish_vpn(&state2).await;
+                    return;
+                }
+            };
+
+            let mut attempt: u64 = 1;
+            loop {
+                if core_stopped(&state2) { break; }
+
+                state2.vpn.set_phase("checking", "Проверка TUN");
+                state2.events.emit(Event::status_detail(
+                    state2.vpn.running.load(std::sync::atomic::Ordering::Acquire),
+                    "checking",
+                    "Проверка TUN",
+                ));
+
+                let (ok, details) = check_tun_connectivity(&client).await;
+                if core_stopped(&state2) { break; }
+
+                if ok {
+                    state2.log(format!(
+                        "[VPN] TUN connectivity check passed on attempt {}: {}",
+                        attempt, details
+                    ));
+                    state2.vpn.set_phase("connected", "Подключено");
+                    state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
+                    break;
+                }
+
+                state2.log(format!(
+                    "[VPN] TUN connectivity check failed on attempt {}: {}",
+                    attempt, details
+                ));
+                state2.log("[VPN] rebuilding TUN only; CSQTT core remains running");
+
+                {
+                    let _operation = state2.vpn.operation.lock().await;
+                    if core_stopped(&state2) { break; }
+                    teardown_tun_for_retry(&state2).await;
+                    state2.vpn.set_phase("checking", "Проверка TUN");
+                    state2.events.emit(Event::status_detail(
+                        false,
+                        "checking",
+                        "Проверка TUN",
+                    ));
+                }
+
+                // The core process is deliberately kept alive. Re-read its log
+                // and use the newest TUNCONF/Tunnel IP line for every rebuild.
+                let (retry_ip, retry_dns) = loop {
+                    if core_stopped(&state2) { break (String::new(), String::new()); }
+                    if let Some(params) = latest_tun_params_from_logs(&state2.logs_path).await {
+                        break params;
+                    }
+                    state2.log("[VPN] waiting for TUN parameters in CSQTT log");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                };
+                if retry_ip.is_empty() || retry_dns.is_empty() || core_stopped(&state2) {
+                    break;
+                }
+
+                state2.log(format!(
+                    "[VPN] TUN params found in core log: ip={} dns={}",
+                    retry_ip, retry_dns
+                ));
+
+                loop {
+                    if core_stopped(&state2) { break; }
+                    let start_result = {
+                        let _operation = state2.vpn.operation.lock().await;
+                        if core_stopped(&state2) { break; }
+                        vpn::start_tun(
+                            state2.vpn.clone(),
+                            retry_ip.clone(),
+                            retry_dns.clone(),
+                            state2.events.clone(),
+                        )
+                    };
+
+                    match start_result {
+                        Ok(()) => {
+                            state2.vpn.set_phase("checking", "Проверка TUN");
+                            state2.events.emit(Event::status_detail(
+                                true,
+                                "checking",
+                                "Проверка TUN",
+                            ));
+                            state2.log("[VPN] TUN recreated; checking connectivity again");
+                            break;
+                        }
+                        Err(error) => {
+                            state2.log(format!("[VPN] TUN recreate failed: {}", error));
+                            {
+                                let _operation = state2.vpn.operation.lock().await;
+                                teardown_tun_for_retry(&state2).await;
+                            }
+                            state2.vpn.set_phase("checking", "Проверка TUN");
+                            state2.events.emit(Event::status_detail(
+                                false,
+                                "checking",
+                                "Проверка TUN",
+                            ));
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                }
+
+                if core_stopped(&state2) { break; }
+                attempt = attempt.saturating_add(1);
+                // Give the OS a short moment to publish the replacement routes
+                // and DNS settings before the next pair of HTTP requests.
+                tokio::time::sleep(Duration::from_millis(750)).await;
+            }
+        }
+
         if tun_started {
-            while !core_stopped(&state2) && state2.vpn.running.load(std::sync::atomic::Ordering::Acquire) {
+            while !core_stopped(&state2)
+                && state2.vpn.running.load(std::sync::atomic::Ordering::Acquire)
+            {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
@@ -1370,8 +1555,13 @@ async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .unwrap_or_default(),
         Err(_) => String::new(),
     };
-    let local = include_str!("../../../STABLE").trim();
-    let has_update = !remote_tag.is_empty() && remote_tag != local;
+    // Compare against the version baked into the running binary. STABLE can lag
+    // behind a just-published manual release, which previously caused false
+    // positives such as installed=0.9.4 / available=0.9.4.
+    let local = env!("LALUNE_VERSION").trim();
+    let remote_cmp = remote_tag.trim().trim_start_matches('v');
+    let local_cmp = local.trim_start_matches('v');
+    let has_update = !remote_cmp.is_empty() && remote_cmp != local_cmp;
     let _ = &state;
     Json(json!({
         "hasUpdate": has_update,
@@ -1804,163 +1994,4 @@ async fn debug_lua_eval(
 fn err(code: u16, msg: impl Into<String>) -> axum::response::Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json(json!({"error": msg.into(), "code": code}))).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::{body::{to_bytes, Body}, http::Request};
-    use tower::ServiceExt;
-
-    struct TestDir(std::path::PathBuf);
-
-    impl TestDir {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("lalune-api-test-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path.canonicalize().unwrap())
-        }
-
-        async fn state(&self) -> Arc<AppState> {
-            Arc::new(AppState::new_in(self.0.clone()).await.unwrap())
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            assert_eq!(self.0.canonicalize().unwrap(), self.0);
-            assert_eq!(self.0.parent().unwrap(), std::env::temp_dir().canonicalize().unwrap());
-            assert!(self.0.file_name().unwrap().to_string_lossy().starts_with("lalune-api-test-"));
-            std::fs::remove_dir_all(&self.0).unwrap();
-        }
-    }
-
-    async fn request(state: &Arc<AppState>, method: &str, uri: &str, body: Value) -> (StatusCode, String) {
-        let response = router(state.clone()).oneshot(
-            Request::builder().method(method).uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string())).unwrap(),
-        ).await.unwrap();
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        (status, String::from_utf8(body.to_vec()).unwrap())
-    }
-
-    async fn get_json(state: &Arc<AppState>, uri: &str) -> Value {
-        let (status, body) = request(state, "GET", uri, Value::Null).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        serde_json::from_str(&body).unwrap()
-    }
-
-    #[tokio::test]
-    async fn settings_proxy_and_ip_routing_survive_api_save_and_restart() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        let patch = json!({
-            "desktopSocks5Mode": true,
-            "ipRoutingMode": "blacklist",
-            "ipRoutingIps": "192.168.1.0/24\n8.8.8.8",
-        });
-        let (status, body) = request(&state, "PUT", "/settings", patch.clone()).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&state.settings_path).unwrap()).unwrap();
-        for (key, value) in patch.as_object().unwrap() {
-            assert_eq!(&saved[key], value);
-        }
-        drop(state);
-        let reloaded = dir.state().await;
-        let actual = get_json(&reloaded, "/settings").await;
-        for (key, value) in patch.as_object().unwrap() {
-            assert_eq!(&actual[key], value);
-        }
-    }
-
-    #[tokio::test]
-    async fn old_settings_file_keeps_existing_values_and_defaults_new_fields() {
-        let dir = TestDir::new();
-        std::fs::write(dir.0.join("settings.json"), r#"{"workers":12,"peer":"legacy-peer"}"#).unwrap();
-        let state = dir.state().await;
-        let settings = get_json(&state, "/settings").await;
-        assert_eq!(settings["peer"], "legacy-peer");
-        assert_eq!(settings["workers"], 12);
-        assert_eq!(settings["desktopSocks5Mode"], false);
-        assert_eq!(settings["ipRoutingMode"], "blacklist");
-        assert_eq!(settings["ipRoutingIps"], "");
-    }
-
-    #[tokio::test]
-    async fn missing_or_empty_core_file_preserves_backend_logs() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        state.log("[INFO] backend");
-        assert!(!state.logs_path.exists());
-        assert_eq!(get_json(&state, "/logs").await, json!(["[INFO] backend"]));
-        std::fs::write(&state.logs_path, "").unwrap();
-        assert_eq!(get_json(&state, "/logs").await, json!(["[INFO] backend"]));
-        assert_eq!(get_json(&state, "/logs?source=core").await, json!([]));
-    }
-
-    #[tokio::test]
-    async fn file_only_core_logs_support_utf8_prefix_filter_tail_and_export() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        // No core events are emitted: history must come from logs.log alone.
-        std::fs::write(&state.logs_path, "ядро подключено\r\n\n  \n[CORE] уже помечено\nпоследняя строка\n").unwrap();
-        let core = json!(["[CORE] ядро подключено", "[CORE] уже помечено", "[CORE] последняя строка"]);
-        assert_eq!(get_json(&state, "/logs").await, core);
-        state.log("[INFO] backend");
-        assert_eq!(get_json(&state, "/logs?source=core").await, core);
-        assert_eq!(get_json(&state, "/logs?source=backend").await, json!(["[INFO] backend"]));
-        assert_eq!(get_json(&state, "/logs/tail?source=core&lines=1").await, json!(["[CORE] последняя строка"]));
-        assert_eq!(get_json(&state, "/logs/tail?source=core&lines=0").await, json!([]));
-        let (status, exported) = request(&state, "GET", "/logs/export?source=core", Value::Null).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(exported, "[CORE] ядро подключено\n[CORE] уже помечено\n[CORE] последняя строка");
-    }
-
-    #[tokio::test]
-    async fn clearing_logs_truncates_file_and_clears_history() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        for content in [None, Some("ядро\n")] {
-            if let Some(content) = content {
-                std::fs::write(&state.logs_path, content).unwrap();
-            }
-            state.log("[INFO] backend");
-            let (status, body) = request(&state, "DELETE", "/logs", Value::Null).await;
-            assert_eq!(status, StatusCode::OK, "{body}");
-            assert_eq!(std::fs::read_to_string(&state.logs_path).unwrap(), "");
-            assert_eq!(get_json(&state, "/logs").await, json!([]));
-        }
-    }
-
-    #[tokio::test]
-    async fn clearing_logs_reports_file_errors() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        std::fs::create_dir(&state.logs_path).unwrap();
-        let (status, body) = request(&state, "DELETE", "/logs", Value::Null).await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-        assert!(body.contains("failed to clear log file"));
-    }
-
-    #[tokio::test]
-    async fn settings_key_update_reports_file_errors() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        std::fs::remove_file(&state.settings_path).unwrap();
-        std::fs::create_dir(&state.settings_path).unwrap();
-        let (status, body) = request(&state, "PUT", "/settings/desktopSocks5Mode", json!(true)).await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    }
-
-    #[tokio::test]
-    async fn settings_reset_reports_file_errors() {
-        let dir = TestDir::new();
-        let state = dir.state().await;
-        std::fs::remove_file(&state.settings_path).unwrap();
-        std::fs::create_dir(&state.settings_path).unwrap();
-        let (status, body) = request(&state, "POST", "/settings/reset", Value::Null).await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    }
 }

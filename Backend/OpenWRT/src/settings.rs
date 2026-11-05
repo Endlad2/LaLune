@@ -64,6 +64,10 @@ pub struct Settings {
     pub enable_smart_tunnel: bool,
     pub show_core_logs: bool,
     pub share_vpn: bool,
+    /// Desktop UI compatibility: this flag is acted on only by the desktop backend,
+    /// but OpenWRT persists it so switching API targets does not reset the toggle.
+    #[serde(rename = "desktopSocks5Mode")]
+    pub desktop_socks5_mode: bool,
 }
 
 impl Default for Settings {
@@ -115,6 +119,7 @@ impl Default for Settings {
             enable_smart_tunnel: false,
             show_core_logs: false,
             share_vpn: false,
+            desktop_socks5_mode: false,
         }
     }
 }

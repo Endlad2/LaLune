@@ -32,8 +32,67 @@ env:
   PAPERFLUX_IOS_ZIP_URL: https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-ios.zip
 
 jobs:
+  prepare-version:
+    name: Prepare version before iOS build
+    runs-on: ubuntu-latest
+    outputs:
+      build_ref: ${{ steps.prepare.outputs.build_ref }}
+      version: ${{ steps.prepare.outputs.version }}
+      manual_stable: ${{ steps.prepare.outputs.manual_stable }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stamp, commit and push manual version
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.stable_version }}" ]]; then
+            VERSION="${{ inputs.stable_version }}"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Stable version must be exactly X.Y.Z, for example 0.9.4." >&2
+              exit 1
+            fi
+            if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+              echo "Manual version stamping must be dispatched from a branch, not ${GITHUB_REF_TYPE}." >&2
+              exit 1
+            fi
+
+            BRANCH="${GITHUB_REF_NAME}"
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            python .github/scripts/stamp_version.py "$VERSION"
+            git diff --check
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit --allow-empty -m "chore: sync LaLune version to $VERSION [skip ci]"
+            git push origin "HEAD:$BRANCH"
+
+            BUILD_REF="$(git rev-parse HEAD)"
+            MANUAL_STABLE=true
+          else
+            STABLE_VERSION="$(tr -d '\r\n' < STABLE)"
+            VERSION="${STABLE_VERSION}-$(git rev-parse --short=7 HEAD)"
+            BUILD_REF="$(git rev-parse HEAD)"
+            MANUAL_STABLE=false
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_ref=$BUILD_REF" >> "$GITHUB_OUTPUT"
+          echo "manual_stable=$MANUAL_STABLE" >> "$GITHUB_OUTPUT"
+
   build-ios:
     name: Build unsigned IPA
+    needs: prepare-version
     runs-on: macos-14
     timeout-minutes: 60
 
@@ -42,6 +101,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,12 +112,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.stable_version }}" ]]; then
-            VERSION="${{ inputs.stable_version }}"
-            python3 .github/scripts/stamp_version.py "$VERSION"
-          else
-            STABLE="$(tr -d '\\r\\n' < STABLE)"
-            VERSION="${STABLE}-$(git rev-parse --short=7 HEAD)"
+          VERSION="${{ needs.prepare-version.outputs.version }}"
+
+          # Manual stable runs already build from the committed stamped SHA.
+          # For ordinary push/PR/tag builds keep the previous STABLE-shortsha
+          # behavior for the iOS backend without committing source changes.
+          if [[ "${{ needs.prepare-version.outputs.manual_stable }}" != "true" ]]; then
             python3 - "$VERSION" <<'PY'
           from pathlib import Path
           import re
@@ -75,6 +135,7 @@ jobs:
           path.write_text(updated, encoding='utf-8')
           PY
           fi
+
           echo "LALUNE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Building iOS version: $VERSION"
 
@@ -228,40 +289,3 @@ jobs:
         with:
           files: Frontend/ios/build/LaLune.ipa
           fail_on_unmatched_files: true
-
-  persist-manual-version:
-    name: Persist manual version
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.stable_version != '' }}
-    needs: build-ios
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout clean source tree
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Push synchronized version files
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ inputs.stable_version }}"
-          BRANCH="$GITHUB_REF_NAME"
-
-          python .github/scripts/stamp_version.py "$VERSION"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -u
-
-          if git diff --cached --quiet; then
-            echo "Version files are already synchronized to $VERSION."
-          else
-            git commit -m "chore: sync LaLune version to $VERSION [skip ci]"
-            git fetch origin "$BRANCH"
-            git rebase "origin/$BRANCH"
-            git push origin "HEAD:$BRANCH"
-          fi

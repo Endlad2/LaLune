@@ -85,6 +85,8 @@ pub struct VpnRuntime {
 
     #[cfg(target_os = "windows")]
     pub wintun: crate::wintun::SharedWintunSession,
+    #[cfg(target_os = "windows")]
+    pub tun_generation: Arc<AtomicU64>,
 
     #[cfg(target_os = "linux")]
     pub handle: Mutex<Option<crate::linux_tun::Session>>,
@@ -110,6 +112,8 @@ impl VpnRuntime {
 
             #[cfg(target_os = "windows")]
             wintun: crate::wintun::new_shared_session(),
+            #[cfg(target_os = "windows")]
+            tun_generation: Arc::new(AtomicU64::new(0)),
 
             #[cfg(target_os = "linux")]
             handle: Mutex::new(None),
@@ -162,9 +166,26 @@ impl VpnRuntime {
     }
 
     pub async fn stop_tun(&self) {
+        self.stop_tun_inner(true).await;
+    }
+
+    /// Tear down only the desktop TUN transport while keeping the core process
+    /// alive. Used by the connectivity watchdog when it needs to rebuild a bad
+    /// TUN session without turning the whole VPN connection off.
+    pub async fn stop_tun_for_retry(&self) {
+        self.stop_tun_inner(false).await;
+    }
+
+    async fn stop_tun_inner(&self, reset_phase: bool) {
         self.running.store(false, Ordering::Release);
         #[cfg(target_os = "windows")]
-        { *self.wintun.lock() = None; }
+        {
+            // Invalidate both bridge threads before dropping the Wintun session.
+            // A new TUN may set `running=true` almost immediately, so a separate
+            // generation guard is required to prevent old threads from reviving.
+            self.tun_generation.fetch_add(1, Ordering::AcqRel);
+            *self.wintun.lock() = None;
+        }
         #[cfg(target_os = "linux")]
         {
             let session = { self.handle.lock().take() };
@@ -172,7 +193,9 @@ impl VpnRuntime {
         }
         *self.started_at.lock() = None;
         *self.tun_conf.lock() = None;
-        self.set_phase("disconnected", "");
+        if reset_phase {
+            self.set_phase("disconnected", "");
+        }
     }
 }
 
@@ -524,6 +547,9 @@ fn start_tun_windows(
 
     let sock = UdpSocket::bind("127.0.0.1:0")?;
     sock.connect(format!("127.0.0.1:{}", CORE_LISTEN_PORT))?;
+    // The receive side must wake periodically so a retry can retire this bridge
+    // even if the core is not currently sending any packets.
+    sock.set_read_timeout(Some(Duration::from_millis(250)))?;
 
     use std::os::windows::io::AsRawSocket;
     const SOL_SOCKET: i32 = 0xFFFF;
@@ -557,6 +583,7 @@ fn start_tun_windows(
 
     runtime.rx_bytes.store(0, Ordering::Relaxed);
     runtime.tx_bytes.store(0, Ordering::Relaxed);
+    let generation = runtime.tun_generation.fetch_add(1, Ordering::AcqRel) + 1;
     runtime.running.store(true, Ordering::Release);
     *runtime.started_at.lock() = Some(Instant::now());
 
@@ -567,6 +594,7 @@ fn start_tun_windows(
     }
 
     let running_a = runtime.running.clone();
+    let generation_a = runtime.tun_generation.clone();
     let tx_bytes = runtime.tx_bytes.clone();
     let events_a = events.clone();
     let wintun_a = runtime.wintun.clone();
@@ -575,13 +603,16 @@ fn start_tun_windows(
     let wintun_b = runtime.wintun.clone();
     let sock_b = sock.clone();
     let running_b = runtime.running.clone();
+    let generation_b = runtime.tun_generation.clone();
     let rx_bytes = runtime.rx_bytes.clone();
 
     std::thread::Builder::new()
         .name("wintun->udp".into())
         .spawn(move || {
             let mut buf = vec![0u8; 65535];
-            while running_a.load(Ordering::Relaxed) {
+            while running_a.load(Ordering::Relaxed)
+                && generation_a.load(Ordering::Acquire) == generation
+            {
                 let n = {
                     let guard = wintun_a.lock();
                     match guard.as_ref() {
@@ -606,10 +637,13 @@ fn start_tun_windows(
         .name("udp->wintun".into())
         .spawn(move || {
             let mut buf = vec![0u8; 65535];
-            while running_b.load(Ordering::Relaxed) {
+            while running_b.load(Ordering::Relaxed)
+                && generation_b.load(Ordering::Acquire) == generation
+            {
                 let n = match sock_b.recv(&mut buf) {
                     Ok(n) if n > 0 => n,
                     Ok(_) => continue,
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
                     Err(_) => break,
                 };
                 let guard = wintun_b.lock();

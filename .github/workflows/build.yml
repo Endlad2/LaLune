@@ -25,21 +25,86 @@ env:
 jobs:
 
   # ============================================================
-  #  Desktop Linux
+  #  Version preparation / manual commit
   # ============================================================
-  build-desktop-linux:
-    name: Desktop Linux
-    runs-on: ubuntu-22.04
+  prepare-version:
+    name: Prepare version before builds
+    runs-on: ubuntu-latest
+    outputs:
+      build_ref: ${{ steps.prepare.outputs.build_ref }}
+      version: ${{ steps.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Stamp manual release version
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
+      - name: Stamp, commit and push manual version
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.stable_version }}"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Stable version must be exactly X.Y.Z, for example 0.9.4." >&2
+              exit 1
+            fi
+            if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+              echo "Manual version stamping must be dispatched from a branch, not ${GITHUB_REF_TYPE}." >&2
+              exit 1
+            fi
+
+            BRANCH="${GITHUB_REF_NAME}"
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+
+            python .github/scripts/stamp_version.py "$VERSION"
+
+            echo "--- version changes ---"
+            git status --short
+            git diff --check
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+
+            # Always create a dispatch commit so every downstream job has one
+            # immutable SHA containing the requested version, even when the
+            # source was already stamped to the same number.
+            git commit --allow-empty -m "chore: sync LaLune version to $VERSION [skip ci]"
+            git push origin "HEAD:$BRANCH"
+
+            BUILD_REF="$(git rev-parse HEAD)"
+          else
+            STABLE_VERSION="$(tr -d '\r\n' < STABLE)"
+            VERSION="${STABLE_VERSION}-$(git rev-parse --short=7 HEAD)"
+            BUILD_REF="$(git rev-parse HEAD)"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_ref=$BUILD_REF" >> "$GITHUB_OUTPUT"
+          echo "All build jobs will use ref $BUILD_REF (version $VERSION)."
+
+  # ============================================================
+  #  Desktop Linux
+  # ============================================================
+  build-desktop-linux:
+    name: Desktop Linux
+    needs: prepare-version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,17 +143,16 @@ jobs:
   # ============================================================
   build-desktop-windows:
     name: Desktop Windows
+    needs: prepare-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Stamp manual release version
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -160,17 +224,16 @@ jobs:
   # ============================================================
   build-desktop-openwrt:
     name: OpenWRT Backend (armsr/armv8)
+    needs: prepare-version
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Stamp manual release version
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -202,17 +265,16 @@ jobs:
   # ============================================================
   build-android:
     name: Android APK (universal)
+    needs: prepare-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Stamp manual release version
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: python .github/scripts/stamp_version.py "${{ inputs.stable_version }}"
 
       - uses: subosito/flutter-action@v2
         with:
@@ -451,6 +513,7 @@ jobs:
   # ============================================================
   build-token-fetcher:
     name: "Token Fetcher - ${{ matrix.platform }}"
+    needs: prepare-version
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -462,6 +525,8 @@ jobs:
             runner: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -523,6 +588,7 @@ jobs:
     name: Create Release
     if: ${{ github.event_name != 'pull_request' }}
     needs:
+      - prepare-version
       - build-desktop-linux
       - build-desktop-windows
       - build-desktop-openwrt
@@ -533,6 +599,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.prepare-version.outputs.build_ref }}
 
       # Download each named artifact to a deterministic path. Do not flatten with
       # find/cp: that can silently select a stale duplicate with the same filename.
@@ -625,29 +692,6 @@ jobs:
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Publishing version: $VERSION (prerelease=$PRERELEASE)"
-
-      - name: Push synchronized version files
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ inputs.stable_version }}"
-          BRANCH="$GITHUB_REF_NAME"
-
-          python .github/scripts/stamp_version.py "$VERSION"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -u
-
-          if git diff --cached --quiet; then
-            echo "Version files are already synchronized to $VERSION."
-          else
-            git commit -m "chore: sync LaLune version to $VERSION [skip ci]"
-            git fetch origin "$BRANCH"
-            git rebase "origin/$BRANCH"
-            git push origin "HEAD:$BRANCH"
-          fi
 
       - uses: softprops/action-gh-release@v2
         with:

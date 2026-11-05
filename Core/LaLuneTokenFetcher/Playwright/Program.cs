@@ -13,7 +13,7 @@
 //   1  — прочая критическая ошибка
 //   3  — токен не получен (тайм-аут / пользователь закрыл окно /
 //         silent_token не удалось разменять)
-//   4  — не установлен Chromium (нужно запустить playwright install)
+//   4  — Chromium всё ещё недоступен после автоматической установки
 
 using LaLuneTokenFetcher.Core;
 
@@ -22,8 +22,8 @@ namespace LaLuneTokenFetcher.Playwright;
 internal static class Program
 {
     /// <summary>
-    /// Маркер, который Go backend ищет в выводе, чтобы понять, что нужно
-    /// выполнить `playwright install chromium`.
+    /// Fallback-маркер для старых launcher/backend версий. Обычно до него
+    /// дело не доходит: Chromium проверяется и устанавливается самим C#.
     /// </summary>
     public const string ChromiumMissingMarker = "LALUNE_CHROMIUM_MISSING";
 
@@ -37,6 +37,8 @@ internal static class Program
 
         try
         {
+            EnsureChromiumInstalled();
+
             ITokenFetcher fetcher = new PlaywrightTokenFetcher();
             var token = fetcher.FetchTokenAsync().GetAwaiter().GetResult();
 
@@ -64,6 +66,52 @@ internal static class Program
         }
     }
 
+    private static void EnsureChromiumInstalled()
+    {
+        if (IsChromiumInstalled())
+        {
+            Console.WriteLine("[LaLune] Playwright Chromium найден.");
+            return;
+        }
+
+        Console.WriteLine("[LaLune] Playwright Chromium не найден. Устанавливаю автоматически...");
+
+        // Запускаем встроенный installer Microsoft.Playwright напрямую из C#.
+        // PowerShell/playwright.ps1 для установки браузера больше не нужен.
+        var exitCode = Microsoft.Playwright.Program.Main(new[] {"install"});
+        if (exitCode != 0)
+        {
+            throw new Exception($"Playwright exited with code {exitCode}");
+        }
+
+        if (!IsChromiumInstalled())
+        {
+            throw new PlaywrightTokenFetcher.ChromiumMissingException(
+                "Playwright завершил установку, но Chromium executable не найден.");
+        }
+
+        Console.WriteLine("[LaLune] Playwright Chromium установлен.");
+    }
+
+    private static bool IsChromiumInstalled()
+    {
+        try
+        {
+            using var playwright = Microsoft.Playwright.Playwright
+                .CreateAsync()
+                .GetAwaiter()
+                .GetResult();
+
+            var executablePath = playwright.Chromium.ExecutablePath;
+            return !string.IsNullOrWhiteSpace(executablePath)
+                && File.Exists(executablePath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine(
@@ -78,7 +126,7 @@ internal static class Program
             "получается без повторного ввода пароля.\n" +
             "\n" +
             "Токен сохраняется в .la-lune/token.json рядом с пользователем.\n" +
-            "Если Chromium не установлен, вернётся код 4 и маркер " +
-            ChromiumMissingMarker + " в stderr.");
+            "Если Playwright Chromium отсутствует, программа автоматически " +
+            "установит его перед запуском OAuth.");
     }
 }

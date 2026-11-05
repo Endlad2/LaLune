@@ -58,7 +58,7 @@ curl http://127.0.0.1:1062/ping
 Ожидаемый ответ:
 
 ```
-{"ok":true,"version":"0.9.6","os":"linux","arch":"aarch64","platform":"openwrt",...}
+{"ok":true,"version":"0.6.0","os":"linux","arch":"aarch64","platform":"openwrt",...}
 ```
 
 ## Из Frontend

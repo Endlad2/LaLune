@@ -23,6 +23,7 @@ class _InfoPageState extends ConsumerState<InfoPage> {
 
   UpdateInfo _lalune = UpdateInfo.empty;
   bool _checkingLaLune = false;
+  bool _isLatestStable = false;
 
   @override
   void initState() {
@@ -32,21 +33,56 @@ class _InfoPageState extends ConsumerState<InfoPage> {
 
   Future<void> _refreshAll() async {
     final api = ref.read(apiClientProvider);
+    var localVersion = _laluneVersion;
 
     // Show the version reported by the running backend, which CI stamps
     // with the exact release tag (stable version or STABLE-shortsha).
     try {
       final version = await api.getJson('/version');
       final value = (version['backend'] ?? version['ui'] ?? '').toString();
-      if (mounted && value.isNotEmpty) {
-        setState(() => _laluneVersion = value);
+      if (value.isNotEmpty) {
+        localVersion = value;
+        if (mounted) setState(() => _laluneVersion = value);
       }
     } catch (_) {}
 
     try {
       final j = await api.getJson('/update/check');
-      if (mounted) setState(() => _lalune = UpdateInfo.fromJson(j));
-    } catch (_) {}
+      final rawInfo = UpdateInfo.fromJson(j);
+      final sameStableVersion = _sameReleaseVersion(
+        localVersion,
+        rawInfo.remoteTag,
+      );
+      final info = sameStableVersion
+          ? UpdateInfo(
+              hasUpdate: false,
+              remoteTag: rawInfo.remoteTag,
+              localVersion: localVersion,
+            )
+          : rawInfo;
+      if (mounted) {
+        setState(() {
+          _lalune = info;
+          _isLatestStable = sameStableVersion;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isLatestStable = false);
+    }
+  }
+
+  bool _sameReleaseVersion(String local, String remote) {
+    String normalize(String value) {
+      final v = value.trim();
+      if (v.length > 1 && (v.startsWith('v') || v.startsWith('V'))) {
+        return v.substring(1);
+      }
+      return v;
+    }
+
+    final a = normalize(local);
+    final b = normalize(remote);
+    return a.isNotEmpty && b.isNotEmpty && a == b;
   }
 
   Future<void> _manualCheckLaLune() async {
@@ -189,6 +225,9 @@ class _InfoPageState extends ConsumerState<InfoPage> {
                     });
                   },
                 ),
+              ] else if (_isLatestStable) ...[
+                const SizedBox(height: 8),
+                _latestStableHint(),
               ],
               const SizedBox(height: 18),
 
@@ -285,6 +324,31 @@ class _InfoPageState extends ConsumerState<InfoPage> {
               borderRadius: BorderRadius.circular(10)),
         ),
         child: Text(label),
+      ),
+    );
+  }
+
+  Widget _latestStableHint() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF7CFF9A).withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF7CFF9A).withOpacity(0.35)),
+      ),
+      child: const Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.check_circle_outline, size: 17, color: Color(0xFF7CFF9A)),
+          SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'Вы используете последнюю стабильную версию LaLune',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
       ),
     );
   }

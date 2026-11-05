@@ -21,8 +21,8 @@
 # Требования:
 #   - Python 3.8+
 #   - .NET 8 SDK
-#   - Chromium устанавливается в рантайме через `playwright install chromium`
-#     (это делает Go-бэкенд LaLune, см. Desktop/Libs/vkplaywright.go).
+#   - Chromium проверяется и при необходимости устанавливается самим C#
+#     через Microsoft.Playwright.Program.Main(new[] {"install"}).
 
 import argparse
 import shutil

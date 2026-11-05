@@ -65,6 +65,7 @@ pub struct Settings {
     pub show_core_logs: bool,
     pub share_vpn: bool,
     /// Desktop-only: expose a SOCKS5 endpoint backed by the CSQTT/CSQTTR raw-IP UDP tunnel.
+    #[serde(rename = "desktopSocks5Mode")]
     pub desktop_socks5_mode: bool,
 
     // -------- Split tunneling (Desktop) --------

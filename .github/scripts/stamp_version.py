@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+CHANGED_FILES: set[str] = set()
 
 
 def fail(message: str) -> "None":
@@ -25,7 +26,11 @@ def read(path: str) -> str:
 
 
 def write(path: str, value: str) -> None:
-    (ROOT / path).write_text(value, encoding="utf-8")
+    target = ROOT / path
+    previous = target.read_text(encoding="utf-8") if target.exists() else None
+    if previous != value:
+        target.write_text(value, encoding="utf-8")
+        CHANGED_FILES.add(path)
 
 
 def replace_regex(path: str, pattern: str, replacement, *, count: int = 0, expected: int | None = None, flags: int = 0) -> None:
@@ -71,7 +76,8 @@ def set_cargo_lock_package(path: str, package_name: str, version: str) -> None:
     updated, changed = re.subn(pattern, rf"\g<1>{version}\g<2>", source, count=1)
     if changed != 1:
         fail(f"{path}: could not update package {package_name}")
-    lock_path.write_text(updated, encoding="utf-8")
+    if updated != source:
+        write(path, updated)
 
 
 def set_plist_bundle_versions(path: str, version: str, build_number: int) -> None:
@@ -90,14 +96,39 @@ def set_plist_bundle_versions(path: str, version: str, build_number: int) -> Non
 
 
 def set_android_manifest_versions(path: str, version: str, build_number: int) -> None:
-    """Update explicit Android manifest version attributes if this manifest has them.
+    """Stamp Android versionName/versionCode even when attributes are absent.
 
-    Flutter/Gradle is authoritative in this repository, so attributes are not
-    injected into manifests that do not already declare them.
+    Flutter/Gradle remains the build authority, but keeping the manifests stamped
+    makes every checked-in platform manifest agree with the manually selected
+    release version and avoids stale version text in source.
     """
     source = read(path)
-    updated = re.sub(r'(android:versionName=")[^"]+(")', rf'\g<1>{version}\g<2>', source)
-    updated = re.sub(r'(android:versionCode=")[^"]+(")', rf'\g<1>{build_number}\g<2>', updated)
+    match = re.search(r"<manifest\b[^>]*>", source, flags=re.DOTALL)
+    if not match:
+        fail(f"{path}: <manifest> root tag not found")
+
+    tag = match.group(0)
+    if 'xmlns:android=' not in tag:
+        fail(f"{path}: android namespace is missing")
+
+    def set_or_insert(attribute: str, value: str) -> None:
+        nonlocal tag
+        pattern = rf'(android:{re.escape(attribute)}=")[^"]*(")'
+        if re.search(pattern, tag):
+            tag = re.sub(pattern, rf'\g<1>{value}\2', tag, count=1)
+            return
+
+        # Put version attributes immediately after the android namespace line
+        # where possible; otherwise append before the closing angle bracket.
+        ns = re.search(r'xmlns:android="[^"]+"', tag)
+        if not ns:
+            fail(f"{path}: android namespace is missing")
+        insertion = f'\n    android:{attribute}="{value}"'
+        tag = tag[:ns.end()] + insertion + tag[ns.end():]
+
+    set_or_insert("versionName", version)
+    set_or_insert("versionCode", str(build_number))
+    updated = source[:match.start()] + tag + source[match.end():]
     if updated != source:
         write(path, updated)
 
@@ -167,6 +198,73 @@ def set_xcode_project(version: str, build_number: int) -> None:
         fail(f"{path}: no literal CURRENT_PROJECT_VERSION entries found")
 
     write(path, source)
+
+
+def verify_stamped_version(version: str, build_number: int, windows_version: str) -> None:
+    """Fail CI if any checked-in LaLune version field escaped stamping."""
+
+    def require_text(path: str, needle: str) -> None:
+        if needle not in read(path):
+            fail(f"{path}: expected stamped value not found: {needle!r}")
+
+    # Canonical/UI-visible version sources.
+    if read("STABLE").strip() != version:
+        fail("STABLE: version did not persist")
+    require_text("Frontend/pubspec.yaml", f"version: {version}")
+    require_text("Site/pubspec.yaml", f"version: {version}")
+    require_text("Site/lib/constants.dart", f"latestVersion    = '{version}'")
+
+    # Android manifests must explicitly carry the selected manual version.
+    for manifest in (
+        "Frontend/android/app/src/main/AndroidManifest.xml",
+        "Frontend/android/app/src/debug/AndroidManifest.xml",
+        "Frontend/android/app/src/profile/AndroidManifest.xml",
+    ):
+        require_text(manifest, f'android:versionName="{version}"')
+        require_text(manifest, f'android:versionCode="{build_number}"')
+
+    # Platform manifests/resources.
+    require_text("Frontend/windows/runner/runner.exe.manifest", f'version="{windows_version}"')
+    require_text("Frontend/windows/runner/Runner.rc", f'#define VERSION_AS_STRING "{version}"')
+    for plist in (
+        "Frontend/ios/Tunnel/Info.plist",
+        "Frontend/ios/Flutter/AppFrameworkInfo.plist",
+        "Frontend/ios/Runner/Info.plist",
+    ):
+        require_text(plist, f"<string>{version}</string>")
+        require_text(plist, f"<string>{build_number}</string>")
+
+    # Backend/API sources that are shown to the UI.
+    require_text("Backend/Android/Backend.kt", f'const val VERSION = "{version}"')
+    require_text("Backend/iOS/Backend.swift", f'private let VERSION = "{version}"')
+    require_text("Frontend/ios/Runner/Backend.swift", f'private let VERSION = "{version}"')
+    require_text("Backend/Desktop/Cargo.toml", f'version = "{version}"')
+    require_text("Backend/OpenWRT/Cargo.toml", f'version = "{version}"')
+    require_text("Installer/launcher/Cargo.toml", f'version = "{version}"')
+    require_text("Backend/Desktop/src/api.rs", f'"version": "{version}"')
+    require_text("Backend/OpenWRT/src/api.rs", f'let local = "{version}"')
+    require_text("Backend/OpenWRT/src/api.rs", f'"backend": "{version}"')
+    require_text("Backend/OpenWRT/src/api.rs", f'"ui": "{version}"')
+    require_text("Frontend/ios/project.yml", f'MARKETING_VERSION: "{version}"')
+    require_text("Frontend/ios/project.yml", f'CURRENT_PROJECT_VERSION: "{build_number}"')
+    require_text("Frontend/ios/Runner.xcodeproj/project.pbxproj", f'MARKETING_VERSION = {version};')
+    require_text("Backend/iOS/Info-patch.md", f'<string>{version}</string>')
+    require_text("Installer/README-OPENWRT.md", f'"version":"{version}"')
+
+    for lock_path, package_name in (
+        ("Backend/Desktop/Cargo.lock", "lalune-backend"),
+        ("Backend/OpenWRT/Cargo.lock", "lalune-openwrt-backend"),
+        ("Installer/launcher/Cargo.lock", "lalune-installer"),
+    ):
+        path = ROOT / lock_path
+        if not path.exists():
+            continue
+        package_pattern = (
+            r'\[\[package\]\]\s*\n'
+            + rf'name = "{re.escape(package_name)}"\s*\nversion = "{re.escape(version)}"'
+        )
+        if not re.search(package_pattern, path.read_text(encoding="utf-8")):
+            fail(f"{lock_path}: package {package_name} is not stamped to {version}")
 
 
 def main() -> int:
@@ -329,6 +427,14 @@ def main() -> int:
         expected=1,
     )
 
+    verify_stamped_version(version, build_number, windows_version)
+
+    if CHANGED_FILES:
+        print("Changed version files:")
+        for path in sorted(CHANGED_FILES):
+            print(f"  - {path}")
+    else:
+        print("All version files were already synchronized.")
     print(f"LaLune version synchronized to {version} (build {build_number})")
     return 0
 
