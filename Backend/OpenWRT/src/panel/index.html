@@ -1,0 +1,156 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>LaLune · OpenWrt</title>
+  <link rel="stylesheet" href="/panel/panel.css">
+  <script src="/panel/panel.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <a href="/panel" class="brand"><span class="moon" aria-hidden="true"></span>LaLune</a>
+    <span class="platform">OpenWrt</span>
+  </header>
+  <main>
+    <h1>Управление VPN</h1>
+    <p id="load-message" class="message" role="status">Загружаем панель…</p>
+    <div class="dashboard">
+      <div class="stack">
+        <section class="card" aria-labelledby="vpn-title">
+          <h2 id="vpn-title">Подключение</h2>
+          <div class="connection" id="connection" data-state="unknown">
+            <span class="indicator" aria-hidden="true"></span>
+            <strong id="vpn-state" role="status">Проверяем…</strong>
+            <span id="vpn-uptime" class="readout"></span>
+          </div>
+          <label for="profile-select">Профиль</label>
+          <select id="profile-select" disabled><option value="">Выберите профиль</option></select>
+          <div class="actions">
+            <button id="connect" class="primary" type="button" disabled>Подключить</button>
+            <button id="disconnect" type="button" disabled>Отключить</button>
+          </div>
+          <div class="actions profile-actions">
+            <button id="add-profile" type="button" disabled>Добавить профиль</button>
+            <button id="edit-profile" type="button" disabled>Изменить</button>
+          </div>
+          <p id="vpn-message" class="message" role="status"></p>
+        </section>
+
+        <section class="card" aria-labelledby="token-title">
+          <div class="section-header">
+            <h2 id="token-title">Токен VK</h2>
+            <span id="token-state" class="tag" role="status">Проверяем…</span>
+          </div>
+          <p class="muted">Для режимов Авто API и Авто ВК загрузите файл token.json.</p>
+          <label for="token-file">Файл токена</label>
+          <input id="token-file" type="file" accept=".json,application/json" disabled>
+          <p id="token-message" class="message" role="status"></p>
+        </section>
+      </div>
+
+      <section class="card" aria-labelledby="settings-title">
+        <h2 id="settings-title">Настройки</h2>
+        <form id="settings-form" autocomplete="off">
+          <fieldset id="settings-fields" class="stack" disabled>
+            <label>Режим авторизации
+              <select name="authMode" id="auth-mode">
+                <option value="manual">Ручной</option>
+                <option value="autoApi">Авто API</option>
+                <option value="autoVk">Авто ВК</option>
+              </select>
+            </label>
+            <small id="auth-token-note" hidden>Для подключения загрузите файл токена VK.</small>
+            <div id="manual-settings">
+              <label for="default-hashes">Хеши VK по умолчанию</label>
+              <textarea id="default-hashes" name="vkHashes" rows="2" spellcheck="false" placeholder="hash1, hash2" aria-describedby="hash-note"></textarea>
+              <small id="hash-note">Используются, если в профиле нет своих хешей.</small>
+            </div>
+            <div class="fields">
+              <label>Воркеры
+                <input name="workers" type="number" min="1" max="127" required>
+              </label>
+              <label id="auto-api-settings" hidden>Воркеров на хеш
+                <input name="autoApiWorkers" type="number" min="9" max="27" required disabled>
+              </label>
+            </div>
+            <details>
+              <summary>Дополнительные параметры</summary>
+              <div class="fields advanced">
+                <label>Маскировка
+                  <select name="obfs"><option value="video">Video</option><option value="audio">Audio</option></select>
+                </label>
+                <label>Отпечаток браузера
+                  <select name="fingerprint"><option>firefox</option><option>chrome</option><option>edge</option></select>
+                </label>
+                <label>Решение капчи
+                  <select name="captchaMode"><option>auto</option><option>wv</option><option>rjs</option></select>
+                </label>
+                <label>Транспорт TURN
+                  <select name="turnTransport"><option value="udp">UDP</option><option value="tcp">TCP</option></select>
+                </label>
+                <label>Сервер TURN<input name="turnHost" spellcheck="false"></label>
+                <label>Порт TURN<input name="turnPort" type="number" min="1" max="65535" inputmode="numeric"></label>
+                <label class="full">Идентификаторы клиентов<input name="clientIds" spellcheck="false"></label>
+              </div>
+              <div class="checks">
+                <label><input type="checkbox" name="allowHashRedistribution"> Перераспределение хешей (CSQTT 2.1.9)</label>
+              </div>
+            </details>
+            <label><input type="checkbox" name="shareVpn"> Открыть SOCKS5-прокси в локальной сети</label>
+            <label><input type="checkbox" name="showCoreLogs"> Показывать логи ядра в LaLune</label>
+            <label><input type="checkbox" name="enableSmartTunnel"> Включать SmartTunnel при запуске backend</label>
+            <div class="actions">
+              <button class="primary" type="submit">Сохранить настройки</button>
+            </div>
+          </fieldset>
+          <p id="settings-message" class="message" role="status"></p>
+        </form>
+      </section>
+    </div>
+
+    <details class="card log-card" id="logs">
+      <summary>Журнал ядра</summary>
+      <div class="actions">
+        <label>Источник
+          <select id="log-source">
+            <option value="core">Ядро</option>
+            <option value="backend">Бэкенд</option>
+            <option value="all">Все строки</option>
+          </select>
+        </label>
+        <a id="log-export" href="/logs/export?source=core" download="lalune.log">Скачать журнал</a>
+        <button id="log-clear" type="button">Очистить</button>
+      </div>
+      <p id="log-message" class="message" role="status"></p>
+      <pre id="log-output" tabindex="0" aria-label="Последние строки журнала ядра"></pre>
+    </details>
+  </main>
+
+  <dialog id="profile-dialog" aria-labelledby="profile-title">
+    <h2 id="profile-title">Добавить профиль</h2>
+    <form id="profile-form" class="stack" autocomplete="off">
+      <fieldset id="profile-fields" class="stack">
+        <label>Название<input name="name" placeholder="Например, домашний"></label>
+        <label>Протокол<select name="protocol" required></select></label>
+        <div>
+          <label for="profile-link">Ссылка</label>
+          <input id="profile-link" name="link" type="password" spellcheck="false" placeholder="csqtt://…" autocomplete="new-password" aria-describedby="link-note">
+          <small id="link-note">Или заполните адрес и пароль ниже.</small>
+        </div>
+        <label>Адрес сервера<input name="peer" spellcheck="false" placeholder="host:port"></label>
+        <label>Пароль<input name="password" type="password" autocomplete="new-password"></label>
+        <label>Хеши VK<textarea name="hashes" rows="2" spellcheck="false"></textarea></label>
+        <div class="actions">
+          <button class="primary" type="submit">Сохранить профиль</button>
+          <button type="button" id="close-profile">Отмена</button>
+          <button type="button" class="danger" id="delete-profile" hidden>Удалить</button>
+        </div>
+      </fieldset>
+      <p id="profile-message" class="message" role="status"></p>
+    </form>
+  </dialog>
+</body>
+</html>

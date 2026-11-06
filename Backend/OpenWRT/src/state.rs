@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use crate::config::{ConfigItem, ConfigStore};
+use crate::core_logs::{CoreLogs, FILE_NAME};
 use crate::core_manager::CoreProcess;
 use crate::events::EventBus;
 use crate::lua_runtime::LuaRuntime;
@@ -35,8 +36,10 @@ pub struct AppState {
 
     pub vpn: Arc<VpnRuntime>,
     pub core: Mutex<Option<CoreProcess>>,
+    pub active_vk_calls: Mutex<Option<crate::vk::ActiveCalls>>,
 
-    pub logs: Mutex<Vec<String>>,
+    logs: Mutex<Vec<String>>,
+    pub core_logs: Arc<Mutex<CoreLogs>>,
     pub core_downloading: Mutex<bool>,
     pub deploy_busy: Mutex<bool>,
     pub deploy_log: Mutex<String>,
@@ -88,12 +91,19 @@ pub fn ensure_device_id(app_dir: &std::path::Path, preferred: &str) -> Result<St
 
 impl AppState {
     pub async fn new() -> Result<Self> {
-        let app_dir = app_dir()?;
+        Self::new_in(app_dir()?).await
+    }
+
+    pub(crate) async fn new_in(app_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&app_dir)?;
 
         let configs_path = app_dir.join("configs.db");
         let settings_path = app_dir.join("settings.json");
-        let logs_path = app_dir.join("logs.log");
+        let logs_path = app_dir.join(FILE_NAME);
+        let mut core_logs = CoreLogs::new(&app_dir);
+        if let Err(err) = core_logs.migrate_legacy() {
+            log::warn!("cannot migrate legacy logs: {err}");
+        }
         let token_path = app_dir.join("token.json");
         let core_path = app_dir.join(crate::core_manager::core_filename());
 
@@ -129,7 +139,9 @@ impl AppState {
             configs,
             vpn: Arc::new(VpnRuntime::new()),
             core: Mutex::new(None),
+            active_vk_calls: Mutex::new(None),
             logs: Mutex::new(Vec::new()),
+            core_logs: Arc::new(Mutex::new(core_logs)),
             core_downloading: Mutex::new(false),
             deploy_busy: Mutex::new(false),
             deploy_log: Mutex::new(String::new()),
@@ -161,6 +173,7 @@ impl AppState {
             let drain = logs.len() - 1000;
             logs.drain(..drain);
         }
+        self.core_logs.lock().record(line.clone());
         drop(logs);
         self.events.emit(crate::events::Event::log(line.clone()));
 
@@ -177,6 +190,31 @@ impl AppState {
 
     pub fn logs_snapshot(&self) -> Vec<String> {
         self.logs.lock().clone()
+    }
+
+    pub async fn log_history(&self) -> Result<Vec<String>> {
+        let logs = self.core_logs.clone();
+        Ok(tokio::task::spawn_blocking(move || logs.lock().snapshot()).await?)
+    }
+
+    pub async fn clear_log_history(self: &Arc<Self>) -> Result<()> {
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut logs = state.logs.lock();
+            state.core_logs.lock().clear()?;
+            logs.clear();
+            Ok(())
+        })
+        .await?
+    }
+
+    pub async fn flush_log_history(&self) {
+        let logs = self.core_logs.clone();
+        match tokio::task::spawn_blocking(move || logs.lock().flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => log::warn!("cannot write gzip logs: {err}"),
+            Err(err) => log::warn!("gzip log writer failed: {err}"),
+        }
     }
 
     pub async fn maybe_autostart_smarttunnel(&self) {
@@ -212,9 +250,18 @@ impl AppState {
         if let Some(mut p) = maybe_proc {
             let _ = p.kill().await;
         }
+        self.flush_log_history().await;
+        self.stop_auto_api_calls().await;
     }
 
     pub fn uptime(&self) -> u64 {
         0
+    }
+
+    pub async fn stop_auto_api_calls(&self) {
+        let calls = self.active_vk_calls.lock().take();
+        if let Some(calls) = calls {
+            calls.close().await;
+        }
     }
 }

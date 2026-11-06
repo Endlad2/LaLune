@@ -158,6 +158,20 @@ pub fn parse_link(link: &str) -> Result<ConfigItem> {
     }
 }
 
+pub fn parse_for_core(link: &str, core: crate::bundled_cores::Core) -> Result<ConfigItem> {
+    let link = link.trim();
+    if !link.starts_with("csqtt://") {
+        return Err(anyhow!("Для этого ядра нужна ссылка csqtt://"));
+    }
+    let mut config = if core == crate::bundled_cores::Core::Legacy {
+        parse_csqtt_native(link)?
+    } else {
+        parse_csqtt(link)?
+    };
+    config.protocol = core.id().into();
+    Ok(config)
+}
+
 /// CSQTT: csqtt-link → Lua → нативный fallback.
 pub fn parse_csqtt(link: &str) -> Result<ConfigItem> {
     // 1. csqtt-link
