@@ -34,6 +34,7 @@ pub struct AppState {
     pub core: Mutex<Option<CoreProcess>>,
 
     pub logs: Mutex<Vec<String>>,
+    pub active_vk_call_ids: Mutex<Vec<String>>,
     pub core_downloading: Mutex<bool>,
     pub deploy_busy: Mutex<bool>,
     pub deploy_log: Mutex<String>,
@@ -154,6 +155,7 @@ impl AppState {
             vpn: Arc::new(VpnRuntime::new()),
             core: Mutex::new(None),
             logs: Mutex::new(Vec::new()),
+            active_vk_call_ids: Mutex::new(Vec::new()),
             core_downloading: Mutex::new(false),
             deploy_busy: Mutex::new(false),
             deploy_log: Mutex::new(String::new()),
@@ -181,10 +183,6 @@ impl AppState {
         log::info!("{}", line);
         let mut logs = self.logs.lock();
         logs.push(line.clone());
-        if logs.len() > 1000 {
-            let drain = logs.len() - 1000;
-            logs.drain(..drain);
-        }
         drop(logs);
         self.events.emit(crate::events::Event::log(line.clone()));
 

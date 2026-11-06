@@ -12,7 +12,7 @@
 // `_showCoreLogsProvider` (Provider<bool>, который watch'ит settingsProvider).
 // Это гарантирует, что при переключении toggle и сохранении:
 //   1. logsProvider видит новое значение
-//   2. _refresh() перечитывает /logs/tail?source=all
+//   2. _refresh() перечитывает /logs?source=all
 //   3. SSE listener фильтрует по актуальному значению
 // Плюс периодический опрос каждые 3 сек — на случай race condition.
 
@@ -107,16 +107,12 @@ class LogsNotifier extends StateNotifier<LogsState> {
                   .map((line) => line.toString())
                   .where((line) => line.isNotEmpty && (_showCoreLogs || !_isCoreLog(line)))
                   .toList();
-              if (rawLines.length > 500) {
-                rawLines.removeRange(0, rawLines.length - 500);
-              }
               state = state.copyWith(lines: rawLines);
             } else if (message['type'] == 'log') {
               final line = message['line'] as String? ?? '';
               if (line.isEmpty || (!_showCoreLogs && _isCoreLog(line))) return;
               if (state.lines.isNotEmpty && state.lines.last == line) return;
               final next = [...state.lines, line];
-              if (next.length > 500) next.removeRange(0, next.length - 500);
               state = state.copyWith(lines: next);
             }
           } catch (_) {
@@ -170,8 +166,7 @@ class LogsNotifier extends StateNotifier<LogsState> {
     // finish after a newer request (common when the toggle changes mid-flight).
     final source = _showCoreLogs ? 'all' : 'backend';
     try {
-      final list = await api.getJsonList('/logs/tail', query: {
-        'lines': '300',
+      final list = await api.getJsonList('/logs', query: {
         'source': source,
       });
       if (generation != _refreshGeneration) return;

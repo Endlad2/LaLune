@@ -139,7 +139,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "ok": true,
-        "version": "0.9.7",
+        "version": "0.6.0",
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "hostname": hostname::get()
@@ -575,6 +575,40 @@ async fn teardown_tun_for_retry(state: &Arc<AppState>) {
     }
 }
 
+async fn stop_vk_calls(state: &Arc<AppState>, call_ids: Vec<String>) -> usize {
+    if call_ids.is_empty() {
+        return 0;
+    }
+    let token = match vk::read_token(&state.app_dir) {
+        Some(token) => token,
+        None => {
+            state.log("[VK] cannot finish active calls: token is missing");
+            return 0;
+        }
+    };
+    let client = vk::VkApiClient::new(token);
+    let mut finished = 0usize;
+    for call_id in call_ids {
+        if client.force_finish(&call_id).await {
+            finished += 1;
+        } else {
+            state.log(format!("[VK] calls.forceFinish failed for {}", call_id));
+        }
+    }
+    if finished > 0 {
+        state.log(format!("[VK] finished {} active call(s)", finished));
+    }
+    finished
+}
+
+async fn stop_active_vk_calls(state: &Arc<AppState>) -> usize {
+    let call_ids = {
+        let mut active = state.active_vk_call_ids.lock();
+        std::mem::take(&mut *active)
+    };
+    stop_vk_calls(state, call_ids).await
+}
+
 async fn vpn_connect(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ConnectBody>,
@@ -586,13 +620,17 @@ async fn vpn_connect(
         state.selected_config.read().clone()
     };
 
-    let config = match config {
+    let mut config = match config {
         Some(c) => c,
         None => return err(400, "no config selected"),
     };
 
     state.vpn.stop().await;
     finish_vpn(&state).await;
+    // Remember how many backend log lines belonged to earlier sessions. They
+    // are removed only after the new core proves that it is actually alive
+    // (first "Активных > 0"), so failed connection attempts remain visible.
+    let previous_log_count = state.logs.lock().len();
     let kind = ProtocolKind::from_id(&config.protocol).unwrap_or(ProtocolKind::Csqtt);
     state.vpn.set_phase("connecting", "Подключение");
     state.events.emit(Event::status_detail(false, "connecting", "Подключение"));
@@ -652,7 +690,66 @@ async fn vpn_connect(
         }
     }
 
-    let settings = state.settings.read().clone();
+    let mut settings = state.settings.read().clone();
+    let mut auto_api_call_ids: Vec<String> = Vec::new();
+
+    if matches!(kind, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
+        && settings.auth_mode == "autoApi"
+    {
+        let token = match vk::read_token(&state.app_dir) {
+            Some(token) => token,
+            None => return err(400, "Auto API requires VK token"),
+        };
+        let count = vk::call_count_for_workers(settings.workers, settings.auto_api_workers);
+        let client = vk::VkApiClient::new(token);
+        let mut hashes: Vec<String> = Vec::new();
+
+        state.log(format!(
+            "[VK] Auto API: requesting {} call(s) before core start",
+            count
+        ));
+        for slot in 0..count {
+            if slot > 0 {
+                let delay = if count <= 4 { 80 } else { 202 };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            state.log(format!("[VK] calls.start {}/{}", slot + 1, count));
+            let result = client.start_call().await;
+            if result.is_success() {
+                hashes.push(result.hash);
+                auto_api_call_ids.push(result.call_id);
+            } else if result.token_invalid() {
+                let ids = std::mem::take(&mut auto_api_call_ids);
+                stop_vk_calls(&state, ids).await;
+                return err(401, "VK token invalid");
+            } else {
+                state.log(format!(
+                    "[VK] calls.start failed for slot {}: {}",
+                    slot + 1,
+                    if result.error_message.is_empty() {
+                        "unknown error"
+                    } else {
+                        result.error_message.as_str()
+                    }
+                ));
+            }
+        }
+
+        if hashes.is_empty() {
+            return err(500, "Auto API could not create any VK calls");
+        }
+
+        settings.vk_hashes = hashes.join(",");
+        // Auto API hashes are session-scoped and must win over hashes stored in
+        // the selected config. Clearing only this in-memory clone makes
+        // build_args take settings.vk_hashes without modifying the saved config.
+        config.hashes.clear();
+        state.log(format!(
+            "[VK] Auto API: received {} hash(es); passing them to CSQTT via --vk",
+            hashes.len()
+        ));
+    }
+
     vpn::configure_bypass_routes(
         &state.vpn,
         &settings.ip_routing_mode,
@@ -670,6 +767,8 @@ async fn vpn_connect(
     // Every fresh core start gets a fresh core log. This is intentionally done
     // before spawn so reconnecting cannot expose stale readiness/stat lines.
     if let Err(e) = tokio::fs::write(&state.logs_path, b"").await {
+        let ids = std::mem::take(&mut auto_api_call_ids);
+        stop_vk_calls(&state, ids).await;
         return err(500, format!("cannot clear core log before start: {}", e));
     }
 
@@ -686,11 +785,18 @@ async fn vpn_connect(
         .await
     {
         Ok(c) => c,
-        Err(e) => return err(500, format!("spawn failed: {}", e)),
+        Err(e) => {
+            let ids = std::mem::take(&mut auto_api_call_ids);
+            stop_vk_calls(&state, ids).await;
+            return err(500, format!("spawn failed: {}", e));
+        }
     };
     #[cfg(target_os = "linux")]
     state.vpn.core_uid.store(core.user.as_ref().map_or(0, |user| user.uid), std::sync::atomic::Ordering::Release);
     *state.core.lock() = Some(core);
+    if !auto_api_call_ids.is_empty() {
+        *state.active_vk_call_ids.lock() = auto_api_call_ids;
+    }
 
     if let Some(lua) = state.lua() {
         lua.on_connect();
@@ -707,6 +813,7 @@ async fn vpn_connect(
         let mut tun_dns: Option<String> = None;
         let mut consecutive_active_ticks: i32 = 0;
         let mut tun_started = false;
+        let mut previous_logs_cleared = false;
 
         while tokio::time::Instant::now() < deadline && !tun_started {
             if core_stopped(&state2) { break; }
@@ -723,6 +830,23 @@ async fn vpn_connect(
                             }
                             if let Some((active, _traffic)) = vpn::parse_stats(line) {
                                 if active > 0 {
+                                    if !previous_logs_cleared {
+                                        let removed = {
+                                            let mut logs = state2.logs.lock();
+                                            let count = previous_log_count.min(logs.len());
+                                            if count > 0 {
+                                                logs.drain(..count);
+                                            }
+                                            count
+                                        };
+                                        previous_logs_cleared = true;
+                                        if removed > 0 {
+                                            state2.log(format!(
+                                                "[LOG] cleared {} line(s) from previous connection",
+                                                removed
+                                            ));
+                                        }
+                                    }
                                     consecutive_active_ticks += 1;
                                     if consecutive_active_ticks == 1 {
                                         state2.vpn.set_phase("checking", "Проверка...");
@@ -1015,6 +1139,7 @@ async fn finish_vpn(state: &Arc<AppState>) {
     crate::socks5::stop(state);
     let core = { state.core.lock().take() };
     if let Some(mut core) = core { let _ = core.kill().await; }
+    stop_active_vk_calls(state).await;
     state.vpn.set_phase("disconnected", "");
     state.events.emit(Event::status_detail(false, "disconnected", ""));
     if let Some(lua) = state.lua() { lua.on_disconnect(); }
@@ -1680,6 +1805,7 @@ async fn vk_calls_start(
             hashes.push(result.hash.clone());
             call_ids.push(result.call_id.clone());
         } else if result.token_invalid() {
+            stop_vk_calls(&state, call_ids).await;
             return err(401, "VK token invalid");
         }
     }
@@ -1687,6 +1813,10 @@ async fn vk_calls_start(
     if hashes.is_empty() {
         return err(500, "no calls created");
     }
+    state
+        .active_vk_call_ids
+        .lock()
+        .extend(call_ids.iter().cloned());
     Json(json!({"hashes": hashes, "callIds": call_ids})).into_response()
 }
 
@@ -1709,18 +1839,20 @@ async fn vk_calls_stop(
     for id in body.call_ids {
         if client.force_finish(&id).await {
             finished += 1;
+            state.active_vk_call_ids.lock().retain(|active| active != &id);
         }
     }
     Json(json!({"finished": finished})).into_response()
 }
 
 async fn vk_calls_stop_all(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let _ = state;
-    Json(json!({"finished": 0}))
+    let finished = stop_active_vk_calls(&state).await;
+    Json(json!({"finished": finished}))
 }
 
-async fn vk_calls_active() -> impl IntoResponse {
-    Json(json!({"callIds": []}))
+async fn vk_calls_active(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let call_ids = state.active_vk_call_ids.lock().clone();
+    Json(json!({"callIds": call_ids}))
 }
 
 // ============================================================

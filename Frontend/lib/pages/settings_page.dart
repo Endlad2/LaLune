@@ -765,7 +765,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   enabled: true, vk: vk),
               _authOption('autoApi', 'Авто API',
                   'Создавать звонки через VK API',
-                  enabled: hasToken, vk: vk),
+                  enabled: hasToken, vk: vk, stableHint: true),
               _authOption('autoVk', 'Авто ВК',
                   'Ядро само авторизуется через VK',
                   enabled: hasToken, vk: vk),
@@ -1027,7 +1027,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   Widget _authOption(String value, String title, String subtitle,
-      {required bool enabled, required VkTokenState vk}) {
+      {required bool enabled,
+      required VkTokenState vk,
+      bool stableHint = false}) {
     final selected = _authMode == value;
     final opacity = enabled ? 1.0 : 0.4;
 
@@ -1068,9 +1070,36 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title,
-                          style: const TextStyle(
-                              fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(title,
+                              style: const TextStyle(
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600)),
+                          if (stableHint) ...[
+                            const SizedBox(width: 4),
+                            Tooltip(
+                              message: 'Самый стабильный режим',
+                              child: InkResponse(
+                                radius: 16,
+                                onTap: () => Toast.show(
+                                  context,
+                                  'Это самый стабильный режим авторизации. Авто ВК может работать нестабильно.',
+                                ),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(3),
+                                  child: Icon(
+                                    Icons.error_outline,
+                                    size: 17,
+                                    color: Color(0xFF55D187),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                       Text(subtitle,
                           style: TextStyle(
                               fontSize: 11.5,

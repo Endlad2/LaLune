@@ -23,28 +23,10 @@ class _LogsPageState extends ConsumerState<LogsPage> {
     super.dispose();
   }
 
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      }
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final logs = ref.watch(logsProvider);
     final stats = _LogStats.fromLines(logs.lines);
-
-    ref.listen(logsProvider, (prev, next) {
-      final previousLast =
-          prev != null && prev.lines.isNotEmpty ? prev.lines.last : null;
-      final nextLast = next.lines.isNotEmpty ? next.lines.last : null;
-      if (prev?.lines.length != next.lines.length ||
-          previousLast != nextLast) {
-        _scrollToBottom();
-      }
-    });
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
