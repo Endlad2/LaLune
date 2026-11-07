@@ -475,7 +475,7 @@ public final class Backend {
             "captchaMode": "auto", "vkAuthMode": "vkcalls",
             "allowHashRedistribution": false, "validateVkHashes": false,
             "enableSmartTunnel": false, "showCoreLogs": false,
-            "shareVpn": false
+            "shareVpn": false, "validateTun": false
         ]
     }
 

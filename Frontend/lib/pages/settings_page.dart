@@ -96,6 +96,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _showCoreLogs = false;
   bool _shareVpn = false;
   bool _desktopSocks5Mode = false;
+  bool _validateTun = false;
 
   bool get _isPaperFlux => _selectedConfig?.isPaperFlux == true;
   bool get _isCsqtt219 => _selectedConfig?.isCsqtt219 == true;
@@ -160,6 +161,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _showCoreLogs = s.showCoreLogs;
     _shareVpn = s.shareVpn;
     _desktopSocks5Mode = s.desktopSocks5Mode;
+    _validateTun = s.validateTun;
     _ipRoutingMode = _isDesktop ? 'blacklist' : s.ipRoutingMode;
     _ipRoutingIpsCtl.text = s.ipRoutingIps;
     _androidAppRoutingMode = s.androidAppRoutingMode;
@@ -221,6 +223,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       showCoreLogs: _showCoreLogs,
       shareVpn: _shareVpn,
       desktopSocks5Mode: _desktopSocks5Mode,
+      validateTun: _validateTun,
       ipRoutingMode: _ipRoutingMode,
       ipRoutingIps: _ipRoutingIpsCtl.text.trim(),
       androidAppRoutingMode: _androidAppRoutingMode,
@@ -868,6 +871,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             child: Text(
               'Только Windows/Linux, для CSQTT/CSQTTR. Ядро по-прежнему отдаёт raw IP через локальный UDP, '
               'но системный default route не меняется: трафик SOCKS5 направляется в этот UDP-туннель через служебный TUN.',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  height: 1.5,
+                  color: Colors.white.withOpacity(0.55)),
+            ),
+          ),
+          _toggleRow('Validate TUN', _validateTun, (v) {
+            setState(() => _validateTun = v);
+            _markDirty();
+          }),
+          Padding(
+            padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
+            child: Text(
+              'Экспериментальная проверка обычного TUN. После подключения делает HTTPS-запросы к YouTube и Telegram. '
+              'Если оба не вернули HTTP 200, пересоздаёт только TUN, не завершая CSQTT/CSQTTR, и повторяет проверку.',
               style: TextStyle(
                   fontSize: 11.5,
                   height: 1.5,

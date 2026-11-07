@@ -121,7 +121,7 @@ pub fn settings_keys_for(kind: ProtocolKind) -> Vec<&'static str> {
             "authMode", "obfs", "fingerprint", "clientIds",
             "captchaMode", "vkAuthMode", "turnTransport",
             "allowHashRedistribution", "validateVkHashes",
-            "shareVpn", "desktopSocks5Mode", "showCoreLogs",
+            "shareVpn", "desktopSocks5Mode", "validateTun", "showCoreLogs",
             "ipRoutingMode", "ipRoutingIps",
         ],
         ProtocolKind::Csqttr => vec![
@@ -129,7 +129,7 @@ pub fn settings_keys_for(kind: ProtocolKind) -> Vec<&'static str> {
             "authMode", "obfs", "fingerprint", "clientIds",
             "captchaMode", "vkAuthMode", "turnTransport",
             "allowHashRedistribution", "validateVkHashes",
-            "shareVpn", "desktopSocks5Mode", "showCoreLogs",
+            "shareVpn", "desktopSocks5Mode", "validateTun", "showCoreLogs",
             "ipRoutingMode", "ipRoutingIps",
         ],
         ProtocolKind::PaperFlux => vec![

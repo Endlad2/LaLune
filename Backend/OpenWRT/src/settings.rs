@@ -68,6 +68,8 @@ pub struct Settings {
     /// but OpenWRT persists it so switching API targets does not reset the toggle.
     #[serde(rename = "desktopSocks5Mode")]
     pub desktop_socks5_mode: bool,
+    /// Desktop UI compatibility: persisted here so changing API targets does not reset the option.
+    pub validate_tun: bool,
 }
 
 impl Default for Settings {
@@ -120,6 +122,7 @@ impl Default for Settings {
             show_core_logs: false,
             share_vpn: false,
             desktop_socks5_mode: false,
+            validate_tun: false,
         }
     }
 }

@@ -804,7 +804,8 @@ async fn vpn_connect(
 
     let state2 = state.clone();
     let kind_for_watchdog = kind;
-    let verify_tun = matches!(kind_for_watchdog, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
+    let verify_tun = settings.validate_tun
+        && matches!(kind_for_watchdog, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
         && !desktop_socks5_mode;
     let watchdog = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);

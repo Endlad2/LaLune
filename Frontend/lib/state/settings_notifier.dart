@@ -75,16 +75,25 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       if (isDesktop) {
         var persisted = await api.getJson('/settings');
         var persistedMode = persisted['desktopSocks5Mode'];
-        if (persistedMode is! bool || persistedMode != s.desktopSocks5Mode) {
+        var persistedValidateTun = persisted['validateTun'];
+        if (persistedMode is! bool ||
+            persistedMode != s.desktopSocks5Mode ||
+            persistedValidateTun is! bool ||
+            persistedValidateTun != s.validateTun) {
           await api.patchJson('/settings', {
             'desktopSocks5Mode': s.desktopSocks5Mode,
+            'validateTun': s.validateTun,
           });
           persisted = await api.getJson('/settings');
           persistedMode = persisted['desktopSocks5Mode'];
+          persistedValidateTun = persisted['validateTun'];
         }
 
         if (persistedMode is! bool || persistedMode != s.desktopSocks5Mode) {
           throw StateError('desktopSocks5Mode was not persisted by backend');
+        }
+        if (persistedValidateTun is! bool || persistedValidateTun != s.validateTun) {
+          throw StateError('validateTun was not persisted by backend');
         }
       }
 

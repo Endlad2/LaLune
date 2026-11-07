@@ -58,6 +58,7 @@ class Settings {
   final bool showCoreLogs;
   final bool shareVpn;
   final bool desktopSocks5Mode;
+  final bool validateTun;
 
   // Global split tunneling (shared by all protocols).
   final String ipRoutingMode; // blacklist: listed IPs bypass VPN; whitelist: only listed IPs use VPN.
@@ -110,6 +111,7 @@ class Settings {
     this.showCoreLogs = false,
     this.shareVpn = false,
     this.desktopSocks5Mode = false,
+    this.validateTun = false,
     this.ipRoutingMode = 'blacklist',
     this.ipRoutingIps = '',
     this.androidAppRoutingMode = 'blacklist',
@@ -170,6 +172,7 @@ class Settings {
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
       shareVpn: (j['shareVpn'] ?? false) as bool,
       desktopSocks5Mode: (j['desktopSocks5Mode'] ?? false) as bool,
+      validateTun: (j['validateTun'] ?? false) as bool,
       ipRoutingMode: (j['ipRoutingMode'] ?? 'blacklist') as String,
       ipRoutingIps: (j['ipRoutingIps'] ?? '') as String,
       androidAppRoutingMode: (j['androidAppRoutingMode'] ?? 'blacklist') as String,
@@ -222,6 +225,7 @@ class Settings {
         'showCoreLogs': showCoreLogs,
         'shareVpn': shareVpn,
         'desktopSocks5Mode': desktopSocks5Mode,
+        'validateTun': validateTun,
         'ipRoutingMode': ipRoutingMode,
         'ipRoutingIps': ipRoutingIps,
         'androidAppRoutingMode': androidAppRoutingMode,
@@ -273,6 +277,7 @@ class Settings {
     bool? showCoreLogs,
     bool? shareVpn,
     bool? desktopSocks5Mode,
+    bool? validateTun,
     String? ipRoutingMode,
     String? ipRoutingIps,
     String? androidAppRoutingMode,
@@ -324,6 +329,7 @@ class Settings {
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
         shareVpn: shareVpn ?? this.shareVpn,
         desktopSocks5Mode: desktopSocks5Mode ?? this.desktopSocks5Mode,
+        validateTun: validateTun ?? this.validateTun,
         ipRoutingMode: ipRoutingMode ?? this.ipRoutingMode,
         ipRoutingIps: ipRoutingIps ?? this.ipRoutingIps,
         androidAppRoutingMode: androidAppRoutingMode ?? this.androidAppRoutingMode,

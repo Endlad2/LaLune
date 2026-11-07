@@ -23,8 +23,6 @@ class OpenWrtInstallResult {
 class OpenWrtInstaller {
   static const backendUrl =
       'https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend';
-  static const ramipsBackendUrl =
-      'https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend-ramips';
   static const coreUrl =
       'https://github.com/Endlad2/csqtt-core/releases/latest/download/client-linux-arm64';
 
@@ -90,13 +88,13 @@ class OpenWrtInstaller {
       onProgress?.call('Установка backend и зависимостей...');
       final script = _installScript
           .replaceAll('__BACKEND_URL__', backendUrl)
-          .replaceAll('__RAMIPS_BACKEND_URL__', ramipsBackendUrl)
           .replaceAll('__CORE_URL__', coreUrl);
       final result = await client.runWithResult(script);
       final stdout = utf8.decode(result.stdout, allowMalformed: true);
       final stderr = utf8.decode(result.stderr, allowMalformed: true);
-      final combined =
-          [stdout.trim(), stderr.trim()].where((s) => s.isNotEmpty).join('\n');
+      final combined = [stdout.trim(), stderr.trim()]
+          .where((s) => s.isNotEmpty)
+          .join('\n');
 
       if (result.exitCode != 0 || !stdout.contains('LALUNE_INSTALL_OK')) {
         return OpenWrtInstallResult(
@@ -117,7 +115,8 @@ class OpenWrtInstaller {
             (ping['platform'] ?? '').toString().toLowerCase() == 'openwrt') {
           return OpenWrtInstallResult(
             ok: true,
-            message: 'Установлено. Теперь выполните соединение с роутером.',
+            message:
+                'Установлено. Теперь выполните соединение с роутером.',
             log: combined,
           );
         }
@@ -148,7 +147,6 @@ class OpenWrtInstaller {
 set -eu
 
 BACKEND_URL="__BACKEND_URL__"
-RAMIPS_BACKEND_URL="__RAMIPS_BACKEND_URL__"
 CORE_URL="__CORE_URL__"
 INSTALL_DIR="$HOME/la-lune"
 DATA_DIR="$HOME/.la-lune"
@@ -163,17 +161,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 arch="$(uname -m 2>/dev/null || true)"
 case "$arch" in
   aarch64|arm64) ;;
-  mips|mipsel)
-    unset DISTRIB_TARGET DISTRIB_ARCH
-    [ -r /etc/openwrt_release ] && . /etc/openwrt_release
-    if [ "${DISTRIB_TARGET:-}" != ramips/mt7621 ] || [ "${DISTRIB_ARCH:-}" != mipsel_24kc ]; then
-      echo "Need OpenWrt ramips/mt7621 (mipsel_24kc), found: ${DISTRIB_TARGET:-?} (${DISTRIB_ARCH:-?})" >&2
-      exit 21
-    fi
-    BACKEND_URL="$RAMIPS_BACKEND_URL"
-    ;;
   *)
-    echo "Unsupported router architecture: $arch (need ARM64 or ramips/mt7621)" >&2
+    echo "Unsupported router architecture: $arch (need aarch64/arm64)" >&2
     exit 21
     ;;
 esac
@@ -185,24 +174,16 @@ fi
 
 mkdir -p "$INSTALL_DIR" "$DATA_DIR"
 
-install_packages() {
-  if [ "$BACKEND_URL" = "$RAMIPS_BACKEND_URL" ] && have apk; then
-    apk add "$@" >/dev/null 2>&1
-  elif have opkg; then
-    opkg update >/dev/null 2>&1 || true
-    opkg install "$@" >/dev/null 2>&1
-  else
-    return 1
-  fi
-}
-
 ensure_downloader() {
   if have uclient-fetch || have wget || have curl; then
     return 0
   fi
-  log 'download utility missing; installing wget/CA certificates'
-  install_packages ca-bundle ca-certificates || true
-  install_packages wget-ssl || install_packages wget || true
+  if have opkg; then
+    log 'download utility missing; installing wget/CA certificates via opkg'
+    opkg update >/dev/null 2>&1 || true
+    opkg install ca-bundle ca-certificates >/dev/null 2>&1 || true
+    opkg install wget-ssl >/dev/null 2>&1 || opkg install wget >/dev/null 2>&1 || true
+  fi
   have uclient-fetch || have wget || have curl
 }
 
@@ -211,21 +192,17 @@ download() {
   dest="$2"
   tmp="$dest.part"
   rm -f "$tmp"
-  if ! (
-    if have uclient-fetch; then
-      uclient-fetch -q -O "$tmp" "$url"
-    elif have wget; then
-      wget -q -O "$tmp" "$url"
-    elif have curl; then
-      curl -fL --retry 3 --connect-timeout 20 --max-time 300 -o "$tmp" "$url"
-    else
-      exit 1
-    fi
-  ) || [ ! -s "$tmp" ]; then
-    rm -f "$tmp"
-    echo "Download failed: $url" >&2
+  if have uclient-fetch; then
+    uclient-fetch -q -O "$tmp" "$url"
+  elif have wget; then
+    wget -q -O "$tmp" "$url"
+  elif have curl; then
+    curl -fL --retry 3 --connect-timeout 20 --max-time 300 -o "$tmp" "$url"
+  else
+    echo 'No downloader available' >&2
     return 1
   fi
+  test -s "$tmp"
   mv -f "$tmp" "$dest"
 }
 
@@ -234,23 +211,23 @@ ensure_downloader || {
   exit 22
 }
 
-# ramips должен поддерживать ip -N, используемый при проверке правил.
-have_route_ip() {
-  have ip && { [ "$BACKEND_URL" != "$RAMIPS_BACKEND_URL" ] || ip -N -4 rule show >/dev/null 2>&1; }
-}
-
-if ! have_route_ip; then
+# Минимальные зависимости для TUN и маршрутизации. Ставим только если нужны.
+if ! have ip && have opkg; then
   log 'ip utility missing; trying to install ip-full'
-  install_packages ip-full || true
+  opkg update >/dev/null 2>&1 || true
+  opkg install ip-full >/dev/null 2>&1 || true
 fi
-if ! have_route_ip; then
-  echo 'A compatible ip utility is required for VPN routes (ip-full)' >&2
+if ! have ip; then
+  echo 'ip utility is required for VPN routes' >&2
   exit 24
 fi
 
 if [ ! -c /dev/net/tun ]; then
   log '/dev/net/tun missing; trying to install/load kmod-tun'
-  install_packages kmod-tun || true
+  if have opkg; then
+    opkg update >/dev/null 2>&1 || true
+    opkg install kmod-tun >/dev/null 2>&1 || true
+  fi
   have modprobe && modprobe tun >/dev/null 2>&1 || true
   if [ ! -e /dev/net/tun ] && have mknod; then
     mkdir -p /dev/net
@@ -263,9 +240,10 @@ if [ ! -c /dev/net/tun ]; then
   exit 25
 fi
 
-if ! have nohup; then
+if ! have nohup && have opkg; then
   log 'nohup missing; trying to install coreutils-nohup'
-  install_packages coreutils-nohup || true
+  opkg update >/dev/null 2>&1 || true
+  opkg install coreutils-nohup >/dev/null 2>&1 || true
 fi
 if ! have nohup; then
   echo 'nohup is required to keep backend running after SSH disconnect' >&2
@@ -283,23 +261,22 @@ LALUNE_SUDO_SHIM
 chmod +x "$COMPAT_BIN/sudo"
 
 # CA bundle нужен для GitHub HTTPS на минимальных OpenWRT образах.
-if [ ! -e /etc/ssl/certs/ca-certificates.crt ] && [ ! -e /etc/ssl/cert.pem ]; then
+if have opkg && [ ! -e /etc/ssl/certs/ca-certificates.crt ] && [ ! -e /etc/ssl/cert.pem ]; then
   log 'CA certificates missing; trying to install them'
-  install_packages ca-bundle ca-certificates || true
+  opkg update >/dev/null 2>&1 || true
+  opkg install ca-bundle ca-certificates >/dev/null 2>&1 || true
 fi
 
 log 'downloading LaLune OpenWRT backend'
 download "$BACKEND_URL" "$BACKEND_PATH"
 chmod +x "$BACKEND_PATH"
 
-if [ "$BACKEND_URL" != "$RAMIPS_BACKEND_URL" ]; then
-  if [ ! -s "$CORE_PATH" ]; then
-    log 'CSQTT core missing; downloading it'
-    download "$CORE_URL" "$CORE_PATH"
-    chmod +x "$CORE_PATH"
-  else
-    log 'CSQTT core already installed'
-  fi
+if [ ! -s "$CORE_PATH" ]; then
+  log 'CSQTT core missing; downloading it'
+  download "$CORE_URL" "$CORE_PATH"
+  chmod +x "$CORE_PATH"
+else
+  log 'CSQTT core already installed'
 fi
 
 # Останавливаем предыдущий экземпляр, если он был запущен нашим установщиком.

@@ -21,21 +21,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::bundled_cores::{self, Core};
-use crate::config::{parse_for_core, parse_link, ConfigItem};
+use crate::config::{parse_link, ConfigItem};
 use crate::core_manager::{self, CoreProcess};
 use crate::events::Event;
-use crate::state::AppState;
+use crate::state::{self, AppState};
 use crate::vk;
 use crate::vpn;
 
-use crate::core_logs::CORE_PREFIX;
+pub const CORE_PREFIX: &str = "[CORE] ";
 
 pub fn router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     Router::new()
-        .merge(crate::panel::router())
         .route("/ping", get(ping))
         .route("/version", get(version))
         .route("/events", get(sse_events))
@@ -110,7 +108,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "ok": true, "version": "0.6.0",
-        "os": "linux", "arch": std::env::consts::ARCH, "platform": "openwrt",
+        "os": "linux", "arch": "aarch64", "platform": "openwrt",
         "hostname": hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_default(),
         "uptime": state.uptime(),
     }))
@@ -190,10 +188,20 @@ struct ConfigCreateBody {
 }
 
 async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
-    let config = match config_from_body(body) {
-        Ok(config) => config,
-        Err(error) => return err(400, error.to_string()),
+    let protocol = body.protocol.unwrap_or_else(|| "CSQTT".to_string());
+    let mut config = if let Some(link) = body.link {
+        match parse_link(&link) { Ok(c) => c, Err(e) => return err(400, e.to_string()) }
+    } else {
+        ConfigItem {
+            id: 0, protocol,
+            peer: body.peer.unwrap_or_default(),
+            password: body.password.unwrap_or_default(),
+            hashes: body.hashes.unwrap_or_default(),
+            name: body.name.unwrap_or_default(),
+            raw_link: String::new(),
+        }
     };
+    if config.name.is_empty() { config.name = config.peer.clone(); }
     match state.configs.insert(&config) {
         Ok(id) => Json(json!({"id": id})).into_response(),
         Err(e) => err(500, e.to_string()),
@@ -201,69 +209,38 @@ async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<Con
 }
 
 async fn configs_update(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Json(body): Json<ConfigCreateBody>) -> impl IntoResponse {
-    let mut config = match config_from_body(body) {
-        Ok(config) => config,
-        Err(error) => return err(400, error.to_string()),
-    };
-    config.id = id;
-    match state.configs.update(id, &config) {
-        Ok(_) => {
-            let mut selected = state.selected_config.write();
-            if selected.as_ref().is_some_and(|current| current.id == id) {
-                *selected = Some(config);
-            }
-            Json(json!({"ok": true})).into_response()
+    let mut config = if let Some(link) = body.link {
+        match parse_link(&link) { Ok(c) => c, Err(e) => return err(400, e.to_string()) }
+    } else {
+        ConfigItem {
+            id: 0,
+            protocol: body.protocol.unwrap_or_else(|| "CSQTT".to_string()),
+            peer: body.peer.unwrap_or_default(),
+            password: body.password.unwrap_or_default(),
+            hashes: body.hashes.unwrap_or_default(),
+            name: body.name.unwrap_or_default(),
+            raw_link: String::new(),
         }
+    };
+    if config.name.is_empty() { config.name = config.peer.clone(); }
+    match state.configs.update(id, &config) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, e.to_string()),
     }
 }
 
-fn config_from_body(body: ConfigCreateBody) -> anyhow::Result<ConfigItem> {
-    let core = Core::supported(body.protocol.as_deref().unwrap_or("CSQTT"))
-        .ok_or_else(|| anyhow::anyhow!("Протокол не поддерживается этой сборкой"))?;
-    let mut config = if let Some(link) = body.link {
-        parse_for_core(&link, core)?
-    } else {
-        ConfigItem {
-            protocol: core.id().into(),
-            peer: body.peer.unwrap_or_default().trim().into(),
-            password: body.password.unwrap_or_default(),
-            hashes: body.hashes.unwrap_or_default(),
-            ..Default::default()
-        }
-    };
-    if config.peer.is_empty() { anyhow::bail!("Укажите адрес сервера"); }
-    if let Some(name) = body.name.filter(|name| !name.trim().is_empty()) {
-        config.name = name.trim().into();
-    }
-    if config.name.is_empty() { config.name = config.peer.clone(); }
-    Ok(config)
-}
-
 async fn configs_delete(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
     match state.configs.delete(id) {
-        Ok(_) => {
-            let mut selected = state.selected_config.write();
-            if selected.as_ref().is_some_and(|current| current.id == id) { *selected = None; }
-            Json(json!({"ok": true})).into_response()
-        }
+        Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(500, e.to_string()),
     }
 }
 
 #[derive(Deserialize)]
-struct ParseBody { link: String, protocol: Option<String> }
+struct ParseBody { link: String }
 
 async fn configs_parse(Json(body): Json<ParseBody>) -> impl IntoResponse {
-    let result = if let Some(protocol) = body.protocol {
-        let Some(core) = Core::supported(&protocol) else {
-            return err(400, "Протокол не поддерживается этой сборкой");
-        };
-        parse_for_core(&body.link, core)
-    } else {
-        parse_link(&body.link)
-    };
-    match result {
+    match parse_link(&body.link) {
         Ok(c) => Json(json!(c)).into_response(),
         Err(e) => err(400, e.to_string()),
     }
@@ -299,20 +276,18 @@ async fn settings_get(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn settings_for_proto(Path(proto): Path<String>) -> impl IntoResponse {
-    let Some(core) = Core::supported(&proto) else {
-        return err(404, "Протокол не поддерживается этой сборкой");
-    };
+    let _ = proto;
     Json(json!({
-        "protocol": core.id(),
+        "protocol": "CSQTT",
         "keys": [
             "peer", "vkHashes", "password", "workers", "autoApiWorkers",
             "authMode", "obfs", "fingerprint", "clientIds",
-            "captchaMode", "vkAuthMode", "turnTransport", "turnHost", "turnPort",
-            "allowHashRedistribution",
-            "shareVpn", "showCoreLogs", "enableSmartTunnel"
+            "captchaMode", "vkAuthMode", "turnTransport",
+            "allowHashRedistribution", "validateVkHashes",
+            "shareVpn", "desktopSocks5Mode", "validateTun", "showCoreLogs"
         ],
         "linkPlaceholder": "csqtt://connect?v=2&host=...&peer=...&password=...&hashes=h1+h2",
-    })).into_response()
+    }))
 }
 
 async fn settings_put(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> impl IntoResponse {
@@ -386,7 +361,7 @@ async fn device_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let hostname = hostname::get().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let cores = num_cpus::get();
     Json(json!({
-        "os": "linux", "arch": std::env::consts::ARCH, "platform": "openwrt",
+        "os": "linux", "arch": "aarch64", "platform": "openwrt",
         "hostname": hostname, "cores": cores, "totalMemMb": 0,
         "deviceId": state.settings.read().device_id,
     }))
@@ -403,32 +378,12 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
         state.selected_config.read().clone()
     };
     let config = match config { Some(c) => c, None => return err(400, "no config selected") };
-    let Some(kind) = Core::supported(&config.protocol) else {
-        return err(400, "Протокол не поддерживается этой сборкой");
-    };
-    if config.peer.trim().is_empty() || config.password.is_empty() {
-        return err(400, "Укажите адрес и пароль в профиле");
-    }
-    let settings = state.settings.read().clone();
-    let mut token = if matches!(settings.auth_mode.as_str(), "autoApi" | "autoVk") {
-        match vk::read_token(&state.app_dir) {
-            Some(token) => Some(token),
-            None => return err(400, "Импортируйте VK-токен для автоматического режима"),
-        }
-    } else {
-        None
-    };
 
     state.vpn.stop().await;
     finish_vpn(&state).await;
-    let _connecting = Connecting::new(&state.vpn.connecting);
-    state.log(format!("[VPN] connecting using {}", kind.id()));
+    state.log(format!("[VPN] connecting to {}", config.name));
 
-    let bundle_core = match bundled_cores::extract(kind).await {
-        Ok(core) => core,
-        Err(error) => return err(500, format!("Не удалось извлечь ядро: {error:#}")),
-    };
-    if bundle_core.is_none() && !state.core_path.exists() {
+    if !state.core_path.exists() {
         state.log("[VPN] core not found, downloading...");
         let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
         let version = match core_manager::fetch_latest(&client, &state.events).await {
@@ -439,36 +394,16 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
         }
     }
 
-    let mut runtime_config = config.clone();
-    let auto_calls = if settings.auth_mode == "autoApi" {
-        state.log("[VK] AutoAPI: запрашиваю хеши звонков");
-        match vk::ActiveCalls::start(
-            token.take().expect("AutoAPI token checked"), settings.workers, settings.auto_api_workers,
-        ).await {
-            Ok((calls, hashes)) => {
-                runtime_config.hashes = hashes;
-                Some(calls)
-            }
-            Err(vk::AutoApiError::InvalidToken) => return err(401, "VK-токен недействителен"),
-            Err(vk::AutoApiError::NoCalls) => return err(502, "AutoAPI не смог создать звонки"),
-            Err(vk::AutoApiError::Timeout) => return err(504, "AutoAPI: VK не ответил вовремя"),
-        }
-    } else {
-        None
-    };
-    let args = core_manager::build_args(&runtime_config, &settings, vpn::CORE_LISTEN_PORT);
-    let core_path = bundle_core.as_ref().map(|core| core.path()).unwrap_or(&state.core_path);
-    let core = match CoreProcess::spawn(core_path, &args, state.core_logs.clone(), state.events.clone(),
-        kind.password_env().then_some(runtime_config.password.as_str()), token.as_deref()).await {
+    let settings = state.settings.read().clone();
+    let args = core_manager::build_args(&config, &settings, vpn::CORE_LISTEN_PORT);
+    state.log(format!("[VPN] core args: {}", args.join(" ")));
+
+    let core = match CoreProcess::spawn(&state.core_path, &args, &state.logs_path, state.events.clone()).await {
         Ok(c) => c, Err(e) => return err(500, format!("spawn failed: {}", e)),
     };
-    drop(bundle_core);
     #[cfg(target_os = "linux")]
     state.vpn.core_uid.store(core.user.uid, std::sync::atomic::Ordering::Release);
-    let readiness = core.readiness();
     *state.core.lock() = Some(core);
-    *state.active_vk_calls.lock() = auto_calls;
-    *state.selected_config.write() = Some(config);
 
     if settings.share_vpn {
         match crate::socks5::start(state.clone()) {
@@ -484,14 +419,38 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     let state2 = state.clone();
     let watchdog = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let mut last_size = 0u64;
+        let mut tun_ip: Option<String> = None;
+        let mut tun_dns: Option<String> = None;
+        let mut consecutive_active_ticks: i32 = 0;
         let mut tun_started = false;
 
         while tokio::time::Instant::now() < deadline && !tun_started {
             if core_stopped(&state2) { break; }
 
-            let ready = readiness.lock().ready_params();
-            if let Some((ip, dns)) = ready {
+            if let Ok(meta) = tokio::fs::metadata(&state2.logs_path).await {
+                if meta.len() > last_size {
+                    if let Ok(content) = tokio::fs::read_to_string(&state2.logs_path).await {
+                        let start = (last_size as usize).min(content.len());
+                        let new_part = &content[start..];
+                        for line in new_part.lines() {
+                            if let Some((ip, dns)) = vpn::parse_tunconf(line) {
+                                tun_ip = Some(ip); tun_dns = Some(dns);
+                            }
+                            if let Some((active, _)) = vpn::parse_stats(line) {
+                                if active > 0 { consecutive_active_ticks += 1; }
+                                else { consecutive_active_ticks = 0; }
+                            }
+                        }
+                        last_size = meta.len();
+                    }
+                }
+            }
+
+            if consecutive_active_ticks >= 3 {
                 let _operation = state2.vpn.operation.lock().await;
+                let ip = tun_ip.clone().unwrap_or_else(|| vpn::DEFAULT_TUN_IP.to_string());
+                let dns = tun_dns.clone().unwrap_or_else(|| vpn::DEFAULT_DNS.to_string());
                 state2.log(format!("[VPN] TUN params: ip={} dns={}", ip, dns));
 
                 if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
@@ -526,21 +485,6 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
     Json(json!({"ok": true, "status": "connecting"})).into_response()
 }
 
-struct Connecting<'a>(&'a std::sync::atomic::AtomicBool);
-
-impl<'a> Connecting<'a> {
-    fn new(flag: &'a std::sync::atomic::AtomicBool) -> Self {
-        flag.store(true, std::sync::atomic::Ordering::Release);
-        Self(flag)
-    }
-}
-
-impl Drop for Connecting<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-
 fn core_stopped(state: &AppState) -> bool {
     let mut core = state.core.lock();
     match core.as_mut() {
@@ -554,7 +498,6 @@ async fn finish_vpn(state: &Arc<AppState>) {
     crate::socks5::stop(state);
     let core = { state.core.lock().take() };
     if let Some(mut core) = core { let _ = core.kill().await; }
-    state.stop_auto_api_calls().await;
     state.events.emit(Event::status(false));
     if let Some(lua) = state.lua() { lua.on_disconnect(); }
 }
@@ -569,10 +512,7 @@ async fn vpn_disconnect(State(state): State<Arc<AppState>>) -> impl IntoResponse
 
 async fn vpn_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cfg_id = state.selected_config.read().as_ref().map(|c| c.id).unwrap_or(0);
-    let mut s = state.vpn.status(cfg_id);
-    if !s.connected && (state.vpn.connecting.load(std::sync::atomic::Ordering::Acquire) || !core_stopped(&state)) {
-        s.state = "connecting".into();
-    }
+    let s = state.vpn.status(cfg_id);
     let socks5_port = *state.socks5_port.read();
     Json(json!({
         "state": s.state,
@@ -610,15 +550,12 @@ async fn vpn_tunconf(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match c { Some(c) => Json(json!(c)).into_response(), None => Json(json!({})).into_response() }
 }
 
-fn filter_logs(mut logs: Vec<String>, source: Option<&str>) -> Vec<String> {
-    if let Some(core) = match source {
-        Some("core") => Some(true),
-        Some("backend") => Some(false),
-        _ => None,
-    } {
-        logs.retain(|line| line.starts_with(CORE_PREFIX) == core);
+fn filter_logs(all: &[String], source: Option<&str>) -> Vec<String> {
+    match source {
+        Some("core") => all.iter().filter(|l| l.starts_with(CORE_PREFIX)).cloned().collect(),
+        Some("backend") => all.iter().filter(|l| !l.starts_with(CORE_PREFIX)).cloned().collect(),
+        _ => all.to_vec(),
     }
-    logs
 }
 
 #[derive(Deserialize)]
@@ -628,53 +565,37 @@ struct LogsQuery {
 }
 
 async fn logs_all(State(state): State<Arc<AppState>>, Query(q): Query<LogsQuery>) -> impl IntoResponse {
-    match state.log_history().await {
-        Ok(logs) => Json(filter_logs(logs, q.source.as_deref())).into_response(),
-        Err(e) => err(500, format!("cannot read log history: {e}")),
-    }
+    let logs = state.logs_snapshot();
+    let filtered = filter_logs(&logs, q.source.as_deref());
+    Json(json!(filtered))
 }
 
 async fn logs_tail(State(state): State<Arc<AppState>>, Query(q): Query<LogsQuery>) -> impl IntoResponse {
     let n = q.lines.unwrap_or(100);
-    let logs = match state.log_history().await {
-        Ok(logs) => logs,
-        Err(e) => return err(500, format!("cannot read log history: {e}")),
-    };
-    let filtered = filter_logs(logs, q.source.as_deref());
+    let logs = state.logs_snapshot();
+    let filtered = filter_logs(&logs, q.source.as_deref());
     let start = filtered.len().saturating_sub(n);
-    Json(&filtered[start..]).into_response()
+    Json(json!(filtered[start..].to_vec()))
 }
 
 async fn logs_clear(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.clear_log_history().await {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
-        Err(e) => err(500, format!("cannot clear log history: {e}")),
-    }
+    state.logs.lock().clear();
+    Json(json!({"ok": true}))
 }
 
 async fn logs_export(State(state): State<Arc<AppState>>, Query(q): Query<LogsQuery>) -> impl IntoResponse {
-    let logs = match state.log_history().await {
-        Ok(logs) => logs,
-        Err(e) => return err(500, format!("cannot read log history: {e}")),
-    };
-    let filtered = filter_logs(logs, q.source.as_deref());
+    let logs = state.logs_snapshot();
+    let filtered = filter_logs(&logs, q.source.as_deref());
     (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], filtered.join("\n"))
-        .into_response()
 }
 
 async fn core_version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() {
-        return Json(json!({"version": "bundled", "bundled": true}));
-    }
     let version = tokio::fs::read_to_string(state.app_dir.join("LATEST"))
         .await.unwrap_or_default().trim().to_string();
     Json(json!({"version": version}))
 }
 
 async fn core_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() {
-        return Json(json!({"version": "bundled", "bundled": true})).into_response();
-    }
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
     match core_manager::fetch_latest(&client, &state.events).await {
         Some(v) => Json(json!({"version": v})).into_response(),
@@ -683,9 +604,6 @@ async fn core_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn core_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() {
-        return Json(json!({"hasUpdate": false, "local": "bundled", "remote": "bundled", "bundled": true}));
-    }
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
     let remote = core_manager::fetch_latest(&client, &state.events).await.unwrap_or_default();
     let local = tokio::fs::read_to_string(state.app_dir.join("LATEST"))
@@ -695,7 +613,6 @@ async fn core_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() { return err(409, "Ядра обновляются вместе с backend"); }
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
 
@@ -720,7 +637,6 @@ async fn core_download_async(State(state): State<Arc<AppState>>) -> impl IntoRes
 }
 
 async fn core_download_sync(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() { return err(409, "Ядра обновляются вместе с backend"); }
     if *state.core_downloading.lock() { return err(409, "already downloading"); }
     *state.core_downloading.lock() = true;
     let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
@@ -739,9 +655,6 @@ async fn core_download_sync(State(state): State<Arc<AppState>>) -> impl IntoResp
 }
 
 async fn core_path(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() {
-        return Json(json!({"path": "", "bundled": true}));
-    }
     Json(json!({"path": state.core_path.to_string_lossy()}))
 }
 
@@ -750,9 +663,8 @@ async fn core_protocols() -> impl IntoResponse {
 }
 
 async fn core_delete(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if bundled_cores::available() { return err(409, "Нельзя удалить встроенное ядро"); }
     let _ = tokio::fs::remove_file(&state.core_path).await;
-    Json(json!({"ok": true})).into_response()
+    Json(json!({"ok": true}))
 }
 
 async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -791,11 +703,7 @@ async fn vk_login(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 struct VkSubmitBody { token: String }
 
 async fn vk_submit(State(state): State<Arc<AppState>>, Json(body): Json<VkSubmitBody>) -> impl IntoResponse {
-    let token = body.token.trim();
-    if token.is_empty() || token.len() > 4096 || token.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return err(400, "Некорректный VK-токен");
-    }
-    match vk::save_token(&state.app_dir, token) {
+    match vk::save_token(&state.app_dir, &body.token) {
         Ok(_) => { state.log("[VK] token saved via /vk/token/submit"); Json(json!({"ok": true})).into_response() }
         Err(e) => err(500, e.to_string()),
     }

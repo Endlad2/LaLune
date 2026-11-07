@@ -260,56 +260,6 @@ jobs:
           path: Backend/OpenWRT/output/lalune-openwrt-backend
           if-no-files-found: error
 
-  build-openwrt-ramips:
-    name: OpenWRT Backend (ramips)
-    needs: prepare-version
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-version.outputs.build_ref }}
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl zstd zip unzip cmake jq qemu-user
-
-      - name: Build ramips/mt7621 backend and bundled cores
-        working-directory: Backend/OpenWRT
-        run: bash build-ramips.sh
-
-      - name: Smoke-test the ramips backend under QEMU
-        working-directory: Backend/OpenWRT
-        run: |
-          set -euo pipefail
-          test_home=$(mktemp -d)
-          qemu-mipsel -cpu 24Kc -E HOME="$test_home" output/lalune-openwrt-backend-ramips >"$test_home/backend.log" 2>&1 &
-          backend_pid=$!
-          trap 'kill "$backend_pid" 2>/dev/null || true; wait "$backend_pid" || true; cat "$test_home/backend.log"; rm -rf "$test_home"' EXIT
-          for attempt in {1..30}; do
-            if curl -fsS -o "$test_home/ping.json" http://127.0.0.1:1062/ping; then
-              break
-            fi
-            kill -0 "$backend_pid"
-            sleep 1
-          done
-          jq -e '.ok and .platform == "openwrt" and .arch == "mips"' "$test_home/ping.json"
-          curl -fsS http://127.0.0.1:1062/core/protocols | jq -e \
-            'all(.[]; .bundled == true) and (map(.id) | sort == ["CSQTT", "CSQTT 2.1.9", "CSQTTR"])'
-          test "$(curl -fsS -o "$test_home/panel.html" -w '%{http_code}' http://127.0.0.1:1062/panel)" = 200
-          grep -F 'href="/panel/panel.css"' "$test_home/panel.html"
-          grep -F 'src="/panel/panel.js"' "$test_home/panel.html"
-          curl -fsS -o /dev/null http://127.0.0.1:1062/panel/panel.css
-          curl -fsS -o /dev/null http://127.0.0.1:1062/panel/panel.js
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Output-OpenWRT-Ramips
-          path: Backend/OpenWRT/output/lalune-openwrt-backend-ramips
-          if-no-files-found: error
-          compression-level: 0
-
   # ============================================================
   #  Android APK
   # ============================================================
@@ -642,7 +592,6 @@ jobs:
       - build-desktop-linux
       - build-desktop-windows
       - build-desktop-openwrt
-      - build-openwrt-ramips
       - build-android
       - build-token-fetcher
     runs-on: ubuntu-latest
@@ -676,11 +625,6 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: Output-OpenWRT-Ramips
-          path: release/openwrt-ramips
-
-      - uses: actions/download-artifact@v4
-        with:
           name: LaLuneTokenFetcher-Windows
           path: release/token-fetcher-windows
 
@@ -700,7 +644,6 @@ jobs:
           cp release/linux/LaLune-Linux.zip release/assets/
           cp release/linux/Backend-Linux.zip release/assets/
           cp release/openwrt/lalune-openwrt-backend release/assets/
-          cp release/openwrt-ramips/lalune-openwrt-backend-ramips release/assets/
           cp release/android/LaLune-Android.apk release/assets/
           cp release/token-fetcher-windows/LaLuneTokenFetcher_Windows.zip release/assets/
           cp release/token-fetcher-linux/LaLuneTokenFetcher_Linux.zip release/assets/
@@ -761,7 +704,6 @@ jobs:
             release/assets/LaLune-Linux.zip
             release/assets/Backend-Linux.zip
             release/assets/lalune-openwrt-backend
-            release/assets/lalune-openwrt-backend-ramips
             release/assets/LaLune-Android.apk
             release/assets/LaLuneTokenFetcher_Windows.zip
             release/assets/LaLuneTokenFetcher_Linux.zip

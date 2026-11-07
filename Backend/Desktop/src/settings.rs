@@ -67,6 +67,8 @@ pub struct Settings {
     /// Desktop-only: expose a SOCKS5 endpoint backed by the CSQTT/CSQTTR raw-IP UDP tunnel.
     #[serde(rename = "desktopSocks5Mode")]
     pub desktop_socks5_mode: bool,
+    /// Experimental: validate the freshly-created TUN with real HTTPS requests and rebuild it on failure.
+    pub validate_tun: bool,
 
     // -------- Split tunneling (Desktop) --------
     /// blacklist: listed IPv4/CIDR destinations bypass VPN.
@@ -125,6 +127,7 @@ impl Default for Settings {
             show_core_logs: false,
             share_vpn: false,
             desktop_socks5_mode: false,
+            validate_tun: false,
             ip_routing_mode: "blacklist".into(),
             ip_routing_ips: String::new(),
         }

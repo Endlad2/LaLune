@@ -876,6 +876,7 @@ class Backend(private val context: Context) {
         put("enableSmartTunnel", false)
         put("showCoreLogs", false)
         put("shareVpn", false)
+        put("validateTun", false)
     }
 
     private fun loadSettings(): JSONObject = try {

@@ -1,9 +1,6 @@
 # openwrt.sh — установщик LaLune для OpenWRT
 
-Ставит backend LaLune и запускает его в фоне. Для ARM64 скачивается
-отдельное ядро CSQTT. Для `ramips/mt7621` (`mipsel_24kc`) выбирается
-`lalune-openwrt-backend-ramips` с тремя встроенными ядрами.
-Панель доступна в доверенной LAN по `http://<IP роутера>:1062/panel`.
+Ставит на роутер ядро CSQTT и backend LaLune, запускает backend в фоне.
 
 ## Что делает
 
@@ -79,7 +76,7 @@ curl http://127.0.0.1:1062/ping
 | −`~/.la-lune/LaLuneManager.log` | stdout/stderr backend |
 | −`~/.la-lune/settings.json` | настройки (создаёт backend) |
 | −`~/.la-lune/configs.db` | SQLite-конфиги (создаёт backend) |
-| −`~/.la-lune/logs.log.gz`, `logs.log.1.gz` | ограниченная история backend и ядра |
+| −`~/.la-lune/logs.log` | логи ядра (пишет ядро) |
 ⚙
 
 ## Автозапуск при загрузке роутера
@@ -128,8 +125,7 @@ chmod +x /etc/init.d/lalune
 - `curl` или `wget` в PATH (на OpenWRT обычно есть `wget` через busybox).
 - `setsid` желателен (в busybox есть) — но не обязателен.
 - `kill`, `sleep` — busybox.
-- Архитектура роутера — **aarch64** (armsr/armv8) или **ramips/mt7621**
-  с ABI **mipsel_24kc**. Для других архитектур
+- Архитектура роутера — **aarch64** (armsr/armv8). Для других архитектур
 надо менять URL'ы в `CORE_URL` и `BACKEND_URL`.
 
 ## Troubleshooting
