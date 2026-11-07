@@ -1,6 +1,6 @@
 [package]
 name = "lalune-installer"
-version = "0.6.0"
+version = "0.9.11"
 edition = "2021"
 description = "LaLune GUI Installer for Windows"
 license = "PolyForm-Noncommercial-1.0.0"

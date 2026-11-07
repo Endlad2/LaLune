@@ -44,7 +44,7 @@ class Backend(private val context: Context) {
         const val TAG = "LaLune-Backend"
         const val PORT = 1062
         const val HOST = "127.0.0.1"
-        const val VERSION = "0.6.0"
+        const val VERSION = "0.9.11"
 
         const val DEFAULT_WORKERS = 9
         const val MIN_WORKERS = 1
