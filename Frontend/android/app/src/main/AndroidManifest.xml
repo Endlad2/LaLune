@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    android:versionCode="9010"
+    android:versionName="0.9.10"
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Сеть -->
