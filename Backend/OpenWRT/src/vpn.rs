@@ -7,7 +7,11 @@
 
 use anyhow::Result;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -63,6 +67,7 @@ pub struct TunConf {
 
 pub struct VpnRuntime {
     pub running: Arc<AtomicBool>,
+    pub connecting: AtomicBool,
     pub rx_bytes: Arc<AtomicU64>,
     pub tx_bytes: Arc<AtomicU64>,
     pub started_at: Arc<Mutex<Option<Instant>>>,
@@ -77,6 +82,7 @@ impl VpnRuntime {
     pub fn new() -> Self {
         Self {
             running: Arc::new(AtomicBool::new(false)),
+            connecting: AtomicBool::new(false),
             rx_bytes: Arc::new(AtomicU64::new(0)),
             tx_bytes: Arc::new(AtomicU64::new(0)),
             started_at: Arc::new(Mutex::new(None)),

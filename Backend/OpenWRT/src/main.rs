@@ -9,16 +9,22 @@
 //   * csqtt-link как библиотека для парсинга csqtt:// ссылок.
 
 mod api;
+mod bundled_cores;
 mod config;
+mod core_logs;
 mod core_manager;
 mod csqtt_link_bridge;
 mod events;
 mod lua_runtime;
+mod panel;
 mod settings;
 mod socks5;
 mod state;
 mod vk;
 mod vpn;
+
+#[cfg(test)]
+mod api_tests;
 
 #[path = "../../linux_core.rs"]
 mod linux_core;
@@ -44,6 +50,15 @@ async fn main() -> Result<()> {
     log::info!("LaLune OpenWRT backend starting...");
 
     let state = Arc::new(AppState::new().await?);
+    let log_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            log_state.flush_log_history().await;
+        }
+    });
 
     // Инициализируем Lua-рантайм (SmartTunnel + csqtt_decode).
     if let Err(e) = state.init_lua() {

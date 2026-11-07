@@ -1,15 +1,16 @@
 #!/bin/sh
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
-# openwrt.sh — установщик LaLune для OpenWRT (CSQTT + PaperFlux).
+# openwrt.sh — установщик LaLune для OpenWRT (ARM64 и ramips/mt7621).
 
 set -e
 
 CSQTT_URL="https://github.com/Endlad2/csqtt-core/releases/latest/download/client-linux-arm64"
 PAPERFLUX_URL="https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-linux-arm64"
 BACKEND_URL="https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend"
+RAMIPS_BACKEND_URL="https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend-ramips"
 
-CSQTT_NAME="csqtt-core"
+CSQTT_NAME="csqtt-client-aarch64"
 PAPERFLUX_NAME="paperflux-core"
 BACKEND_NAME="lalune-openwrt-backend"
 
@@ -36,19 +37,34 @@ warn() { printf "[openwrt][WARN] %s\n" "$*" >&2; }
 fail() { printf "[openwrt][ERROR] %s\n" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+install_ramips_package() {
+    if have apk; then
+        apk add "$1"
+    elif have opkg; then
+        opkg update && opkg install "$1"
+    else
+        return 1
+    fi
+}
+
 download() {
     url="$1"; dest="$2"; tmp="${dest}.part"
     rm -f "$tmp"
     log "download: $url"
-    if have curl; then
-        curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 -o "$tmp" "$url" \
-            || fail "curl failed: $url"
-    elif have wget; then
-        wget -O "$tmp" "$url" || fail "wget failed: $url"
-    else
-        fail "нужен curl или wget"
+    if ! (
+        if have curl; then
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 -o "$tmp" "$url"
+        elif have wget; then
+            wget -O "$tmp" "$url"
+        elif have uclient-fetch; then
+            uclient-fetch -O "$tmp" "$url"
+        else
+            fail "нужен curl, wget или uclient-fetch"
+        fi
+    ) || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        fail "не удалось скачать $url"
     fi
-    [ -s "$tmp" ] || { rm -f "$tmp"; fail "пустой файл: $url"; }
     mv -f "$tmp" "$dest"
 }
 
@@ -84,29 +100,58 @@ case "$MODE" in
         exit 0 ;;
 esac
 
+arch="$(uname -m)"
+case "$arch" in
+    aarch64|arm64) ;;
+    mips|mipsel)
+        unset DISTRIB_TARGET DISTRIB_ARCH
+        [ -r /etc/openwrt_release ] && . /etc/openwrt_release
+        [ "${DISTRIB_TARGET:-}" = ramips/mt7621 ] && [ "${DISTRIB_ARCH:-}" = mipsel_24kc ] \
+            || fail "Нужен OpenWrt ramips/mt7621 (mipsel_24kc), обнаружено: ${DISTRIB_TARGET:-?} (${DISTRIB_ARCH:-?})"
+        BACKEND_URL="$RAMIPS_BACKEND_URL"
+        ;;
+    *) fail "Неподдерживаемая архитектура: $arch (ARM64 или ramips/mt7621)" ;;
+esac
+
 log "app dir: $APP_DIR"
 mkdir -p "$APP_DIR"
 
-# CSQTT
-if [ -s "$CSQTT_PATH" ] && [ "$FORCE" -eq 0 ]; then
-    log "csqtt уже есть: $CSQTT_PATH"
+if [ "$BACKEND_URL" = "$RAMIPS_BACKEND_URL" ]; then
+    if ! ip -N -4 rule show >/dev/null 2>&1; then
+        install_ramips_package ip-full || true
+        ip -N -4 rule show >/dev/null 2>&1 || fail "установите ip-full для маршрутизации"
+    fi
+    if [ ! -c /dev/net/tun ]; then
+        install_ramips_package kmod-tun || true
+        have modprobe && modprobe tun || true
+        [ -c /dev/net/tun ] || fail "установите kmod-tun для вашей версии OpenWrt"
+    fi
+    if ! have nohup; then
+        install_ramips_package coreutils-nohup || true
+        have nohup || fail "установите coreutils-nohup"
+    fi
 else
-    download "$CSQTT_URL" "$CSQTT_PATH"
-    chmod +x "$CSQTT_PATH"
-    log "csqtt установлен: $CSQTT_PATH"
+    # CSQTT
+    if [ -s "$CSQTT_PATH" ] && [ "$FORCE" -eq 0 ]; then
+        log "csqtt уже есть: $CSQTT_PATH"
+    else
+        download "$CSQTT_URL" "$CSQTT_PATH"
+        chmod +x "$CSQTT_PATH"
+        log "csqtt установлен: $CSQTT_PATH"
+    fi
+
+    # PaperFlux
+    if [ -s "$PAPERFLUX_PATH" ] && [ "$FORCE" -eq 0 ]; then
+        log "paperflux уже есть: $PAPERFLUX_PATH"
+    else
+        download "$PAPERFLUX_URL" "$PAPERFLUX_PATH"
+        chmod +x "$PAPERFLUX_PATH"
+        log "paperflux установлен: $PAPERFLUX_PATH"
+    fi
 fi
 
-# PaperFlux
-if [ -s "$PAPERFLUX_PATH" ] && [ "$FORCE" -eq 0 ]; then
-    log "paperflux уже есть: $PAPERFLUX_PATH"
-else
-    download "$PAPERFLUX_URL" "$PAPERFLUX_PATH"
-    chmod +x "$PAPERFLUX_PATH"
-    log "paperflux установлен: $PAPERFLUX_PATH"
-fi
-
-# Backend
-if [ -s "$BACKEND_PATH" ] && [ "$FORCE" -eq 0 ]; then
+# Старый установщик мог сохранить ARM64 backend на ramips под этим именем.
+if [ "$BACKEND_URL" != "$RAMIPS_BACKEND_URL" ] && [ -s "$BACKEND_PATH" ] && [ "$FORCE" -eq 0 ]; then
     log "backend уже есть: $BACKEND_PATH"
 else
     download "$BACKEND_URL" "$BACKEND_PATH"
