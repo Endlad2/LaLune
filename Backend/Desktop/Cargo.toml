@@ -1,6 +1,6 @@
 [package]
 name = "lalune-backend"
-version = "0.9.10"
+version = "0.6.0"
 edition = "2021"
 description = "LaLune backend daemon for Windows/Linux (axum + tun/wintun)"
 license = "PolyForm-Noncommercial-1.0.0"

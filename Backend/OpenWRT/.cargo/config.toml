@@ -1,5 +1,5 @@
-# Этот файл перезаписывается build.sh при каждом запуске.
-# Оставлен для справки — что нужно указать для кросс-компиляции.
+# Linker defaults for manual ARM64 OpenWRT cross-builds. build.sh exports
+# the same target linker/ar environment from the downloaded OpenWRT SDK.
 
 [target.aarch64-unknown-linux-musl]
 linker = "aarch64-openwrt-linux-musl-gcc"

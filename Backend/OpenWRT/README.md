@@ -1,117 +1,86 @@
 # LaLune Backend — OpenWRT
 
-Backend для OpenWrt: ARM64 (`armsr/armv8`) и `ramips/mt7621` (`mipsel_24kc`).
+Backend для OpenWrt ARM64 (`armsr/armv8`) и `ramips/mt7621` (`mipsel_24kc`).
+Обе release-сборки содержат внутри backend одинаковый набор из трёх ядер:
+**CSQTT**, **CSQTTR** и **CSQTT 2.1.9**. Отдельно скачивать core на роутер не нужно.
 
-## Панель и AutoAPI
+## Сборка
 
-Откройте `http://<IP роутера>:1062/panel` из доверенной локальной сети.
-Панель встроена в backend и не загружает ресурсы из Интернета. В ней можно
-добавить или изменить профиль, выбрать ядро, подключить VPN, сохранить настройки
-и смотреть журнал. Используется тот же API и то же хранилище, что в LaLune.
-Порт 1062 не следует публиковать в WAN: существующий API рассчитан на доверенную LAN.
+ARM64:
 
-Для AutoAPI импортируйте JSON с полем `Token` или `token`, выберите «Авто API»,
-сохраните настройки и подключите профиль. Токен хранится на роутере в
-`token.json` с правами `0600`. Backend получает хеши звонков при подключении
-и закрывает известные звонки этой сессии при остановке. Токен не возвращается
-через панель. При AutoVK он передаётся ядру через stdin.
-Проверка хешей отдельной командой ядра в панели не предлагается: эта команда
-завершает процесс после проверки и не запускает VPN.
-
-История backend и ядра хранится в `logs.log.gz` и `logs.log.1.gz`: суммарно
-до 130 КиБ, плюс небольшая очередь в памяти. Старый `logs.log` переносится
-с сохранением последних строк. Показ, экспорт и очистка логов идут через API;
-очистка истории не сбрасывает готовность запущенного ядра.
-
-## Отличия от Desktop
-
-| Параметр ↕▾ | Desktop ↕▾ | OpenWRT ↕▾ |
-|---|---|---|
-| −Bind | `127.0.0.1:1062` | **`0.0.0.0:1062`** (LAN-доступ) |
-| −Ядро | `client-linux-x86_64` | ARM: `csqtt-client-aarch64`; ramips: три встроенных ядра |
-| −Сборка | нативный `cargo build` | OpenWrt SDK 25.12.5 для целевой архитектуры |
-| −Директория | `~/.la-lune/` | `~/.la-lune/` |
-| −Запуск | Desktop runner | вручную / init.d скрипт |
-⚙
-
-## Сборка через OpenWRT SDK
-
-SDK скачивается автоматически скриптом `build.sh`:
-
-```
+```sh
 cd Backend/OpenWRT
 ./build.sh
 ```
 
-Скрипт:
+`build.sh` скачивает официальный OpenWrt SDK 25.12.5 для `armsr/armv8`,
+проверяет SHA256, собирает из зафиксированных исходников `csqtt-core`,
+`csqttr-core` и legacy CSQTT 2.1.9, упаковывает их в `openwrt-cores.zip`,
+передаёт ZIP в `build.rs` и собирает backend под
+`aarch64-unknown-linux-musl`.
 
-1. Скачивает `openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst` с `downloads.openwrt.org`.
-2. Проверяет SHA256 (`1b0316604a3e820b2b008a1baff3f9dac6716af942bef800930e58c7de98c98b`).
-3. Распаковывает в `.cache/openwrt-sdk/`.
-4. Настраивает `CARGO_HOME`, `RUSTUP_HOME`, toolchain.
-5. Собирает бинарник под `aarch64-unknown-linux-musl`.
-6. Кладёт результат в `Backend/OpenWRT/output/lalune-openwrt-backend`.
+Результаты:
 
-Для ramips запустите `bash Backend/OpenWRT/build-ramips.sh` на Linux x86_64.
-В CI за это отвечает отдельная задача **OpenWRT Backend (ramips)**.
-Она проверяет SHA256 SDK и трёх исходных архивов, собирает ядра CSQTT, CSQTTR
-и CSQTT 2.1.9 (коммит `eda00fce6343430b40413da01791946dccb9c6ff`),
-проверяет ABI ELF, упаковывает ядра через `zip -9` и включает ZIP в
-`lalune-openwrt-backend-ramips`. При подключении извлекается только выбранное
-ядро. Встроенные ядра обновляются вместе с backend. PaperFlux в этой сборке нет.
+- `output/lalune-openwrt-backend` — ARM64 backend со встроенным ZIP ядер;
+- `output/lalune-openwrt-cores-aarch64.zip` — копия ZIP для проверки CI.
 
-## Установка на роутер
+ramips/mt7621:
 
-Запускайте backend от `root`: ему нужны TUN, изменение маршрутов и запуск CSQTT под отдельным UID. На роутере должны быть `kmod-tun` и `ip-full` с поддержкой `ip rule uidrange`; облегчённого `ip` недостаточно. UI-установщик при необходимости пытается подготовить TUN, `ip` и CA/download-инструменты.
-
-Требования к policy routing, восстановление DNS, ограничения IPv4 и воспроизводимые проверки описаны в [инструкции проверки Linux TUN](../tests/README.md).
-
-```
-# На роутере
-mkdir -p ~/la-lune ~/.la-lune
-wget -O ~/la-lune/lalune-openwrt-backend \
-  https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend
-chmod +x ~/la-lune/lalune-openwrt-backend
-
-# Ядро нужно только если его ещё нет.
-wget -O ~/.la-lune/csqtt-client-aarch64 \
-  https://github.com/Endlad2/csqtt-core/releases/latest/download/client-linux-arm64
-chmod +x ~/.la-lune/csqtt-client-aarch64
-
-# На Linux Wintun не нужен.
-nohup ~/la-lune/lalune-openwrt-backend > ~/.la-lune/LaLuneManager.log 2>&1 &
-
-# Проверить
-curl http://192.168.1.1:1062/ping
+```sh
+cd Backend/OpenWRT
+./build-ramips.sh
 ```
 
-## Файлы данных
+Скрипт делает то же самое для `mipsel-unknown-linux-musl` и создаёт:
 
-Всё в `~/.la-lune/`:
+- `output/lalune-openwrt-backend-ramips`;
+- `output/lalune-openwrt-cores-ramips.zip`.
 
+При подключении backend извлекает во временный файл только выбранное ядро.
+`GET /core/protocols` сообщает все три протокола как доступные в обеих
+OpenWRT release-сборках. PaperFlux в OpenWRT-сборку не входит.
+
+## TUN и маршрутизация
+
+OpenWRT backend должен запускаться от root. При VPN он создаёт отдельный TUN
+`lalune0`. Системный default route напрямую не заменяется: backend создаёт
+policy table `10620`, помечает основной IPv4-трафик через `iptables`/`MARK`
+(`0x1062/0xffff`) в `OUTPUT` и `PREROUTING` и направляет помеченные пакеты в
+`lalune0`. Для TUN применяется `MASQUERADE`.
+
+Процесс выбранного CSQTT-core запускается под отдельным UID. Для этого UID
+ставится более приоритетное `ip rule ... lookup main`, поэтому транспорт самого
+core не зацикливается обратно в VPN. Локальные/private/multicast IPv4-сети не
+маркируются. Входящий WAN-трафик также не перенаправляется в TUN.
+
+На firewall4 backend временно добавляет accept-правила в `inet fw4/forward` для
+`lalune0`/VPN mark и удаляет их при disconnect. Для старого firewall3 остаются
+совместимые `iptables FORWARD` rules.
+
+Требования runtime: `/dev/net/tun`, `ip-full`, `iptables`/`iptables-nft` и
+`nohup`. Установщики пытаются поставить недостающие пакеты автоматически.
+
+## Установка
+
+```sh
+wget -O - https://raw.githubusercontent.com/Endlad2/LaLune/main/Installer/openwrt.sh | sh
 ```
-~/.la-lune/
-├── configs.db
-├── settings.json
-├── token.json
-├── logs.log.gz
-├── logs.log.1.gz
-├── LATEST
-└── csqtt-client-aarch64     ← ядро
+
+Установщик сам выбирает ARM64 или ramips backend и сохраняет его как
+`~/.la-lune/lalune-openwrt-backend`. Три core уже находятся внутри бинарника.
+Backend слушает `0.0.0.0:1062`; не публикуйте этот порт в WAN.
+
+Проверка:
+
+```sh
+curl http://127.0.0.1:1062/ping
+curl http://127.0.0.1:1062/core/protocols
 ```
 
-## API
+Панель: `http://<IP роутера>:1062/panel`.
 
-Основные маршруты описаны в [Backend/API.md](../API.md). Список доступных
-протоколов возвращает `GET /core/protocols`; он зависит от сборки backend.
+## Данные
 
-## Что нужно доработать в UI
-
-- Кнопка **«Подключить OpenWRT»** в Настройках → Экспериментальное.
-- Скан `192.168.X.1:1062` (X=0..255).
-- Ручной ввод IP.
-- Список роутеров.
-- При подключении — UI переключает все запросы с `127.0.0.1:1062` на `IP_роутера:1062`.
-- Глобальный зелёный баннер сверху.
-
-См. `Frontend/lib/state/router_notifier.dart` и `Frontend/lib/api/api_client.dart`.
+Backend использует `~/.la-lune/` для `configs.db`, `settings.json`, `token.json`,
+логов и PID-файла установщика. Встроенные core извлекаются только на время
+запуска и не требуют постоянного файла `csqtt-client-aarch64`.

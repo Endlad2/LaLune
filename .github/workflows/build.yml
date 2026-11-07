@@ -243,21 +243,40 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            curl zstd
-      - name: Build OpenWRT backend
+          sudo apt-get install -y --no-install-recommends \
+            curl zstd zip unzip cmake jq qemu-user binutils
+      - name: Build OpenWRT backend + bundled cores
         working-directory: Backend/OpenWRT
         run: |
           chmod +x build.sh
           ./build.sh
-      - name: Verify binary
+      - name: Verify binary and bundled protocols under QEMU
+        working-directory: Backend/OpenWRT
         run: |
-          ls -la Backend/OpenWRT/output/
-          file Backend/OpenWRT/output/lalune-openwrt-backend || true
+          set -euo pipefail
+          ls -la output/
+          file output/lalune-openwrt-backend
+          unzip -t output/lalune-openwrt-cores-aarch64.zip
+          test_home=$(mktemp -d)
+          qemu-aarch64 -E HOME="$test_home" output/lalune-openwrt-backend >"$test_home/backend.log" 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true; wait "$backend_pid" || true; cat "$test_home/backend.log"; rm -rf "$test_home"' EXIT
+          for attempt in {1..30}; do
+            if curl -fsS -o "$test_home/ping.json" http://127.0.0.1:1062/ping; then
+              break
+            fi
+            kill -0 "$backend_pid"
+            sleep 1
+          done
+          jq -e '.ok and .platform == "openwrt" and .arch == "aarch64"' "$test_home/ping.json"
+          curl -fsS http://127.0.0.1:1062/core/protocols | jq -e \
+            'all(.[]; .bundled == true) and (map(.id) | sort == ["CSQTT", "CSQTT 2.1.9", "CSQTTR"])'
       - uses: actions/upload-artifact@v4
         with:
           name: Output-OpenWRT
-          path: Backend/OpenWRT/output/lalune-openwrt-backend
+          path: |
+            Backend/OpenWRT/output/lalune-openwrt-backend
+            Backend/OpenWRT/output/lalune-openwrt-cores-aarch64.zip
           if-no-files-found: error
 
   build-openwrt-ramips:
@@ -306,7 +325,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Output-OpenWRT-Ramips
-          path: Backend/OpenWRT/output/lalune-openwrt-backend-ramips
+          path: |
+            Backend/OpenWRT/output/lalune-openwrt-backend-ramips
+            Backend/OpenWRT/output/lalune-openwrt-cores-ramips.zip
           if-no-files-found: error
           compression-level: 0
 
@@ -700,7 +721,9 @@ jobs:
           cp release/linux/LaLune-Linux.zip release/assets/
           cp release/linux/Backend-Linux.zip release/assets/
           cp release/openwrt/lalune-openwrt-backend release/assets/
+          cp release/openwrt/lalune-openwrt-cores-aarch64.zip release/assets/
           cp release/openwrt-ramips/lalune-openwrt-backend-ramips release/assets/
+          cp release/openwrt-ramips/lalune-openwrt-cores-ramips.zip release/assets/
           cp release/android/LaLune-Android.apk release/assets/
           cp release/token-fetcher-windows/LaLuneTokenFetcher_Windows.zip release/assets/
           cp release/token-fetcher-linux/LaLuneTokenFetcher_Linux.zip release/assets/
@@ -761,7 +784,9 @@ jobs:
             release/assets/LaLune-Linux.zip
             release/assets/Backend-Linux.zip
             release/assets/lalune-openwrt-backend
+            release/assets/lalune-openwrt-cores-aarch64.zip
             release/assets/lalune-openwrt-backend-ramips
+            release/assets/lalune-openwrt-cores-ramips.zip
             release/assets/LaLune-Android.apk
             release/assets/LaLuneTokenFetcher_Windows.zip
             release/assets/LaLuneTokenFetcher_Linux.zip

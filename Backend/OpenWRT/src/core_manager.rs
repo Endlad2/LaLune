@@ -2,8 +2,7 @@
 //
 // Ядро CSQTT на OpenWRT.
 //
-// Отличие от Desktop: имя бинарника фиксировано —
-// ~/.la-lune/csqtt-client-aarch64
+// Fallback для dev-сборок без bundle: ~/.la-lune/csqtt-client-aarch64
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -36,7 +35,7 @@ pub fn core_asset_name() -> &'static str {
     "client-linux-arm64"
 }
 
-/// На ARM ядро скачивается отдельно; ramips содержит три ядра.
+/// Release-сборки ARM64 и ramips содержат одинаковые три встроенных ядра.
 pub fn supported_protocols() -> Vec<serde_json::Value> {
     use crate::bundled_cores::{available, Core};
     let bundled = available();

@@ -25,8 +25,6 @@ class OpenWrtInstaller {
       'https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend';
   static const ramipsBackendUrl =
       'https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend-ramips';
-  static const coreUrl =
-      'https://github.com/Endlad2/csqtt-core/releases/latest/download/client-linux-arm64';
 
   static const _algorithms = SSHAlgorithms(
     kex: [
@@ -90,8 +88,7 @@ class OpenWrtInstaller {
       onProgress?.call('Установка backend и зависимостей...');
       final script = _installScript
           .replaceAll('__BACKEND_URL__', backendUrl)
-          .replaceAll('__RAMIPS_BACKEND_URL__', ramipsBackendUrl)
-          .replaceAll('__CORE_URL__', coreUrl);
+          .replaceAll('__RAMIPS_BACKEND_URL__', ramipsBackendUrl);
       final result = await client.runWithResult(script);
       final stdout = utf8.decode(result.stdout, allowMalformed: true);
       final stderr = utf8.decode(result.stderr, allowMalformed: true);
@@ -149,11 +146,9 @@ set -eu
 
 BACKEND_URL="__BACKEND_URL__"
 RAMIPS_BACKEND_URL="__RAMIPS_BACKEND_URL__"
-CORE_URL="__CORE_URL__"
 INSTALL_DIR="$HOME/la-lune"
 DATA_DIR="$HOME/.la-lune"
 BACKEND_PATH="$INSTALL_DIR/lalune-openwrt-backend"
-CORE_PATH="$DATA_DIR/csqtt-client-aarch64"
 PID_FILE="$DATA_DIR/backend.pid"
 LOG_FILE="$DATA_DIR/LaLuneManager.log"
 
@@ -186,7 +181,7 @@ fi
 mkdir -p "$INSTALL_DIR" "$DATA_DIR"
 
 install_packages() {
-  if [ "$BACKEND_URL" = "$RAMIPS_BACKEND_URL" ] && have apk; then
+  if have apk; then
     apk add "$@" >/dev/null 2>&1
   elif have opkg; then
     opkg update >/dev/null 2>&1 || true
@@ -234,9 +229,9 @@ ensure_downloader || {
   exit 22
 }
 
-# ramips должен поддерживать ip -N, используемый при проверке правил.
+# Для iptables/fwmark policy routing нужен полный iproute2 на обеих архитектурах.
 have_route_ip() {
-  have ip && { [ "$BACKEND_URL" != "$RAMIPS_BACKEND_URL" ] || ip -N -4 rule show >/dev/null 2>&1; }
+  have ip && ip -N -4 rule show >/dev/null 2>&1
 }
 
 if ! have_route_ip; then
@@ -246,6 +241,15 @@ fi
 if ! have_route_ip; then
   echo 'A compatible ip utility is required for VPN routes (ip-full)' >&2
   exit 24
+fi
+
+if ! have iptables && ! have iptables-nft; then
+  log 'iptables missing; trying to install iptables-nft'
+  install_packages iptables-nft || install_packages iptables || true
+fi
+if ! have iptables && ! have iptables-nft; then
+  echo 'iptables-nft is required for VPN mangle/MARK and NAT/MASQUERADE' >&2
+  exit 27
 fi
 
 if [ ! -c /dev/net/tun ]; then
@@ -292,15 +296,7 @@ log 'downloading LaLune OpenWRT backend'
 download "$BACKEND_URL" "$BACKEND_PATH"
 chmod +x "$BACKEND_PATH"
 
-if [ "$BACKEND_URL" != "$RAMIPS_BACKEND_URL" ]; then
-  if [ ! -s "$CORE_PATH" ]; then
-    log 'CSQTT core missing; downloading it'
-    download "$CORE_URL" "$CORE_PATH"
-    chmod +x "$CORE_PATH"
-  else
-    log 'CSQTT core already installed'
-  fi
-fi
+log 'backend contains bundled CSQTT / CSQTTR / CSQTT 2.1.9 cores'
 
 # Останавливаем предыдущий экземпляр, если он был запущен нашим установщиком.
 if [ -f "$PID_FILE" ]; then

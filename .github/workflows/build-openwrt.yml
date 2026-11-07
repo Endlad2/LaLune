@@ -1,67 +1,55 @@
-name: Build OpenWRT
+name: Build OpenWRT ARM64
 
 on:
   push:
-    branches:
-      - main
-      - release
+    branches: [main, release]
     paths:
-      - 'OpenWRT/**'
+      - 'Backend/OpenWRT/**'
+      - 'Backend/linux_core.rs'
+      - 'Backend/linux_tun.rs'
+      - 'Core/csqtt-link/**'
       - '.github/workflows/build-openwrt.yml'
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: "RouteRich 24.10.8"
-            short_name: "RouteRich"
-            rust_target: "aarch64-unknown-linux-musl"
-
-    name: "OpenWRT - ${{ matrix.name }}"
+  build-arm64:
+    name: OpenWRT ARM64 + bundled cores
     runs-on: ubuntu-22.04
-
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build owrt-client
-        working-directory: OpenWRT
+          targets: aarch64-unknown-linux-musl
+      - name: Install build/runtime test dependencies
         run: |
-          cross build --release --target ${{ matrix.rust_target }}
-          ls -la target/${{ matrix.rust_target }}/release/
-
-      - name: Verify binary
-        working-directory: OpenWRT
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl zstd zip unzip cmake jq qemu-user binutils
+      - name: Build backend and all three cores
+        working-directory: Backend/OpenWRT
+        run: bash build.sh
+      - name: Smoke test
+        working-directory: Backend/OpenWRT
         run: |
-          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
-          file "$BIN"
-          file "$BIN" | grep -q "ARM aarch64" || { echo "Not ARM64!"; exit 1; }
-
-      - name: Prepare package
-        working-directory: OpenWRT
-        run: |
-          BIN="target/${{ matrix.rust_target }}/release/owrt-client"
-          OUT="/tmp/owrt-client-${{ matrix.short_name }}"
-          mkdir -p "$OUT"
-          cp "$BIN" "$OUT/owrt-client"
-          cp README.md "$OUT/README.md"
-          printf '%s\n' '# Скопируй в файл config (без .example) рядом с бинарником.' 'csqtt://connect?v=2&host=31.77.148.203&peer=46000&password=ЗАМЕНИ&hashes=hash1+hash2+hash3' > "$OUT/config.example"
-          ls -la "$OUT"
-
-      - name: Upload OpenWRT Artifact
-        uses: actions/upload-artifact@v4
+          set -euo pipefail
+          unzip -t output/lalune-openwrt-cores-aarch64.zip
+          test_home=$(mktemp -d)
+          qemu-aarch64 -E HOME="$test_home" output/lalune-openwrt-backend >"$test_home/backend.log" 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true; wait "$backend_pid" || true; cat "$test_home/backend.log"; rm -rf "$test_home"' EXIT
+          for attempt in {1..30}; do
+            if curl -fsS -o "$test_home/ping.json" http://127.0.0.1:1062/ping; then break; fi
+            kill -0 "$backend_pid"
+            sleep 1
+          done
+          jq -e '.ok and .arch == "aarch64" and .platform == "openwrt"' "$test_home/ping.json"
+          curl -fsS http://127.0.0.1:1062/core/protocols | jq -e \
+            'all(.[]; .bundled == true) and (map(.id) | sort == ["CSQTT", "CSQTT 2.1.9", "CSQTTR"])'
+      - uses: actions/upload-artifact@v4
         with:
-          name: LaLune-OpenWRT-${{ matrix.short_name }}
-          path: /tmp/owrt-client-${{ matrix.short_name }}/
+          name: LaLune-OpenWRT-ARM64
+          path: |
+            Backend/OpenWRT/output/lalune-openwrt-backend
+            Backend/OpenWRT/output/lalune-openwrt-cores-aarch64.zip
           if-no-files-found: error
+          compression-level: 0

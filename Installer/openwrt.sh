@@ -2,21 +2,15 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
 # openwrt.sh — установщик LaLune для OpenWRT (ARM64 и ramips/mt7621).
+# Оба backend-бинарника уже содержат CSQTT, CSQTTR и CSQTT 2.1.9.
 
 set -e
 
-CSQTT_URL="https://github.com/Endlad2/csqtt-core/releases/latest/download/client-linux-arm64"
-PAPERFLUX_URL="https://github.com/Endlad2/PaperFlux-core/releases/latest/download/paperflux-linux-arm64"
 BACKEND_URL="https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend"
 RAMIPS_BACKEND_URL="https://github.com/Endlad2/LaLune/releases/latest/download/lalune-openwrt-backend-ramips"
-
-CSQTT_NAME="csqtt-client-aarch64"
-PAPERFLUX_NAME="paperflux-core"
 BACKEND_NAME="lalune-openwrt-backend"
 
 APP_DIR="${HOME}/.la-lune"
-CSQTT_PATH="${APP_DIR}/${CSQTT_NAME}"
-PAPERFLUX_PATH="${APP_DIR}/${PAPERFLUX_NAME}"
 BACKEND_PATH="${APP_DIR}/${BACKEND_NAME}"
 BACKEND_PID="${APP_DIR}/backend.pid"
 BACKEND_LOG="${APP_DIR}/LaLuneManager.log"
@@ -28,7 +22,7 @@ for arg in "$@"; do
         --force|-f) FORCE=1 ;;
         --stop)     MODE="stop" ;;
         --status)   MODE="status" ;;
-        -h|--help)  sed -n '2,10p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '2,12p' "$0"; exit 0 ;;
     esac
 done
 
@@ -37,11 +31,13 @@ warn() { printf "[openwrt][WARN] %s\n" "$*" >&2; }
 fail() { printf "[openwrt][ERROR] %s\n" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-install_ramips_package() {
+install_package() {
+    pkg="$1"
     if have apk; then
-        apk add "$1"
+        apk add "$pkg"
     elif have opkg; then
-        opkg update && opkg install "$1"
+        opkg update >/dev/null 2>&1 || true
+        opkg install "$pkg"
     else
         return 1
     fi
@@ -82,7 +78,7 @@ stop_backend() {
         log "останавливаю backend (PID=$pid)"
         kill "$pid" 2>/dev/null || true
         i=0
-        while [ $i -lt 4 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.5; i=$((i+1)); done
+        while [ $i -lt 6 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.5; i=$((i+1)); done
         kill -0 "$pid" 2>/dev/null && { warn "SIGKILL"; kill -9 "$pid" 2>/dev/null || true; }
     fi
     rm -f "$BACKEND_PID"
@@ -116,42 +112,30 @@ esac
 log "app dir: $APP_DIR"
 mkdir -p "$APP_DIR"
 
-if [ "$BACKEND_URL" = "$RAMIPS_BACKEND_URL" ]; then
-    if ! ip -N -4 rule show >/dev/null 2>&1; then
-        install_ramips_package ip-full || true
-        ip -N -4 rule show >/dev/null 2>&1 || fail "установите ip-full для маршрутизации"
-    fi
-    if [ ! -c /dev/net/tun ]; then
-        install_ramips_package kmod-tun || true
-        have modprobe && modprobe tun || true
-        [ -c /dev/net/tun ] || fail "установите kmod-tun для вашей версии OpenWrt"
-    fi
-    if ! have nohup; then
-        install_ramips_package coreutils-nohup || true
-        have nohup || fail "установите coreutils-nohup"
-    fi
-else
-    # CSQTT
-    if [ -s "$CSQTT_PATH" ] && [ "$FORCE" -eq 0 ]; then
-        log "csqtt уже есть: $CSQTT_PATH"
-    else
-        download "$CSQTT_URL" "$CSQTT_PATH"
-        chmod +x "$CSQTT_PATH"
-        log "csqtt установлен: $CSQTT_PATH"
-    fi
-
-    # PaperFlux
-    if [ -s "$PAPERFLUX_PATH" ] && [ "$FORCE" -eq 0 ]; then
-        log "paperflux уже есть: $PAPERFLUX_PATH"
-    else
-        download "$PAPERFLUX_URL" "$PAPERFLUX_PATH"
-        chmod +x "$PAPERFLUX_PATH"
-        log "paperflux установлен: $PAPERFLUX_PATH"
-    fi
+# Runtime requirements are now identical on ARM64 and ramips: the backend
+# creates lalune0 and routes router/LAN traffic with iptables fwmark rules.
+if ! ip -N -4 rule show >/dev/null 2>&1; then
+    install_package ip-full || true
 fi
+ip -N -4 rule show >/dev/null 2>&1 || fail "установите ip-full для policy routing"
 
-# Старый установщик мог сохранить ARM64 backend на ramips под этим именем.
-if [ "$BACKEND_URL" != "$RAMIPS_BACKEND_URL" ] && [ -s "$BACKEND_PATH" ] && [ "$FORCE" -eq 0 ]; then
+if [ ! -c /dev/net/tun ]; then
+    install_package kmod-tun || true
+    have modprobe && modprobe tun || true
+fi
+[ -c /dev/net/tun ] || fail "установите kmod-tun для TUN"
+
+if ! have iptables && ! have iptables-nft; then
+    install_package iptables-nft || install_package iptables || true
+fi
+(have iptables || have iptables-nft) || fail "установите iptables-nft (нужны mangle/MARK и nat/MASQUERADE)"
+
+if ! have nohup; then
+    install_package coreutils-nohup || true
+fi
+have nohup || fail "установите coreutils-nohup"
+
+if [ -s "$BACKEND_PATH" ] && [ "$FORCE" -eq 0 ]; then
     log "backend уже есть: $BACKEND_PATH"
 else
     download "$BACKEND_URL" "$BACKEND_PATH"
@@ -175,6 +159,7 @@ sleep 1
 if kill -0 "$new_pid" 2>/dev/null; then
     log "backend запущен (PID=$new_pid)"
     log "  api: http://0.0.0.0:1062/ping"
+    log "  cores: CSQTT / CSQTTR / CSQTT 2.1.9 встроены в backend"
 else
     warn "backend не запустился, смотри $BACKEND_LOG"
     rm -f "$BACKEND_PID"

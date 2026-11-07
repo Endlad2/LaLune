@@ -6,7 +6,7 @@ use std::io::{self, Cursor};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-include!(concat!(env!("OUT_DIR"), "/ramips_cores.rs"));
+include!(concat!(env!("OUT_DIR"), "/bundled_cores.rs"));
 const MAX_CORE_SIZE: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,9 +42,9 @@ impl Core {
 
     pub fn filename(self) -> &'static str {
         match self {
-            Self::Csqtt => "csqtt-client-mipsel",
-            Self::Csqttr => "csqttr-client-mipsel",
-            Self::Legacy => "csqtt-219-mipsel",
+            Self::Csqtt => "csqtt-client",
+            Self::Csqttr => "csqttr-client",
+            Self::Legacy => "csqtt-219",
         }
     }
 
@@ -83,7 +83,7 @@ pub async fn extract(core: Core) -> Result<Option<TemporaryCore>> {
 }
 
 fn copy_core(bytes: &[u8], core: Core, output: &mut impl io::Write) -> Result<()> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("Архив ядер ramips")?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("Архив встроенных OpenWRT-ядер")?;
     let entry = archive.by_name(core.filename()).context("Ядро отсутствует в архиве")?;
     let size = entry.size();
     if entry.is_dir() || size == 0 || size > MAX_CORE_SIZE {

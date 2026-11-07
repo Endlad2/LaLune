@@ -1,151 +1,130 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
-# build.sh — сборка LaLune backend для OpenWRT через официальный SDK.
-#
-# Скачивает openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64,
-# проверяет SHA256, распаковывает в .cache/openwrt-sdk/,
-# собирает бинарник aarch64-unknown-linux-musl и кладёт в output/.
+# ARM64 OpenWRT build. Builds CSQTT, CSQTTR and pinned CSQTT 2.1.9 from
+# source, packs them into one ZIP and embeds that ZIP in the backend binary.
 
 set -euo pipefail
+export LC_ALL=C
 
-# ─── Определяем корень проекта ────────────────────────────────────
-# repo_root = родитель папки, где лежит этот скрипт, с .. (т.е. LaLune/).
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+backend_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(cd -- "$backend_dir/../.." && pwd)
+cache=${1:-$repo_root/.cache/openwrt-sdk}
+mkdir -p "$cache" "$backend_dir/output"
+cache=$(cd -- "$cache" && pwd)
+work=$(mktemp -d "$cache/build.XXXXXX")
+trap 'rm -rf -- "$work"' EXIT
 
-sdk_name=openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64
-archive=$sdk_name.tar.zst
-url=https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/$archive
-expected_sha256=1b0316604a3e820b2b008a1baff3f9dac6716af942bef800930e58c7de98c98b
-destination=${1:-$repo_root/.cache/openwrt-sdk}
-sdk_root=$destination/$sdk_name
-archive_path=$destination/$archive
+log() { printf '[openwrt-arm64-build] %s\n' "$*"; }
+fail() { printf '[openwrt-arm64-build][ERROR] %s\n' "$*" >&2; exit 1; }
 
-log() {
-  printf "[openwrt-build] %s\n" "$*"
-}
-
-fail() {
-  printf "[openwrt-build][ERROR] %s\n" "$*" >&2
-  exit 1
-}
-
-# ─── 1. Зависимости ───────────────────────────────────────────────
-for cmd in curl tar zstd sha256sum cargo rustup; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    fail "Не найдена команда: $cmd"
-  fi
+for cmd in curl tar zstd sha256sum cargo rustup unzip zip readelf; do
+    command -v "$cmd" >/dev/null 2>&1 || fail "Не найдена команда: $cmd"
 done
 
-# ─── 2. Скачивание SDK ────────────────────────────────────────────
-mkdir -p "$destination"
+fetch() {
+    local url=$1 destination=$2 expected_sha=$3
+    if [ ! -f "$destination" ]; then
+        log "Скачиваю $url"
+        curl --fail --location --retry 3 --retry-delay 2 --output "$work/download" "$url"
+        printf '%s  %s\n' "$expected_sha" "$work/download" | sha256sum --check
+        mv "$work/download" "$destination"
+    else
+        printf '%s  %s\n' "$expected_sha" "$destination" | sha256sum --check
+    fi
+}
 
-if [ -f "$archive_path" ]; then
-  log "Архив уже есть: $archive_path"
-else
-  log "Скачиваю: $url"
-  curl -fL --retry 3 --retry-delay 2 -o "$archive_path.part" "$url"
-  mv "$archive_path.part" "$archive_path"
+sdk_name=openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64
+sdk_archive="$sdk_name.tar.zst"
+fetch "https://downloads.openwrt.org/releases/25.12.5/targets/armsr/armv8/$sdk_archive" \
+    "$cache/$sdk_archive" 1b0316604a3e820b2b008a1baff3f9dac6716af942bef800930e58c7de98c98b
+sdk="$cache/$sdk_name"
+if [ ! -d "$sdk" ]; then
+    log "Распаковываю OpenWRT SDK"
+    tar --use-compress-program=unzstd -xf "$cache/$sdk_archive" -C "$work"
+    mv "$work/$sdk_name" "$sdk"
 fi
 
-# ─── 3. Проверка SHA256 ───────────────────────────────────────────
-log "Проверяю SHA256..."
-actual_sha=$(sha256sum "$archive_path" | awk '{print $1}')
-if [ "$actual_sha" != "$expected_sha256" ]; then
-  fail "SHA256 не совпадает:
-  expected: $expected_sha256
-  actual:   $actual_sha"
-fi
-log "SHA256 OK"
+export STAGING_DIR="$sdk/staging_dir"
+toolchain_dir=$(find "$STAGING_DIR" -maxdepth 1 -type d -name 'toolchain-aarch64*' | head -n1)
+[ -n "$toolchain_dir" ] || fail "Не найден ARM64 toolchain в $STAGING_DIR"
+export PATH="$toolchain_dir/bin:$STAGING_DIR/host/bin:$PATH"
 
-# ─── 4. Распаковка ────────────────────────────────────────────────
-if [ -d "$sdk_root" ]; then
-  log "SDK уже распакован: $sdk_root"
-else
-  log "Распаковываю в $destination..."
-  tar --use-compress-program=unzstd -xf "$archive_path" -C "$destination"
-fi
+cc=$(find "$toolchain_dir/bin" -maxdepth 1 \( -type f -o -type l \) -name '*aarch64*gcc' | head -n1)
+[ -n "$cc" ] || fail "Не найден aarch64 gcc"
+cc=$(basename "$cc")
+cxx="${cc%gcc}g++"
+ar="${cc%gcc}ar"
+command -v "$cc" >/dev/null 2>&1 || fail "Не найден $cc"
+command -v "$cxx" >/dev/null 2>&1 || fail "Не найден $cxx"
+command -v "$ar" >/dev/null 2>&1 || fail "Не найден $ar"
 
-if [ ! -d "$sdk_root" ]; then
-  fail "После распаковки нет $sdk_root"
-fi
-
-# ─── 5. Настройка окружения ───────────────────────────────────────
-log "Настраиваю OpenWRT SDK toolchain..."
-
-# OpenWRT SDK предоставляет staging_dir/toolchain-*/bin с gcc/ld под target.
-# Мы используем его как CC/linker для C-зависимостей (rusqlite bundled,
-# tun и т.д.).
-toolchain_bin=$(find "$sdk_root/staging_dir" -maxdepth 2 -type d -name 'toolchain-*' | head -n1)
-if [ -z "$toolchain_bin" ]; then
-  fail "Не найдена toolchain в $sdk_root/staging_dir"
-fi
-
-export STAGING_DIR="$sdk_root/staging_dir"
-export PATH="$toolchain_bin/bin:$sdk_root/staging_dir/host/bin:$PATH"
-
-target_triple=aarch64-openwrt-linux-musl
 rust_target=aarch64-unknown-linux-musl
+rustup target add "$rust_target"
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$cc"
+export CC_aarch64_unknown_linux_musl="$cc"
+export CXX_aarch64_unknown_linux_musl="$cxx"
+export AR_aarch64_unknown_linux_musl="$ar"
 
-cc="${target_triple}-gcc"
-cxx="${target_triple}-g++"
-ar="${target_triple}-ar"
+verify_aarch64() {
+    local binary=$1 header program_headers dynamic
+    header=$(readelf -h "$binary")
+    program_headers=$(readelf -l "$binary")
+    dynamic=$(readelf -d "$binary")
+    if ! grep -q 'Class:.*ELF64' <<< "$header" ||
+       ! grep -q 'Machine:.*AArch64' <<< "$header" ||
+       grep -q 'INTERP' <<< "$program_headers" ||
+       grep -q '(NEEDED)' <<< "$dynamic"; then
+        printf 'Unexpected ARM64 ELF ABI or linkage: %s\n%s\n%s\n%s\n' \
+            "$binary" "$header" "$program_headers" "$dynamic" >&2
+        exit 1
+    fi
+    sha256sum "$binary"
+}
 
-if ! command -v "$cc" >/dev/null 2>&1; then
-  # Иногда OpenWRT называет тулчейн короче — aarch64-openwrt-linux-musl-gcc.
-  # Пробуем найти.
-  cc=$(find "$toolchain_bin/bin" -maxdepth 1 -type f -name '*aarch64*gcc' | head -n1)
-  if [ -z "$cc" ]; then
-    fail "Не найден aarch64 gcc в $toolchain_bin/bin"
-  fi
-  cxx="${cc%gcc}g++"
-  ar="${cc%gcc}ar"
-fi
+build_core() (
+    local repo=$1 commit=$2 expected_sha=$3 name=$4
+    local source_zip="$cache/$repo-$commit.zip"
+    fetch "https://github.com/Endlad2/$repo/archive/$commit.zip" "$source_zip" "$expected_sha"
+    unzip -q "$source_zip" -d "$work"
+    cd "$work/$repo-$commit/rust-client"
+    export CARGO_TARGET_DIR="$cache/target-cores-aarch64/$repo-$commit"
+    cargo build --locked --release --target "$rust_target" --bin client
+    install -m 755 "$CARGO_TARGET_DIR/$rust_target/release/client" "$work/$name"
+    verify_aarch64 "$work/$name"
 
-log "CC  = $cc"
-log "CXX = $cxx"
-log "AR  = $ar"
+    if command -v qemu-aarch64 >/dev/null 2>&1; then
+        local status=0 output
+        output=$(timeout 30 qemu-aarch64 "$work/$name" 2>&1) || status=$?
+        if [ "$status" -ne 1 ] || ! grep -Fq -- '-peer' <<< "$output"; then
+            printf 'Core startup check failed: %s (status %s)\n%s\n' "$name" "$status" "$output" >&2
+            exit 1
+        fi
+    fi
+)
 
-# ─── 6. Rust target ───────────────────────────────────────────────
-if ! rustup target list --installed | grep -q "^$rust_target$"; then
-  log "Добавляю rustup target: $rust_target"
-  rustup target add "$rust_target"
-fi
+# Keep ARM64 on exactly the same three source revisions as ramips.
+build_core csqtt-core 181a0d9f162bb8040c255496af0aeb14828e612e \
+    2e658ce1225c691b93430efdd15cc0832fe91f208585103a23b2305a925d58c1 csqtt-client
+build_core csqttr-core afab4c1f279c3e132699130b95184e628f7dda1c \
+    58fb9d29c5a12f3ab44260a90d22fbb53714c2d620f6eb5a64a189a1ec1927a7 csqttr-client
+build_core csqtt-core eda00fce6343430b40413da01791946dccb9c6ff \
+    f1c7427b4bd67ecb181c2a01eeb3455bb8959bedbe91dd29ef08650a7c10f530 csqtt-219
 
-# ─── 7. Cargo config для кросс-компиляции ─────────────────────────
-cargo_config_dir="$repo_root/Backend/OpenWRT/.cargo"
-mkdir -p "$cargo_config_dir"
+(
+    cd "$work"
+    zip -9 -X openwrt-cores.zip csqtt-client csqttr-client csqtt-219
+    unzip -t openwrt-cores.zip
+)
+export LALUNE_OPENWRT_CORES="$work/openwrt-cores.zip"
 
-cat > "$cargo_config_dir/config.toml" <<EOF
-[target.$rust_target]
-linker = "$cc"
-ar = "$ar"
-
-[target.$rust_target.env]
-CC_$rust_target = "$cc"
-CXX_$rust_target = "$cxx"
-AR_$rust_target = "$ar"
-CFLAGS_$rust_target = "-I$sdk_root/staging_dir/target-aarch64-openwrt-linux-musl/usr/include"
-LDFLAGS_$rust_target = "-L$sdk_root/staging_dir/target-aarch64-openwrt-linux-musl/usr/lib"
-EOF
-
-log "Cargo config: $cargo_config_dir/config.toml"
-
-# ─── 8. Сборка ────────────────────────────────────────────────────
-cd "$repo_root/Backend/OpenWRT"
-
-log "Собираю: cargo build --release --target $rust_target"
-CARGO_TARGET_DIR="$repo_root/Backend/OpenWRT/target" \
-  cargo build --release --target "$rust_target"
-
-binary="target/$rust_target/release/lalune-openwrt-backend"
-if [ ! -f "$binary" ]; then
-  fail "Не найден собранный бинарник: $binary"
-fi
-
-# ─── 9. Копирование результата ────────────────────────────────────
-mkdir -p output
-cp "$binary" output/lalune-openwrt-backend
-
-size=$(stat -c %s output/lalune-openwrt-backend 2>/dev/null || stat -f %z output/lalune-openwrt-backend)
-log "Готово: output/lalune-openwrt-backend ($((size / 1024)) KB)"
+# Backend uses the same OpenWRT SDK linker and embeds openwrt-cores.zip.
+export CARGO_TARGET_DIR="$cache/target-backend-aarch64"
+cd "$backend_dir"
+log "Собираю backend со встроенными CSQTT/CSQTTR/CSQTT 2.1.9"
+cargo build --locked --release --target "$rust_target" --bin lalune-openwrt-backend
+binary="$CARGO_TARGET_DIR/$rust_target/release/lalune-openwrt-backend"
+verify_aarch64 "$binary"
+install -m 755 "$binary" output/lalune-openwrt-backend
+cp "$LALUNE_OPENWRT_CORES" output/lalune-openwrt-cores-aarch64.zip
+log "Готово: output/lalune-openwrt-backend + embedded 3-core bundle"

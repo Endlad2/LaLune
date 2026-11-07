@@ -1,171 +1,55 @@
 # openwrt.sh — установщик LaLune для OpenWRT
 
-Ставит backend LaLune и запускает его в фоне. Для ARM64 скачивается
-отдельное ядро CSQTT. Для `ramips/mt7621` (`mipsel_24kc`) выбирается
-`lalune-openwrt-backend-ramips` с тремя встроенными ядрами.
-Панель доступна в доверенной LAN по `http://<IP роутера>:1062/panel`.
+Установщик поддерживает ARM64 (`armsr/armv8`) и `ramips/mt7621`
+(`mipsel_24kc`). Он скачивает один backend-бинарник для нужной архитектуры.
+Внутри обоих backend уже встроены **CSQTT**, **CSQTTR** и **CSQTT 2.1.9**.
 
-## Что делает
-
-1. Создаёт `~/.la-lune/`.
-2. Скачивает:
-   - `~/.la-lune/csqtt-client-aarch64`
-     — из `github.com/redline-keen/csqtt-openwrt/releases/download/0.5/`
-   - `~/.la-lune/lalune-openwrt-backend`
-     — из `github.com/Endlad2/LaLune/releases/download/26.10.03.18.32/`
-3. `chmod +x` на оба бинарника.
-4. Убивает старый backend (если был) и чистит pidfile.
-5. Запускает backend в фоне (`setsid nohup` или `nohup`).
-6. Пишет PID в `~/.la-lune/backend.pid`, лог в `~/.la-lune/LaLuneManager.log`.
-
-## Использование
-
-### На роутере (одной строкой)
+## Установка
 
 ```sh
 wget -O - https://raw.githubusercontent.com/Endlad2/LaLune/main/Installer/openwrt.sh | sh
 ```
 
-Или через `curl`:
+или:
 
-```
+```sh
 curl -fsSL https://raw.githubusercontent.com/Endlad2/LaLune/main/Installer/openwrt.sh | sh
 ```
 
-### Локально скачать и скопировать
+Флаги:
 
-```
-scp LaLune/Installer/openwrt.sh root@192.168.1.1:/tmp/
-ssh root@192.168.1.1 "sh /tmp/openwrt.sh"
+```sh
+sh openwrt.sh --force
+sh openwrt.sh --stop
+sh openwrt.sh --status
 ```
 
-### С флагами
+## Что делает
 
-```
-sh openwrt.sh              # установить и запустить (по умолчанию)
-sh openwrt.sh --force      # перекачать бинарники заново
-sh openwrt.sh --stop       # остановить backend
-sh openwrt.sh --status     # показать статус
-```
+- создаёт `~/.la-lune/`;
+- выбирает `lalune-openwrt-backend` либо `lalune-openwrt-backend-ramips`;
+- проверяет/ставит `ip-full`, `kmod-tun`, `iptables-nft`/`iptables` и `nohup`;
+- скачивает backend и делает его executable;
+- останавливает предыдущий процесс, запускает новый через `nohup`;
+- пишет PID в `~/.la-lune/backend.pid`, лог — в
+  `~/.la-lune/LaLuneManager.log`.
+
+Отдельные core-файлы не скачиваются.
+
+## VPN routing
+
+При подключении backend создаёт `lalune0`, маркирует основной IPv4-трафик
+через iptables и policy-routes его в отдельную таблицу через TUN. Транспорт
+самого core исключается по отдельному UID, чтобы не возникала рекурсия VPN.
 
 ## Проверка
 
-После установки:
-
-```
-# На роутере
-~/.la-lune/lalune-openwrt-backend &   # если ещё не запущен
-curl http://127.0.0.1:1062/ping
-```
-
-Ожидаемый ответ:
-
-```
-{"ok":true,"version":"0.9.10","os":"linux","arch":"aarch64","platform":"openwrt",...}
-```
-
-## Из Frontend
-
-В UI (Настройки → Экспериментальное → Роутеры → Подключить OpenWRT)
-роутер найдётся автоматически сканером (`192.168.X.1:1062/ping`).
-
-## Файлы
-
-| Путь ↕▾ | Назначение ↕▾ |
-|---|---|
-| −`~/.la-lune/csqtt-client-aarch64` | ядро CSQTT |
-| −`~/.la-lune/lalune-openwrt-backend` | HTTP-демон |
-| −`~/.la-lune/backend.pid` | PID backend |
-| −`~/.la-lune/LaLuneManager.log` | stdout/stderr backend |
-| −`~/.la-lune/settings.json` | настройки (создаёт backend) |
-| −`~/.la-lune/configs.db` | SQLite-конфиги (создаёт backend) |
-| −`~/.la-lune/logs.log.gz`, `logs.log.1.gz` | ограниченная история backend и ядра |
-⚙
-
-## Автозапуск при загрузке роутера
-
-Добавь в `/etc/rc.local` перед `exit 0`:
-
-```
-[ -x "$HOME/.la-lune/lalune-openwrt-backend" ] && \
-    nohup "$HOME/.la-lune/lalune-openwrt-backend" >>"$HOME/.la-lune/LaLuneManager.log" 2>&1 &
-```
-
-Либо создай `/etc/init.d/lalune`:
-
-```
-#!/bin/sh /etc/rc.common
-START=99
-STOP=10
-
-APP_DIR="$HOME/.la-lune"
-BACKEND="$APP_DIR/lalune-openwrt-backend"
-
-start() {
-    [ -x "$BACKEND" ] || return 1
-    nohup "$BACKEND" >>"$APP_DIR/LaLuneManager.log" 2>&1 &
-    echo $! > "$APP_DIR/backend.pid"
-}
-
-stop() {
-    [ -f "$APP_DIR/backend.pid" ] && kill "$(cat "$APP_DIR/backend.pid")" 2>/dev/null
-    rm -f "$APP_DIR/backend.pid"
-}
-
-restart() { stop; sleep 1; start; }
-```
-
-Затем:
-
-```
-chmod +x /etc/init.d/lalune
-/etc/init.d/lalune enable
-/etc/init.d/lalune start
-```
-
-## Требования
-
-- `curl` или `wget` в PATH (на OpenWRT обычно есть `wget` через busybox).
-- `setsid` желателен (в busybox есть) — но не обязателен.
-- `kill`, `sleep` — busybox.
-- Архитектура роутера — **aarch64** (armsr/armv8) или **ramips/mt7621**
-  с ABI **mipsel_24kc**. Для других архитектур
-надо менять URL'ы в `CORE_URL` и `BACKEND_URL`.
-
-## Troubleshooting
-
-**Backend не запускается — смотри лог:**
-
-```
-tail -n 50 ~/.la-lune/LaLuneManager.log
-```
-
-**Порт 1062 занят:**
-
-```
-netstat -tlnp | grep 1062
-```
-
-**Роутер не виден из UI:**
-
-- Проверь, что файрвол не блокирует порт 1062 (OpenWRT обычно не блокирует LAN).
-- Проверь `curl http://<ip-роутера>:1062/ping` с того же устройства,
-где открыт UI.
-
-</BDS:create_file>
-</BDS:LONG_WORK>
-
-Готово. `LaLune/Installer/openwrt.sh` — POSIX-sh (busybox-совместимый):
-
-- Скачивает оба бинарника в `~/.la-lune/` (curl, fallback на wget, retry, тихая `.part`-докачка).
-- `chmod +x` на оба.
-- Убивает старый backend по pidfile, ждёт graceful, потом SIGKILL.
-- Запускает через `setsid nohup` (или просто `nohup`, если нет setsid).
-- Пишет PID в `~/.la-lune/backend.pid`, лог в `~/.la-lune/LaLuneManager.log`.
-- Флаги: `--force` (перекачать), `--stop`, `--status`, `--help`.
-
-Запуск на роутере одной строкой:
 ```sh
-wget -O - https://raw.githubusercontent.com/Endlad2/LaLune/main/Installer/openwrt.sh | sh
+curl http://127.0.0.1:1062/ping
+curl http://127.0.0.1:1062/core/protocols
+ip link show lalune0            # когда VPN подключён
+ip -4 rule show                 # policy rules LaLune
+iptables -t mangle -S           # MARK rules LaLune
+```
 
-Заодно положил `README-OPENWRT.md` с инструкцией, путями файлов и вариантом init.d-скрипта для автозапуска.
+Панель доступна в доверенной LAN по `http://<IP роутера>:1062/panel`.

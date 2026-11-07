@@ -21,7 +21,7 @@ VK Calls, TURN используется для обхода NAT, WRAP — для
 | Linux | ✅ | Flutter + Rust (axum) + TUN | `client-linux-x86_64` |
 | Android | ✅ | Flutter + Kotlin + VpnService | `libclient-android-*.so` |
 | iOS 17+ | ✅ | Flutter + Swift + NetworkExtension | `csqtt-core` (static lib) |
-| OpenWRT | ✅ | Rust (axum) + TUN | `csqtt-client-aarch64` |
+| OpenWRT | ✅ | Rust (axum) + `lalune0` + policy routing | встроенные CSQTT / CSQTTR / CSQTT 2.1.9 |
 
 ## Быстрая установка
 
@@ -46,15 +46,16 @@ curl -fsSL https://raw.githubusercontent.com/Endlad2/LaLune/main/Installer/insta
 Что делает: создаёт `~/.la-lune/`, качает клиент, backend, ядро,
 иконку, создаёт `.desktop`-файл и симлинк `~/.local/bin/lalune`.
 
-### OpenWRT (роутер, aarch64)
+### OpenWRT (роутер, ARM64 или ramips/mt7621)
 
 ```
 wget -O - https://raw.githubusercontent.com/Endlad2/LaLune/main/Installer/openwrt.sh | sh
 ```
 
-Что делает: кладёт ядро `csqtt-client-aarch64` и
-`lalune-openwrt-backend` в `~/.la-lune/`, запускает backend в фоне
-на `0.0.0.0:1062`. После этого роутер виден из UI через
+Что делает: выбирает backend под архитектуру роутера, ставит зависимости для
+TUN/policy routing и запускает `lalune-openwrt-backend` в фоне на
+`0.0.0.0:1062`. CSQTT, CSQTTR и CSQTT 2.1.9 уже встроены в backend. После
+этого роутер виден из UI через
 «Настройки → Экспериментальное → Роутеры → Подключить OpenWRT».
 
 ### Android
@@ -146,9 +147,11 @@ cd Backend/OpenWRT
 ./build.sh
 ```
 
-Скрипт скачает `openwrt-sdk-25.12.5-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64`,
-проверит SHA256, распакует в `.cache/openwrt-sdk/` и соберёт
-`output/lalune-openwrt-backend` под `aarch64-unknown-linux-musl`.
+Скрипт скачает OpenWrt SDK 25.12.5, проверит SHA256, соберёт из
+зафиксированных исходников CSQTT, CSQTTR и CSQTT 2.1.9, упакует их в ZIP и
+встроит ZIP в `output/lalune-openwrt-backend` под
+`aarch64-unknown-linux-musl`. Для ramips используется `build-ramips.sh` и тот
+же набор встроенных core.
 
 ### Android
 

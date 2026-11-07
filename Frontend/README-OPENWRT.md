@@ -1,50 +1,27 @@
 # OpenWRT в LaLune Frontend
 
-Кнопка **«Подключить OpenWRT»** теперь сначала предлагает два режима:
-**«Установить»** и **«Подключиться»**.
+Кнопка **«Подключить OpenWRT»** предлагает установку по SSH или подключение к
+уже работающему backend.
 
-## Установить
+## Установка по SSH
 
-1. Клиент определяет локальные IPv4 /24 подсети и сканирует IP-адреса на
-   открытый TCP-порт **22**.
-2. Можно выбрать найденный IP или ввести адрес вручную. Для ручного адреса
-   порт 22 тоже проверяется.
-3. Клиент спрашивает SSH-логин и пароль (по умолчанию логин `root`).
-4. По SSH проверяется архитектура, затем в `~/la-lune/` скачивается
-   `lalune-openwrt-backend` для ARM64 или `lalune-openwrt-backend-ramips`
-   для `ramips/mt7621` с `mipsel_24kc`.
-5. Backend ожидает данные в `~/.la-lune/`, поэтому установщик также создаёт
-   эту директорию и, если отсутствует, скачивает туда
-   `csqtt-client-aarch64` на ARM64. В ramips-сборке ядра уже встроены.
-6. Если на минимальном OpenWRT нет утилиты загрузки или CA-сертификатов,
-   установщик пытается докачать их через `opkg`.
-7. Старый экземпляр backend останавливается, новый запускается через `nohup`
-   в фоне. PID и лог хранятся в `~/.la-lune/`.
-8. После запуска клиент несколько раз проверяет
-   `http://<router>:1062/ping`. При успехе показывает:
-   **«Установлено. Теперь выполните соединение с роутером.»**
+1. Frontend находит роутер по SSH или принимает IP вручную.
+2. Проверяет архитектуру: ARM64 либо `ramips/mt7621` + `mipsel_24kc`.
+3. При необходимости устанавливает `ip-full`, `kmod-tun`,
+   `iptables-nft`/`iptables`, `coreutils-nohup`, downloader и CA certificates.
+4. Скачивает только соответствующий `lalune-openwrt-backend`.
+5. Отдельный core больше не скачивается: ARM64 и ramips backend содержат
+   **CSQTT**, **CSQTTR** и **CSQTT 2.1.9** внутри бинарника.
+6. Перезапускает backend и проверяет `http://<router>:1062/ping`.
 
-Для другой архитектуры или несовместимой цели ramips установщик завершится
-с ошибкой. После установки панель доступна по `http://<router>:1062/panel`.
+После установки панель доступна по `http://<router>:1062/panel`.
 
-## Подключиться
+## Подключение
 
-1. Клиент сканирует адреса локальной /24 сети и проверяет LaLune API на
-   `:1062/ping`.
-2. Можно выбрать найденный роутер или ввести IP вручную.
-3. После подтверждения `RouterNotifier.connect()` повторно проверяет `/ping`,
-   сверяет поддерживаемые протоколы, best-effort передаёт локальный VK-токен
-   через `/vk/token/submit` и переключает `ApiClient` на IP роутера.
-4. Все notifier'ы, подписанные на `baseUrlChanges`, начинают работать с API
-   роутера.
+Frontend проверяет `/ping` и `/core/protocols`, передаёт токен через
+`/vk/token/submit` best-effort и переключает `ApiClient` на API роутера.
+Release-сборки OpenWRT должны возвращать поддержку всех трёх встроенных
+протоколов; отдельный файл `csqtt-client-aarch64` больше не требуется.
 
-## Основные файлы
-
-- `lib/state/router_scanner.dart` — скан `:22` и `:1062/ping` по LAN.
-- `lib/state/openwrt_installer.dart` — SSH-подключение, установка backend и
-  CSQTT-ядра, запуск и проверка API.
-- `lib/widgets/openwrt_install_modal.dart` — выбор Install/Connect, выбор SSH
-  хоста, ввод логина/пароля и прогресс установки.
-- `lib/widgets/router_modal.dart` — выбор уже установленного backend.
-- `lib/state/router_notifier.dart` — connect/disconnect и переключение API.
-- `lib/api/api_client.dart` — `setBaseUrl()`, `resetBaseUrl()`, `pingHost()`.
+Основная логика SSH находится в `lib/state/openwrt_installer.dart`, переключение
+API — в `lib/state/router_notifier.dart` и `lib/api/api_client.dart`.

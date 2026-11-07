@@ -4,7 +4,7 @@
 //
 // Отличия от Desktop:
 //   * Bind на 0.0.0.0:1062 (LAN-доступ).
-//   * Ядро: ~/.la-lune/csqtt-client-aarch64 (фиксированное имя).
+//   * Ядра CSQTT / CSQTTR / CSQTT 2.1.9 встроены в release backend.
 //   * Lua-рантайм (SmartTunnel + csqtt_decode) — mlua 5.4.
 //   * csqtt-link как библиотека для парсинга csqtt:// ссылок.
 

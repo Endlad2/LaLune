@@ -96,21 +96,22 @@ build_core() (
 
 # Endlad2's Linux workflows build rust-client's client binary in release mode.
 build_core csqtt-core 181a0d9f162bb8040c255496af0aeb14828e612e \
-    2e658ce1225c691b93430efdd15cc0832fe91f208585103a23b2305a925d58c1 csqtt-client-mipsel
+    2e658ce1225c691b93430efdd15cc0832fe91f208585103a23b2305a925d58c1 csqtt-client
 build_core csqttr-core afab4c1f279c3e132699130b95184e628f7dda1c \
-    58fb9d29c5a12f3ab44260a90d22fbb53714c2d620f6eb5a64a189a1ec1927a7 csqttr-client-mipsel
+    58fb9d29c5a12f3ab44260a90d22fbb53714c2d620f6eb5a64a189a1ec1927a7 csqttr-client
 build_core csqtt-core eda00fce6343430b40413da01791946dccb9c6ff \
-    f1c7427b4bd67ecb181c2a01eeb3455bb8959bedbe91dd29ef08650a7c10f530 csqtt-219-mipsel
+    f1c7427b4bd67ecb181c2a01eeb3455bb8959bedbe91dd29ef08650a7c10f530 csqtt-219
 
 (
     cd "$work"
-    zip -9 -X ramips-cores.zip csqtt-client-mipsel csqttr-client-mipsel csqtt-219-mipsel
-    unzip -t ramips-cores.zip
+    zip -9 -X openwrt-cores.zip csqtt-client csqttr-client csqtt-219
+    unzip -t openwrt-cores.zip
 )
-export LALUNE_RAMIPS_CORES="$work/ramips-cores.zip"
+export LALUNE_OPENWRT_CORES="$work/openwrt-cores.zip"
 export CARGO_TARGET_DIR="$cache/target-backend"
 cd "$backend_dir"
 build --bin lalune-openwrt-backend
 binary="$CARGO_TARGET_DIR/$rust_target/release/lalune-openwrt-backend"
 verify_mipsel "$binary"
 install -m 755 "$binary" output/lalune-openwrt-backend-ramips
+cp "$LALUNE_OPENWRT_CORES" output/lalune-openwrt-cores-ramips.zip

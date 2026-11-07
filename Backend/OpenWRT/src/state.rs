@@ -3,8 +3,8 @@
 // Глобальное состояние OpenWRT.
 //
 // Отличия от Desktop:
-//   * только CSQTT (нет PaperFlux)
-//   * core_path = app_dir/csqtt-client-aarch64 (фиксированное имя)
+//   * release: встроены CSQTT / CSQTTR / CSQTT 2.1.9 (без PaperFlux)
+//   * core_path используется только fallback dev-сборкой без встроенного bundle
 //   * Lua-рантайм через mlua 5.4
 
 use anyhow::{anyhow, Result};
