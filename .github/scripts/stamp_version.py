@@ -249,7 +249,7 @@ def verify_stamped_version(version: str, build_number: int, windows_version: str
     require_text("Frontend/ios/project.yml", f'CURRENT_PROJECT_VERSION: "{build_number}"')
     require_text("Frontend/ios/Runner.xcodeproj/project.pbxproj", f'MARKETING_VERSION = {version};')
     require_text("Backend/iOS/Info-patch.md", f'<string>{version}</string>')
-    require_text("Installer/README-OPENWRT.md", f'"version":"{version}"')
+    # README-OPENWRT.md is intentionally versionless; do not couple release stamping to docs.
 
     for lock_path, package_name in (
         ("Backend/Desktop/Cargo.lock", "lalune-backend"),
@@ -419,13 +419,9 @@ def main() -> int:
         count=1,
         expected=1,
     )
-    replace_regex(
-        "Installer/README-OPENWRT.md",
-        r'("version":")[^"]+(")',
-        rf"\g<1>{version}\g<2>",
-        count=1,
-        expected=1,
-    )
+    # Installer/README-OPENWRT.md no longer embeds a literal JSON version.
+    # Keeping the README out of release stamping makes workflow_dispatch idempotent
+    # and prevents documentation wording changes from breaking the whole build.
 
     verify_stamped_version(version, build_number, windows_version)
 
