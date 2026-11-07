@@ -18,7 +18,7 @@ trap 'rm -rf -- "$work"' EXIT
 log() { printf '[openwrt-arm64-build] %s\n' "$*"; }
 fail() { printf '[openwrt-arm64-build][ERROR] %s\n' "$*" >&2; exit 1; }
 
-for cmd in curl tar zstd sha256sum cargo rustup unzip zip readelf; do
+for cmd in curl tar zstd sha256sum cargo rustup unzip zip readelf python3; do
     command -v "$cmd" >/dev/null 2>&1 || fail "Не найдена команда: $cmd"
 done
 
@@ -88,6 +88,7 @@ build_core() (
     fetch "https://github.com/Endlad2/$repo/archive/$commit.zip" "$source_zip" "$expected_sha"
     unzip -q "$source_zip" -d "$work"
     cd "$work/$repo-$commit/rust-client"
+    python3 "$backend_dir/musl-core-portability.py" .
     export CARGO_TARGET_DIR="$cache/target-cores-aarch64/$repo-$commit"
     cargo build --locked --release --target "$rust_target" --bin client
     install -m 755 "$CARGO_TARGET_DIR/$rust_target/release/client" "$work/$name"

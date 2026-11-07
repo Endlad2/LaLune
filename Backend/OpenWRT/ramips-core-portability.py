@@ -31,18 +31,7 @@ for path in client.glob("*.rs"):
 
 assert changed, f"No upstream atomic imports found in {client}"
 
-# CSQTT 2.1.9 passes the socket flag bits as c_int. Musl takes c_uint.
-udp_batch = client / "udp_batch.rs"
-if udp_batch.is_file():
-    text = udp_batch.read_text(encoding="utf-8")
-    for call in (
-        "libc::recvmmsg(fd, messages, count, flags, timeout)",
-        "libc::sendmmsg(fd, messages, count, flags)",
-    ):
-        assert text.count(call) == 1
-        text = text.replace(call, call.replace("count, flags", "count, flags as libc::c_uint"))
-    udp_batch.write_text(text, encoding="utf-8")
-
+# musl socket ABI fixes are applied by musl-core-portability.py.
 manifest = client / "Cargo.toml"
 text = manifest.read_text(encoding="utf-8")
 assert "[dependencies]\n" in text and "portable-atomic" not in text

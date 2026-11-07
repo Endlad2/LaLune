@@ -82,6 +82,7 @@ build_core() (
     unzip -q "$zip" -d "$work"
     cd "$work/$repo-$commit/rust-client"
     python3 "$backend_dir/ramips-core-portability.py" .
+    python3 "$backend_dir/musl-core-portability.py" .
     export CARGO_TARGET_DIR="$cache/target-cores"
     build --bin client
     install -m 755 "$CARGO_TARGET_DIR/$rust_target/release/client" "$work/$name"
