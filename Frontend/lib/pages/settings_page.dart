@@ -93,7 +93,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   String _authMode = 'manual';
   bool _enableSmartTunnel = false;
-  bool _validateTun = false;
   bool _showCoreLogs = false;
   bool _shareVpn = false;
   bool _desktopSocks5Mode = false;
@@ -158,7 +157,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _deviceIdCtl.text = s.deviceId;
     _authMode = s.authMode.isEmpty ? 'manual' : s.authMode;
     _enableSmartTunnel = s.enableSmartTunnel;
-    _validateTun = s.validateTun;
     _showCoreLogs = s.showCoreLogs;
     _shareVpn = s.shareVpn;
     _desktopSocks5Mode = s.desktopSocks5Mode;
@@ -220,7 +218,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       deviceId: _deviceIdCtl.text.trim(),
       authMode: _authMode,
       enableSmartTunnel: _enableSmartTunnel,
-      validateTun: _validateTun,
       showCoreLogs: _showCoreLogs,
       shareVpn: _shareVpn,
       desktopSocks5Mode: _desktopSocks5Mode,
@@ -248,9 +245,17 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _busy = false;
       _s = s;
     });
-    Toast.show(context,
-        ok ? 'Настройки сохранены' : 'Ошибка сохранения настроек',
-        isError: !ok);
+    final saveError = ref.read(settingsProvider).error;
+    Toast.show(
+      context,
+      ok
+          ? 'Настройки сохранены'
+          : (saveError == null || saveError.trim().isEmpty
+              ? 'Ошибка сохранения настроек'
+              : 'Ошибка сохранения: $saveError'),
+      isError: !ok,
+      duration: ok ? const Duration(seconds: 3) : const Duration(seconds: 7),
+    );
   }
 
   void _setAuthMode(String mode, VkTokenState vk) {
@@ -896,22 +901,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 color: Colors.white.withOpacity(0.55)),
           ),
         ),
-        if (_isDesktop && !_isPaperFlux) ...[
-          _toggleRow('Validate TUN', _validateTun, (v) {
-            setState(() => _validateTun = v);
-            _markDirty();
-          }),
-          Padding(
-            padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
-            child: Text(
-              'Проверяет доступ через TUN запросами к YouTube и Telegram. Если проверка не проходит, TUN пересоздаётся без перезапуска ядра. По умолчанию выключено.',
-              style: TextStyle(
-                  fontSize: 11.5,
-                  height: 1.5,
-                  color: Colors.white.withOpacity(0.55)),
-            ),
-          ),
-        ],
         _toggleRow('Показывать логи ядра', _showCoreLogs, (v) {
           setState(() => _showCoreLogs = v);
           _markDirty();

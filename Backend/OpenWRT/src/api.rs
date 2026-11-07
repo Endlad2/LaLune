@@ -109,7 +109,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
-        "ok": true, "version": "0.9.9",
+        "ok": true, "version": "0.6.0",
         "os": "linux", "arch": std::env::consts::ARCH, "platform": "openwrt",
         "hostname": hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_default(),
         "uptime": state.uptime(),
@@ -117,7 +117,7 @@ async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn version() -> Json<Value> {
-    Json(json!({ "api": 1, "backend": "0.9.9", "core": "unknown", "ui": "0.9.9" }))
+    Json(json!({ "api": 1, "backend": "0.6.0", "core": "unknown", "ui": "0.6.0" }))
 }
 
 async fn shutdown(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -196,7 +196,10 @@ async fn configs_create(State(state): State<Arc<AppState>>, Json(body): Json<Con
     };
     match state.configs.insert(&config) {
         Ok(id) => Json(json!({"id": id})).into_response(),
-        Err(e) => err(500, e.to_string()),
+        Err(e) => err(500, format!(
+            "Не удалось записать профиль в хранилище OpenWrt ({}): {e:#}",
+            state.configs_path.display()
+        )),
     }
 }
 
@@ -214,13 +217,16 @@ async fn configs_update(State(state): State<Arc<AppState>>, Path(id): Path<i64>,
             }
             Json(json!({"ok": true})).into_response()
         }
-        Err(e) => err(500, e.to_string()),
+        Err(e) => err(500, format!(
+            "Не удалось обновить профиль в хранилище OpenWrt ({}): {e:#}",
+            state.configs_path.display()
+        )),
     }
 }
 
 fn config_from_body(body: ConfigCreateBody) -> anyhow::Result<ConfigItem> {
-    let core = Core::supported(body.protocol.as_deref().unwrap_or("CSQTT"))
-        .ok_or_else(|| anyhow::anyhow!("Протокол не поддерживается этой сборкой"))?;
+    let core = Core::parse(body.protocol.as_deref().unwrap_or("CSQTT"))
+        .ok_or_else(|| anyhow::anyhow!("Неизвестный протокол профиля"))?;
     let mut config = if let Some(link) = body.link {
         parse_for_core(&link, core)?
     } else {
@@ -256,8 +262,8 @@ struct ParseBody { link: String, protocol: Option<String> }
 
 async fn configs_parse(Json(body): Json<ParseBody>) -> impl IntoResponse {
     let result = if let Some(protocol) = body.protocol {
-        let Some(core) = Core::supported(&protocol) else {
-            return err(400, "Протокол не поддерживается этой сборкой");
+        let Some(core) = Core::parse(&protocol) else {
+            return err(400, "Неизвестный протокол профиля");
         };
         parse_for_core(&body.link, core)
     } else {
@@ -322,7 +328,12 @@ async fn settings_put(State(state): State<Arc<AppState>>, Json(body): Json<Value
     s.normalize();
     s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
-    if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
+    if let Err(e) = state.save_settings() {
+        return err(500, format!(
+            "Не удалось записать настройки OpenWrt ({}): {e:#}",
+            state.settings_path.display()
+        ));
+    }
     Json(json!({"ok": true})).into_response()
 }
 
@@ -331,7 +342,12 @@ async fn settings_patch(State(state): State<Arc<AppState>>, Json(body): Json<Val
     if let Err(e) = s.merge_from_json(body) { return err(400, e.to_string()); }
     s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
-    if let Err(e) = state.save_settings() { return err(500, e.to_string()); }
+    if let Err(e) = state.save_settings() {
+        return err(500, format!(
+            "Не удалось записать настройки OpenWrt ({}): {e:#}",
+            state.settings_path.display()
+        ));
+    }
     Json(json!({"ok": true})).into_response()
 }
 
@@ -340,8 +356,13 @@ async fn settings_reset(State(state): State<Arc<AppState>>) -> impl IntoResponse
     s.device_id = state.settings.read().device_id.clone();
     s.normalize();
     *state.settings.write() = s;
-    let _ = state.save_settings();
-    Json(json!({"ok": true}))
+    if let Err(e) = state.save_settings() {
+        return err(500, format!(
+            "Не удалось сбросить настройки OpenWrt ({}): {e:#}",
+            state.settings_path.display()
+        ));
+    }
+    Json(json!({"ok": true})).into_response()
 }
 
 async fn settings_get_key(State(state): State<Arc<AppState>>, Path(key): Path<String>) -> impl IntoResponse {
@@ -357,7 +378,12 @@ async fn settings_put_key(State(state): State<Arc<AppState>>, Path(key): Path<St
     if let Err(e) = s.set_field(&key, body) { return err(400, e.to_string()); }
     s.device_id = state.settings.read().device_id.clone();
     *state.settings.write() = s;
-    let _ = state.save_settings();
+    if let Err(e) = state.save_settings() {
+        return err(500, format!(
+            "Не удалось записать настройку OpenWrt ({}): {e:#}",
+            state.settings_path.display()
+        ));
+    }
     Json(json!({"ok": true})).into_response()
 }
 
@@ -768,7 +794,7 @@ async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .unwrap_or_default(),
         Err(_) => String::new(),
     };
-    let local = "0.9.9";
+    let local = "0.6.0";
     let has_update = !remote_tag.is_empty() && remote_tag != local;
     let _ = &state;
     Json(json!({"hasUpdate": has_update, "remoteTag": remote_tag, "localVersion": local}))
@@ -797,7 +823,10 @@ async fn vk_submit(State(state): State<Arc<AppState>>, Json(body): Json<VkSubmit
     }
     match vk::save_token(&state.app_dir, token) {
         Ok(_) => { state.log("[VK] token saved via /vk/token/submit"); Json(json!({"ok": true})).into_response() }
-        Err(e) => err(500, e.to_string()),
+        Err(e) => err(500, format!(
+            "Не удалось сохранить VK-токен на OpenWrt ({}): {e:#}",
+            state.app_dir.display()
+        )),
     }
 }
 

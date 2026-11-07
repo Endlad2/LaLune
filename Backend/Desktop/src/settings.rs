@@ -62,7 +62,6 @@ pub struct Settings {
 
     // -------- Экспериментальное --------
     pub enable_smart_tunnel: bool,
-    pub validate_tun: bool,
     pub show_core_logs: bool,
     pub share_vpn: bool,
     /// Desktop-only: expose a SOCKS5 endpoint backed by the CSQTT/CSQTTR raw-IP UDP tunnel.
@@ -123,7 +122,6 @@ impl Default for Settings {
             pf_max_uid: String::new(),
 
             enable_smart_tunnel: false,
-            validate_tun: false,
             show_core_logs: false,
             share_vpn: false,
             desktop_socks5_mode: false,

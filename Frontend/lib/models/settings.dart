@@ -55,7 +55,6 @@ class Settings {
 
   // Экспериментальное
   final bool enableSmartTunnel;
-  final bool validateTun;
   final bool showCoreLogs;
   final bool shareVpn;
   final bool desktopSocks5Mode;
@@ -108,7 +107,6 @@ class Settings {
     this.pfMaxToken = '',
     this.pfMaxUid = '',
     this.enableSmartTunnel = false,
-    this.validateTun = false,
     this.showCoreLogs = false,
     this.shareVpn = false,
     this.desktopSocks5Mode = false,
@@ -169,7 +167,6 @@ class Settings {
       pfMaxToken: (j['pfMaxToken'] ?? '') as String,
       pfMaxUid: (j['pfMaxUid'] ?? '') as String,
       enableSmartTunnel: (j['enableSmartTunnel'] ?? false) as bool,
-      validateTun: (j['validateTun'] ?? false) as bool,
       showCoreLogs: (j['showCoreLogs'] ?? false) as bool,
       shareVpn: (j['shareVpn'] ?? false) as bool,
       desktopSocks5Mode: (j['desktopSocks5Mode'] ?? false) as bool,
@@ -222,7 +219,6 @@ class Settings {
         'pfMaxToken': pfMaxToken,
         'pfMaxUid': pfMaxUid,
         'enableSmartTunnel': enableSmartTunnel,
-        'validateTun': validateTun,
         'showCoreLogs': showCoreLogs,
         'shareVpn': shareVpn,
         'desktopSocks5Mode': desktopSocks5Mode,
@@ -274,7 +270,6 @@ class Settings {
     String? pfMaxToken,
     String? pfMaxUid,
     bool? enableSmartTunnel,
-    bool? validateTun,
     bool? showCoreLogs,
     bool? shareVpn,
     bool? desktopSocks5Mode,
@@ -326,7 +321,6 @@ class Settings {
         pfMaxToken: pfMaxToken ?? this.pfMaxToken,
         pfMaxUid: pfMaxUid ?? this.pfMaxUid,
         enableSmartTunnel: enableSmartTunnel ?? this.enableSmartTunnel,
-        validateTun: validateTun ?? this.validateTun,
         showCoreLogs: showCoreLogs ?? this.showCoreLogs,
         shareVpn: shareVpn ?? this.shareVpn,
         desktopSocks5Mode: desktopSocks5Mode ?? this.desktopSocks5Mode,

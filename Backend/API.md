@@ -102,7 +102,6 @@ paperflux://config?v=1&id=476&name=AccarFlux&server=31.76.252.123&ip=10.10.10.85
 | −`obfs`, `fingerprint`, `clientIds` | CSQTT |  |
 | −`authMode`, `turnTransport`, `captchaMode`, `vkAuthMode` | CSQTT |  |
 | −`allowHashRedistribution`, `validateVkHashes` | CSQTT |  |
-| −`validateTun` | CSQTT/CSQTTR (Desktop) | bool, по умолчанию `false`; проверка YouTube/Telegram и пересоздание TUN при сбое |
 | −`pfTransport` | PaperFlux | yandex/vyandex/boards/mtslink/cupsonline/mailru/oneme/relayv2/direct |
 | −`pfUrl`, `pfUrls`, `pfVolgaUrl` | PaperFlux | документные URL |
 | −`pfMode` | PaperFlux | proxy/raw |

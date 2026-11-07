@@ -12,6 +12,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use parking_lot::Mutex;
 
 use crate::csqtt_link_bridge;
@@ -40,6 +41,7 @@ impl ConfigStore {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS configs (
@@ -317,4 +319,44 @@ fn parse_generic(link: &str, protocol: &str, prefix: &str) -> Result<ConfigItem>
         name,
         raw_link: link.to_string(),
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_for_core, ConfigItem, ConfigStore};
+    use crate::bundled_cores::Core;
+
+    #[test]
+    fn csqttr_profile_keeps_protocol_when_parsed() {
+        let link = "csqtt://connect?v=2&host=127.0.0.1&peer=46000&password=secret&hashes=h1+h2";
+        let config = parse_for_core(link, Core::Csqttr).expect("CSQTTR profile parses");
+
+        assert_eq!(config.protocol, "CSQTTR");
+        assert_eq!(config.peer, "127.0.0.1:46000");
+        assert_eq!(config.raw_link, link);
+    }
+
+    #[test]
+    fn sqlite_store_persists_profile() {
+        let path = std::env::temp_dir().join(format!("lalune-openwrt-config-test-{}.db", uuid::Uuid::new_v4()));
+        let store = ConfigStore::open(&path).expect("open config store");
+        let config = ConfigItem {
+            protocol: "CSQTTR".into(),
+            peer: "127.0.0.1:46000".into(),
+            password: "secret".into(),
+            hashes: "h1,h2".into(),
+            name: "test".into(),
+            raw_link: "csqtt://connect?v=2&host=127.0.0.1&peer=46000&password=secret&hashes=h1+h2".into(),
+            ..Default::default()
+        };
+
+        let id = store.insert(&config).expect("insert config");
+        let saved = store.get(id).expect("read config").expect("config exists");
+        assert_eq!(saved.protocol, "CSQTTR");
+        assert_eq!(saved.raw_link, config.raw_link);
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
 }

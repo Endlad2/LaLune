@@ -39,12 +39,13 @@ class NavBar extends StatelessWidget {
               border: Border.all(color: Colors.white.withOpacity(0.12), width: 1),
             ),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: List.generate(_items.length, (i) {
-                return _NavButton(
-                  item: _items[i],
-                  selected: i == currentIndex,
-                  onTap: () => onSelect(i),
+                return Expanded(
+                  child: _NavButton(
+                    item: _items[i],
+                    selected: i == currentIndex,
+                    onTap: () => onSelect(i),
+                  ),
                 );
               }),
             ),
@@ -109,7 +110,8 @@ class _NavButtonState extends State<_NavButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -163,7 +165,12 @@ class _NavButtonState extends State<_NavButton> {
                   fontWeight: active ? FontWeight.w700 : FontWeight.w600,
                   color: labelColor,
                 ),
-                child: Text(widget.item.label),
+                child: Text(
+                  widget.item.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                ),
               ),
             ],
           ),

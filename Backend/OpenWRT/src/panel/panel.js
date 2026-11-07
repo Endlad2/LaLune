@@ -49,8 +49,27 @@ async function request(path, method = "GET", payload) {
       headers: payload === undefined ? undefined : { "Content-Type": "application/json" },
       body: payload === undefined ? undefined : JSON.stringify(payload),
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
+    const text = await response.text();
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+    }
+    if (!response.ok) {
+      const detail = data && typeof data === "object"
+        ? (data.error ?? data.message ?? data.detail)
+        : data;
+      throw new Error(detail ? String(detail) : `HTTP ${response.status}`);
+    }
+    return data ?? {};
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Таймаут запроса ${method} ${path}`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -192,8 +211,9 @@ async function run(messageId, failure, action) {
   refreshControls();
   try {
     await action();
-  } catch {
-    message(messageId, failure, true);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error ?? "");
+    message(messageId, detail ? `${failure} Причина: ${detail}` : failure, true);
   } finally {
     busy = false;
     refreshControls();

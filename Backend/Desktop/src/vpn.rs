@@ -166,17 +166,6 @@ impl VpnRuntime {
     }
 
     pub async fn stop_tun(&self) {
-        self.stop_tun_inner(true).await;
-    }
-
-    /// Tear down only the desktop TUN transport while keeping the core process
-    /// alive. Used by the connectivity watchdog when it needs to rebuild a bad
-    /// TUN session without turning the whole VPN connection off.
-    pub async fn stop_tun_for_retry(&self) {
-        self.stop_tun_inner(false).await;
-    }
-
-    async fn stop_tun_inner(&self, reset_phase: bool) {
         self.running.store(false, Ordering::Release);
         #[cfg(target_os = "windows")]
         {
@@ -193,9 +182,7 @@ impl VpnRuntime {
         }
         *self.started_at.lock() = None;
         *self.tun_conf.lock() = None;
-        if reset_phase {
-            self.set_phase("disconnected", "");
-        }
+        self.set_phase("disconnected", "");
     }
 }
 

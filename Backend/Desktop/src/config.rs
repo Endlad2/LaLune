@@ -279,8 +279,13 @@ pub fn parse_link_for_protocol(link: &str, protocol: &str) -> Result<ConfigItem>
 
     if lower.starts_with("csqtt://") {
         let mut config = parse_csqtt(link)?;
-        if protocol.trim().eq_ignore_ascii_case("CSQTT 2.5.1") {
+        let requested = protocol.trim();
+        if requested.eq_ignore_ascii_case("CSQTT 2.5.1") {
             config.protocol = "CSQTT 2.5.1".into();
+        } else if requested.eq_ignore_ascii_case("CSQTTR")
+            || requested.eq_ignore_ascii_case("CSQTTR 2.5.2")
+        {
+            config.protocol = "CSQTTR".into();
         }
         Ok(config)
     } else if lower.starts_with("paperflux://") {
@@ -590,6 +595,16 @@ mod csqtt_219_plain_link_tests {
         assert_eq!(config.peer, "127.0.0.1:46000");
         assert_eq!(config.password, "secret");
         assert_eq!(config.hashes, "h1,h2");
+        assert_eq!(config.raw_link, link);
+    }
+
+    #[test]
+    fn csqttr_keeps_selected_protocol_after_csqtt_link_parse() {
+        let link = "csqtt://connect?v=2&host=127.0.0.1&peer=46000&password=secret&hashes=h1+h2";
+        let config = parse_link_for_protocol(link, "CSQTTR").expect("CSQTTR profile parses");
+
+        assert_eq!(config.protocol, "CSQTTR");
+        assert_eq!(config.peer, "127.0.0.1:46000");
         assert_eq!(config.raw_link, link);
     }
 

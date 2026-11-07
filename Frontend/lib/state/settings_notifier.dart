@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
+import '../api/api_exception.dart';
 import '../models/settings.dart';
 import 'providers.dart';
 
@@ -35,6 +36,9 @@ class SettingsState {
       );
 }
 
+String _settingsErrorText(Object error) =>
+    error is ApiException ? error.message : error.toString();
+
 class SettingsNotifier extends StateNotifier<SettingsState> {
   final Ref _ref;
   StreamSubscription<String>? _baseUrlSub;
@@ -58,11 +62,12 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
         clearError: true,
       );
     } catch (e) {
-      state = state.copyWith(loading: false, error: '$e');
+      state = state.copyWith(loading: false, error: _settingsErrorText(e));
     }
   }
 
   Future<bool> save(Settings s) async {
+    state = state.copyWith(clearError: true);
     final api = _ref.read(apiClientProvider);
     try {
       await api.putJson('/settings', s.toJson());
@@ -91,7 +96,7 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       state = state.copyWith(data: s, clearError: true);
       return true;
     } catch (e) {
-      state = state.copyWith(error: '$e');
+      state = state.copyWith(error: _settingsErrorText(e));
       return false;
     }
   }

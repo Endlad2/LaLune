@@ -41,7 +41,7 @@ class Links {
       'https://yoomoney.ru/to/4100119505530465/100';
 
   // ---------- Скачать ----------
-  static const String latestVersion    = '0.9.9';
+  static const String latestVersion    = '0.6.0';
   static const String yandexDisk       = 'https://disk.yandex.ru/d/e3_zJQfHn7xI_Q';
 
   // ---------- Счётчик ----------

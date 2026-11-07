@@ -66,6 +66,8 @@ class ApiClient {
       return _decode(resp);
     } on TimeoutException {
       throw ApiException('timeout: $path');
+    } on ApiException {
+      rethrow;
     } catch (e) {
       throw ApiException('$e');
     }
@@ -78,6 +80,8 @@ class ApiClient {
       return _decodeList(resp);
     } on TimeoutException {
       throw ApiException('timeout: $path');
+    } on ApiException {
+      rethrow;
     } catch (e) {
       throw ApiException('$e');
     }
@@ -96,6 +100,8 @@ class ApiClient {
       return _decode(resp);
     } on TimeoutException {
       throw ApiException('timeout: $path');
+    } on ApiException {
+      rethrow;
     } catch (e) {
       throw ApiException('$e');
     }
@@ -114,6 +120,8 @@ class ApiClient {
       return _decode(resp);
     } on TimeoutException {
       throw ApiException('timeout: $path');
+    } on ApiException {
+      rethrow;
     } catch (e) {
       throw ApiException('$e');
     }
@@ -132,6 +140,8 @@ class ApiClient {
       return _decode(resp);
     } on TimeoutException {
       throw ApiException('timeout: $path');
+    } on ApiException {
+      rethrow;
     } catch (e) {
       throw ApiException('$e');
     }
@@ -143,6 +153,8 @@ class ApiClient {
       return _decode(resp);
     } on TimeoutException {
       throw ApiException('timeout: $path');
+    } on ApiException {
+      rethrow;
     } catch (e) {
       throw ApiException('$e');
     }
@@ -179,14 +191,31 @@ class ApiClient {
     }
   }
 
+  ApiException _responseError(http.Response resp) {
+    var message = 'HTTP ${resp.statusCode}';
+    final body = resp.body.trim();
+    if (body.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(body);
+        if (decoded is Map<String, dynamic>) {
+          final value = decoded['error'] ?? decoded['message'] ?? decoded['detail'];
+          if (value != null && value.toString().trim().isNotEmpty) {
+            message = value.toString().trim();
+          }
+        } else if (decoded is String && decoded.trim().isNotEmpty) {
+          message = decoded.trim();
+        }
+      } catch (_) {
+        // Some proxies/older backends return a plain-text error body.
+        if (body.length <= 1000) message = body;
+      }
+    }
+    return ApiException(message, statusCode: resp.statusCode);
+  }
+
   Map<String, dynamic> _decode(http.Response resp) {
     if (resp.statusCode >= 400) {
-      String msg = 'HTTP ${resp.statusCode}';
-      try {
-        final j = jsonDecode(resp.body) as Map<String, dynamic>;
-        if (j['error'] != null) msg = j['error'] as String;
-      } catch (_) {}
-      throw ApiException(msg, statusCode: resp.statusCode);
+      throw _responseError(resp);
     }
     if (resp.body.isEmpty) return {};
     try {
@@ -198,7 +227,7 @@ class ApiClient {
 
   List<dynamic> _decodeList(http.Response resp) {
     if (resp.statusCode >= 400) {
-      throw ApiException('HTTP ${resp.statusCode}', statusCode: resp.statusCode);
+      throw _responseError(resp);
     }
     if (resp.body.isEmpty) return [];
     try {

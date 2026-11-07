@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
+import '../api/api_exception.dart';
 import '../models/config_item.dart';
 import 'providers.dart';
 
@@ -45,6 +46,9 @@ class ConfigsState {
   }
 }
 
+String _configErrorText(Object error) =>
+    error is ApiException ? error.message : error.toString();
+
 class ConfigsNotifier extends StateNotifier<ConfigsState> {
   final Ref _ref;
   StreamSubscription<String>? _baseUrlSub;
@@ -80,7 +84,7 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
         clearError: true,
       );
     } catch (e) {
-      state = state.copyWith(loading: false, error: '$e');
+      state = state.copyWith(loading: false, error: _configErrorText(e));
     }
   }
 
@@ -98,6 +102,7 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
   }
 
   Future<bool> add(String link, String protocol) async {
+    state = state.copyWith(clearError: true);
     final api = _ref.read(apiClientProvider);
     try {
       await api.postJson('/configs', {'link': link, 'protocol': protocol});
@@ -109,7 +114,7 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
       final persisted = state.items.any((item) =>
           item.rawLink.trim() == normalizedLink);
       if (persisted) return true;
-      state = state.copyWith(error: '$e');
+      state = state.copyWith(error: _configErrorText(e));
       return false;
     }
 
@@ -128,7 +133,7 @@ class ConfigsNotifier extends StateNotifier<ConfigsState> {
       await reload();
       return true;
     } catch (e) {
-      state = state.copyWith(error: '$e');
+      state = state.copyWith(error: _configErrorText(e));
       return false;
     }
   }

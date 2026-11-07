@@ -78,7 +78,15 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
       Toast.show(context, 'Профиль сохранён');
       widget.onReload?.call();
     } else {
-      Toast.show(context, 'Не удалось сохранить', isError: true);
+      final error = ref.read(configsProvider).error;
+      Toast.show(
+        context,
+        error == null || error.trim().isEmpty
+            ? 'Не удалось сохранить профиль'
+            : 'Не удалось сохранить: $error',
+        isError: true,
+        duration: const Duration(seconds: 7),
+      );
     }
   }
 
@@ -109,7 +117,20 @@ class _ConnectionPageState extends ConsumerState<ConnectionPage> {
       ),
     );
     if (ok == true) {
-      await ref.read(configsProvider.notifier).delete(id);
+      final deleted = await ref.read(configsProvider.notifier).delete(id);
+      if (!mounted) return;
+      if (!deleted) {
+        final error = ref.read(configsProvider).error;
+        Toast.show(
+          context,
+          error == null || error.trim().isEmpty
+              ? 'Не удалось удалить профиль'
+              : 'Не удалось удалить: $error',
+          isError: true,
+          duration: const Duration(seconds: 7),
+        );
+        return;
+      }
       widget.onReload?.call();
     }
   }

@@ -139,7 +139,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn ping(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "ok": true,
-        "version": "0.9.9",
+        "version": "0.6.0",
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "hostname": hostname::get()
@@ -528,53 +528,6 @@ struct ConnectBody {
     config_id: Option<i64>,
 }
 
-async fn tun_probe(client: &reqwest::Client, url: &'static str) -> (bool, String) {
-    match client.get(url).send().await {
-        Ok(response) => {
-            let code = response.status().as_u16();
-            (code == 200, format!("{}=HTTP {}", url, code))
-        }
-        Err(error) => (false, format!("{}={}", url, error)),
-    }
-}
-
-async fn check_tun_connectivity(client: &reqwest::Client) -> (bool, String) {
-    // Run both probes in parallel. Redirects are followed by reqwest's default
-    // policy; the check is successful only when at least one final response is
-    // exactly HTTP 200.
-    let (youtube, telegram) = tokio::join!(
-        tun_probe(client, "https://youtube.com/"),
-        tun_probe(client, "https://telegram.org/"),
-    );
-    (
-        youtube.0 || telegram.0,
-        format!("{}; {}", youtube.1, telegram.1),
-    )
-}
-
-async fn latest_tun_params_from_logs(
-    path: &std::path::Path,
-) -> Option<(String, String)> {
-    let content = tokio::fs::read_to_string(path).await.ok()?;
-    content.lines().rev().find_map(vpn::parse_tunconf)
-}
-
-async fn teardown_tun_for_retry(state: &Arc<AppState>) {
-    #[cfg(target_os = "windows")]
-    let bypass_routes = state.vpn.bypass_routes.lock().clone();
-
-    state.vpn.stop_tun_for_retry().await;
-
-    #[cfg(target_os = "windows")]
-    {
-        // cleanup_routes removes the old default/DNS/bypass routes. Restore the
-        // configured bypass list afterwards so the replacement TUN gets the
-        // same routing policy as the original one.
-        vpn::cleanup_routes(&state.vpn, &state.events);
-        *state.vpn.bypass_routes.lock() = bypass_routes;
-    }
-}
-
 async fn stop_vk_calls(state: &Arc<AppState>, call_ids: Vec<String>) -> usize {
     if call_ids.is_empty() {
         return 0;
@@ -804,9 +757,6 @@ async fn vpn_connect(
 
     let state2 = state.clone();
     let kind_for_watchdog = kind;
-    let verify_tun = settings.validate_tun
-        && matches!(kind_for_watchdog, ProtocolKind::Csqtt | ProtocolKind::Csqttr)
-        && !desktop_socks5_mode;
     let watchdog = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last_size = 0u64;
@@ -945,26 +895,13 @@ async fn vpn_connect(
                     }
                 }
 
-                if verify_tun {
-                    // Keep the primary UI status as "Подключено", but expose a
-                    // dedicated sub-status while the real Internet path is being
-                    // verified through the freshly-created TUN.
-                    state2.vpn.set_phase("checking", "Проверка TUN");
-                    state2.events.emit(Event::status_detail(
-                        true,
-                        "checking",
-                        "Проверка TUN",
-                    ));
-                    state2.log("[VPN] connected; starting TUN connectivity check");
+                state2.vpn.set_phase("connected", "Подключено");
+                state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
+                state2.log(if desktop_socks5_mode {
+                    "[VPN] connected (SOCKS5 mode)"
                 } else {
-                    state2.vpn.set_phase("connected", "Подключено");
-                    state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
-                    state2.log(if desktop_socks5_mode {
-                        "[VPN] connected (SOCKS5 mode)"
-                    } else {
-                        "[VPN] connected"
-                    });
-                }
+                    "[VPN] connected"
+                });
                 tun_started = true;
             }
 
@@ -981,131 +918,6 @@ async fn vpn_connect(
                 "error",
                 "Таймаут проверки подключения",
             ));
-        }
-
-        if tun_started && verify_tun {
-            let client = match reqwest::Client::builder()
-                .timeout(Duration::from_secs(8))
-                .no_proxy()
-                .user_agent("LaLune-TUN-Check/1.0")
-                .build()
-            {
-                Ok(client) => client,
-                Err(error) => {
-                    state2.log(format!("[VPN] cannot create TUN check client: {}", error));
-                    finish_vpn(&state2).await;
-                    return;
-                }
-            };
-
-            let mut attempt: u64 = 1;
-            loop {
-                if core_stopped(&state2) { break; }
-
-                state2.vpn.set_phase("checking", "Проверка TUN");
-                state2.events.emit(Event::status_detail(
-                    state2.vpn.running.load(std::sync::atomic::Ordering::Acquire),
-                    "checking",
-                    "Проверка TUN",
-                ));
-
-                let (ok, details) = check_tun_connectivity(&client).await;
-                if core_stopped(&state2) { break; }
-
-                if ok {
-                    state2.log(format!(
-                        "[VPN] TUN connectivity check passed on attempt {}: {}",
-                        attempt, details
-                    ));
-                    state2.vpn.set_phase("connected", "Подключено");
-                    state2.events.emit(Event::status_detail(true, "connected", "Подключено"));
-                    break;
-                }
-
-                state2.log(format!(
-                    "[VPN] TUN connectivity check failed on attempt {}: {}",
-                    attempt, details
-                ));
-                state2.log("[VPN] rebuilding TUN only; CSQTT core remains running");
-
-                {
-                    let _operation = state2.vpn.operation.lock().await;
-                    if core_stopped(&state2) { break; }
-                    teardown_tun_for_retry(&state2).await;
-                    state2.vpn.set_phase("checking", "Проверка TUN");
-                    state2.events.emit(Event::status_detail(
-                        false,
-                        "checking",
-                        "Проверка TUN",
-                    ));
-                }
-
-                // The core process is deliberately kept alive. Re-read its log
-                // and use the newest TUNCONF/Tunnel IP line for every rebuild.
-                let (retry_ip, retry_dns) = loop {
-                    if core_stopped(&state2) { break (String::new(), String::new()); }
-                    if let Some(params) = latest_tun_params_from_logs(&state2.logs_path).await {
-                        break params;
-                    }
-                    state2.log("[VPN] waiting for TUN parameters in CSQTT log");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                };
-                if retry_ip.is_empty() || retry_dns.is_empty() || core_stopped(&state2) {
-                    break;
-                }
-
-                state2.log(format!(
-                    "[VPN] TUN params found in core log: ip={} dns={}",
-                    retry_ip, retry_dns
-                ));
-
-                loop {
-                    if core_stopped(&state2) { break; }
-                    let start_result = {
-                        let _operation = state2.vpn.operation.lock().await;
-                        if core_stopped(&state2) { break; }
-                        vpn::start_tun(
-                            state2.vpn.clone(),
-                            retry_ip.clone(),
-                            retry_dns.clone(),
-                            state2.events.clone(),
-                        )
-                    };
-
-                    match start_result {
-                        Ok(()) => {
-                            state2.vpn.set_phase("checking", "Проверка TUN");
-                            state2.events.emit(Event::status_detail(
-                                true,
-                                "checking",
-                                "Проверка TUN",
-                            ));
-                            state2.log("[VPN] TUN recreated; checking connectivity again");
-                            break;
-                        }
-                        Err(error) => {
-                            state2.log(format!("[VPN] TUN recreate failed: {}", error));
-                            {
-                                let _operation = state2.vpn.operation.lock().await;
-                                teardown_tun_for_retry(&state2).await;
-                            }
-                            state2.vpn.set_phase("checking", "Проверка TUN");
-                            state2.events.emit(Event::status_detail(
-                                false,
-                                "checking",
-                                "Проверка TUN",
-                            ));
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        }
-                    }
-                }
-
-                if core_stopped(&state2) { break; }
-                attempt = attempt.saturating_add(1);
-                // Give the OS a short moment to publish the replacement routes
-                // and DNS settings before the next pair of HTTP requests.
-                tokio::time::sleep(Duration::from_millis(750)).await;
-            }
         }
 
         if tun_started {
