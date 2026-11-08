@@ -528,12 +528,19 @@ fn cleanup_legacy_policy(events: &EventBus) {
     // 10620 uidrange -> main, 10621 main suppress default, 10622 -> table 10620.
     // A hard-killed backend could leave those rules behind after csqtt0 vanished.
     let Ok(rules) = ip(&["-N", "-4", "rule", "show"]) else { return };
+    let uses_main = |line: &str| line.split_whitespace().collect::<Vec<_>>().windows(2)
+        .any(|pair| pair == ["lookup", "254"]);
     let legacy = rules.lines().any(|line| {
+        line.trim_start().starts_with("10620:")
+            && line.contains("uidrange ") && uses_main(line)
+    }) && rules.lines().any(|line| {
         line.trim_start().starts_with("10621:")
-            && line.contains("lookup main")
+            && uses_main(line)
             && line.contains("suppress_prefixlength 0")
     }) && rules.lines().any(|line| {
-        line.trim_start().starts_with("10622:") && line.contains(&format!("lookup {ROUTE_TABLE}"))
+        line.trim_start().starts_with("10622:") && !line.contains("fwmark ")
+            && line.split_whitespace().collect::<Vec<_>>().windows(2)
+                .any(|pair| pair == ["lookup", ROUTE_TABLE])
     });
     if !legacy { return; }
 
@@ -575,8 +582,10 @@ fn ensure_route_slots_free() -> Result<()> {
             bail!("Таблица/приоритет policy routing LaLune уже занят: {line}");
         }
     }
-    let table = ip(&["-4", "route", "show", "table", ROUTE_TABLE])?;
-    if !table.trim().is_empty() {
+    // Querying a single, not-yet-created FIB table exits with an error.
+    let routes = ip(&["-N", "-4", "route", "show", "table", "all"])?;
+    if routes.lines().any(|line| line.split_whitespace().collect::<Vec<_>>()
+        .windows(2).any(|pair| pair == ["table", ROUTE_TABLE])) {
         bail!("Таблица маршрутизации {ROUTE_TABLE} уже содержит маршруты");
     }
     Ok(())
@@ -667,4 +676,58 @@ pub fn extract_ipv4_addrs(line: &str) -> Vec<String> {
         } else { i = start + 1; }
     }
     result
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+
+    fn isolated_network() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_ne!(fs::read_link("/proc/self/ns/net").unwrap(), fs::read_link("/proc/1/ns/net").unwrap(),
+            "Run routing tests in an isolated network namespace");
+        ip(&["link", "set", "lo", "up"]).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires root in an isolated Linux network namespace"]
+    fn unused_policy_table_is_available() {
+        isolated_network();
+        ensure_route_slots_free().expect("A table without routes is available on first connection");
+    }
+
+    #[test]
+    #[ignore = "requires root in an isolated Linux network namespace"]
+    fn numeric_legacy_rules_are_removed() {
+        isolated_network();
+        ip(&["-4", "rule", "add", "priority", "10620", "uidrange", "61062-61062", "lookup", "main"]).unwrap();
+        ip(&["-4", "rule", "add", "priority", "10621", "lookup", "main", "suppress_prefixlength", "0"]).unwrap();
+        ip(&["-4", "rule", "add", "priority", "10622", "lookup", ROUTE_TABLE]).unwrap();
+        ip(&["-4", "route", "add", "default", "dev", "lo", "table", ROUTE_TABLE]).unwrap();
+        cleanup_legacy_policy(&EventBus::new(16));
+        let rules = ip(&["-N", "-4", "rule", "show"]).unwrap();
+        for priority in ["10620:", "10621:", "10622:"] {
+            assert!(!rules.lines().any(|line| line.starts_with(priority)), "Legacy rule remains: {rules}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires root in an isolated Linux network namespace"]
+    fn occupied_policy_table_is_preserved() {
+        isolated_network();
+        ip(&["-4", "route", "add", "198.51.100.0/24", "dev", "lo", "table", ROUTE_TABLE]).unwrap();
+        assert!(ensure_route_slots_free().is_err());
+        assert!(ip(&["-N", "-4", "route", "show", "table", ROUTE_TABLE]).unwrap().contains("198.51.100.0/24"));
+    }
+
+    #[test]
+    #[ignore = "requires root in an isolated Linux network namespace"]
+    fn unrelated_policy_rules_are_preserved() {
+        isolated_network();
+        ip(&["-4", "rule", "add", "priority", "10621", "lookup", "main", "suppress_prefixlength", "0"]).unwrap();
+        ip(&["-4", "rule", "add", "priority", "10622", "fwmark", "0x123", "lookup", ROUTE_TABLE]).unwrap();
+        let previous = ip(&["-N", "-4", "rule", "show"]).unwrap();
+        cleanup_legacy_policy(&EventBus::new(16));
+        assert_eq!(ip(&["-N", "-4", "rule", "show"]).unwrap(), previous);
+    }
 }
