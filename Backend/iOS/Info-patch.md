@@ -15,10 +15,10 @@
 <string>$(PRODUCT_NAME)</string>
 
 <key>CFBundleShortVersionString</key>
-<string>0.9.11</string>
+<string>0.9.12</string>
 
 <key>CFBundleVersion</key>
-<string>9011</string>
+<string>9012</string>
 
 <key>LSRequiresIPhoneOS</key>
 <true/>
