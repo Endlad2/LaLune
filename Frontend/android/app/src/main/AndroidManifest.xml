@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     android:versionCode="9011"
-    android:versionName="0.9.11"
+    android:versionName="0.9.11-test"
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Сеть -->
@@ -57,8 +57,7 @@
             </intent-filter>
         </activity>
 
-        <!-- VpnService: TUN + UDP-мост.
-             ВАЖНО: класс теперь в com.lalune.lalune (тот же package, что MainActivity). -->
+
         <service
             android:name="com.lalune.lalune.LaLuneVpnService"
             android:exported="false"
