@@ -521,8 +521,8 @@ async fn vpn_connect(State(state): State<Arc<AppState>>, Json(body): Json<Connec
                 state2.log(format!("[VPN] TUN params: ip={} dns={}", ip, dns));
 
                 if let Err(e) = vpn::start_tun(state2.vpn.clone(), ip, dns, state2.events.clone()) {
-                    state2.log(format!("[VPN] tun start failed: {}", e));
-                    state2.events.emit(Event::error(format!("tun start failed: {}", e)));
+                    state2.log(format!("[VPN] tun start failed: {e:#}"));
+                    state2.events.emit(Event::error(format!("tun start failed: {e:#}")));
                     finish_vpn(&state2).await;
                     return;
                 }
